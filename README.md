@@ -1,4 +1,4 @@
-# 🎮 Vnite Galgame Manager
+# 🎮 Galroon Galgame Manager
 
 <div align="center">
 
