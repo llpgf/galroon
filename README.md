@@ -17,7 +17,7 @@
 
 ## 📖 Overview
 
-**Vnite** is a comprehensive visual novel (galgame) library manager designed for enthusiasts who want to organize, manage, and enhance their visual novel collections.
+**Galroon** is a comprehensive visual novel (galgame) library manager designed for enthusiasts who want to organize, manage, and enhance their visual novel collections.
 
 ### Key Capabilities
 
@@ -54,7 +54,7 @@
 ### Project Structure
 
 ```
-vnite-galgame-manager/
+Galroon-galgame-manager/
 ├── backend/              # Python FastAPI backend
 │   ├── app/             # Application code
 │   │   ├── api/         # REST API endpoints
@@ -92,9 +92,9 @@ vnite-galgame-manager/
 
 ### Option 1: Portable Release (Recommended)
 
-1. Download the latest release from [Releases](https://github.com/your-username/vnite-galgame-manager/releases)
+1. Download the latest release from [Releases](https://github.com/your-username/Galroon-galgame-manager/releases)
 2. Extract to any folder
-3. Run `Vnite.exe` (Windows) or `Vnite` (Linux/Mac)
+3. Run `Galroon.exe` (Windows) or `Galroon` (Linux/Mac)
 4. No installation required!
 
 ### Option 2: Build from Source
@@ -102,8 +102,8 @@ vnite-galgame-manager/
 #### Clone Repository
 
 ```bash
-git clone https://github.com/your-username/vnite-galgame-manager.git
-cd vnite-galgame-manager
+git clone https://github.com/your-username/Galroon-galgame-manager.git
+cd Galroon-galgame-manager
 ```
 
 #### Install Backend Dependencies
@@ -138,7 +138,7 @@ npm run build:portable
 1. **Launch the application**
    ```bash
    # From portable release
-   ./Vnite.exe
+   ./Galroon.exe
 
    # From source
    cd launcher && npm start
@@ -227,7 +227,7 @@ python test_integration.py
 ./build_portable.sh
 ```
 
-Output: `launcher/release/Vnite-Portable-vX.X.X-x64.zip`
+Output: `launcher/release/Galroon-Portable-vX.X.X-x64.zip`
 
 ---
 
@@ -291,9 +291,9 @@ For more information, visit https://www.gnu.org/licenses/gpl-3.0.html
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/your-username/vnite-galgame-manager/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/your-username/vnite-galgame-manager/discussions)
-- **Wiki:** [Project Wiki](https://github.com/your-username/vnite-galgame-manager/wiki)
+- **Issues:** [GitHub Issues](https://github.com/your-username/Galroon-galgame-manager/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/your-username/Galroon-galgame-manager/discussions)
+- **Wiki:** [Project Wiki](https://github.com/your-username/Galroon-galgame-manager/wiki)
 
 ---
 
@@ -316,9 +316,9 @@ For more information, visit https://www.gnu.org/licenses/gpl-3.0.html
 
 <div align="center">
 
-**Built with ❤️ by the Vnite Project**
+**Built with ❤️ by the GalroonProject**
 
-[⬆ Back to Top](#-vnite-galgame-manager)
+[⬆ Back to Top](#-Galroon-galgame-manager)
 
 </div>
  
