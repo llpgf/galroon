@@ -321,3 +321,5 @@ For more information, visit https://www.gnu.org/licenses/gpl-3.0.html
 [⬆ Back to Top](#-vnite-galgame-manager)
 
 </div>
+ 
+"## AI Review Enabled" 
