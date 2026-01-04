@@ -48,7 +48,11 @@ app.setPath('crashDumps', path.join(LOG_DIR, 'crashes'));
 
 // ============================================================
 // LOGGING SETUP
-// ============================================================
+/**
+ * Initialize persistent logging for the launcher by creating a timestamped log file in LOG_DIR,
+ * assigning the writable stream to the global `logStream`, writing a startup banner with timestamp,
+ * and redirecting `console.log` and `console.error` to also append tagged entries to that file while preserving their original behavior.
+ */
 
 function setupLogging() {
   const logFile = path.join(LOG_DIR, `galroon-${Date.now()}.log`);

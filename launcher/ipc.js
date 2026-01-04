@@ -16,7 +16,12 @@ const fs = require('fs');
 // ============================================================
 
 /**
- * Register all IPC handlers
+ * Register IPC handlers used by the Galroon Launcher for log management and diagnostics.
+ *
+ * Registers handlers for:
+ * - `galroon:open-logs-folder` — ensures the application's logs directory exists and opens it in the system file manager.
+ * - `galroon:export-logs` — creates a ZIP archive of the logs directory and returns the archive path and size.
+ * - `galroon:get-system-info` — returns runtime/system information, app paths, and metadata about available log files.
  */
 function registerIpcHandlers() {
   // PHASE 26.0: Open Logs Folder

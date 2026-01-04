@@ -55,10 +55,10 @@ class VNDBProvider:
 
     def _create_session(self) -> requests.Session:
         """
-        Create HTTP session with retry logic.
-
+        Create and configure a requests.Session with a retry-enabled adapter and default headers.
+        
         Returns:
-            Configured requests.Session
+            A requests.Session configured with a retry strategy for status codes 429, 500, 502, 503, and 504 (3 total retries, backoff factor 1) and default headers including a User-Agent and Content-Type: application/json.
         """
         session = requests.Session()
 
