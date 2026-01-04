@@ -754,12 +754,46 @@ export const api = {
    */
   getTrashConfig: () => apiClient.get('/api/trash/config'),
 
-  /**
+/**
    * Empty trash
    * Endpoint: POST /api/trash/empty
    * Phase 19: ✅ IMPLEMENTED
    */
   emptyTrash: () => apiClient.post('/api/trash/empty'),
+
+  // ============================================================
+  // PHASE 4: IMAGE CACHE
+  // ============================================================
+
+  /**
+   * Check if image is cached
+   * Endpoint: GET /api/cache/image/check
+   * Phase 4: ✅ IMPLEMENTED - Check cache status
+   */
+  checkImageCache: (imageUrl: string) =>
+    apiClient.get('/api/cache/image/check', { params: { url: imageUrl } }),
+
+  /**
+   * Download and cache image
+   * Endpoint: POST /api/cache/image/download
+   * Phase 4: ✅ IMPLEMENTED - Download and cache image
+   */
+  downloadImageCache: (imageUrl: string) =>
+    apiClient.post('/api/cache/image/download', { url: imageUrl }),
+
+  /**
+   * Get image cache statistics
+   * Endpoint: GET /api/cache/image/stats
+   * Phase 4: ✅ IMPLEMENTED - Cache statistics
+   */
+  getImageCacheStats: () => apiClient.get('/api/cache/image/stats'),
+
+  /**
+   * Clear image cache
+   * Endpoint: DELETE /api/cache/image/clear
+   * Phase 4: ✅ IMPLEMENTED - Clear all cached images
+   */
+  clearImageCache: () => apiClient.delete('/api/cache/image/clear'),
 };
 
 export default apiClient;
