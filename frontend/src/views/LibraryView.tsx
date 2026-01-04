@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { AssetCard } from '../components/library/AssetCard';
 import { FocusFilter } from '../components/library/FocusFilter';
+import { ScannerProgress } from '../components/ScannerProgress';
 import { useLibrary } from '../hooks/useLibrary';
 import { useLibraryStore } from '../store/libraryStore';
 import { ChevronLeft, ChevronRight, ChevronLeft as PageLeft, ChevronRight as PageRight, Filter } from 'lucide-react';
@@ -194,8 +195,11 @@ export const LibraryView: React.FC<{ onAssetClick: (assetId: string) => void }> 
             )}
           </>
         )}
-      </div>
+</div>
     </main>
+
+    {/* Phase 4: WebSocket Scanner Progress */}
+    <ScannerProgress />
     </>
   );
 };
