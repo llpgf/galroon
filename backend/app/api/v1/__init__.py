@@ -16,10 +16,12 @@ from . import (
     connectors_router,
     curator_router,
     games_router,
+    games_v1_router,
     history_router,
     image_cache_api_router,
     organizer_router,
     scanner_router,
+    scanner_v1_router,
     scheduler_router,
     search_router,
     settings_router,
@@ -27,6 +29,7 @@ from . import (
     trash_router,
     update_router,
     utilities_router,
+    canonicalization_v1_router,
 )
 
 # Import WebSocket manager
