@@ -72,7 +72,7 @@ git add .
 git status
 
 # 首次提交
-git commit -m "Initial commit: Vnite Galgame Manager v1.0.0
+git commit -m "Initial commit: Galroon Galgame Manager v0.1.0
 
 - Portable visual novel library manager
 - Backend: Python FastAPI
@@ -88,7 +88,7 @@ Features:
 License: GPL v3"
 
 # 添加遠程倉庫（替換成你的 URL）
-git remote add origin https://github.com/your-username/vnite-galgame-manager.git
+git remote add origin https://github.com/llpgf/galroon.git
 
 # 推送到 GitHub
 git branch -M main
@@ -111,7 +111,7 @@ git push -u origin main
 
 ```
 請審查我的 GitHub 倉庫：
-https://github.com/your-username/vnite-galgame-manager
+https://github.com/llpgf/galroon
 
 這是一個視覺小說遊戲庫管理系統。
 

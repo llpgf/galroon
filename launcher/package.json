@@ -1,9 +1,9 @@
 {
-  "name": "vnite-launcher",
+  "name": "galroon-launcher",
   "version": "1.0.0",
-  "description": "Vnite - Galgame Library Manager (Portable)",
+  "description": "Galroon - Galgame Library Manager (Portable)",
   "main": "main.js",
-  "author": "Vnite Team",
+  "author": "Galroon Team",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -20,8 +20,8 @@
     "electron-builder": "^24.9.1"
   },
   "build": {
-    "appId": "com.vnite.app",
-    "productName": "Vnite",
+    "appId": "com.galroon.app",
+    "productName": "Galroon",
     "directories": {
       "output": "release",
       "buildResources": "build"

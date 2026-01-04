@@ -1,5 +1,5 @@
 """
-Data models for the 'Vnite-Killer' Metadata System.
+Data models for the 'Galroon' Metadata System.
 
 Provides field-level locking, multilingual support, and provider tracking.
 """

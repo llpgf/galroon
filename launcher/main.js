@@ -1,5 +1,5 @@
 /**
- * Electron Main Process - Vnite Launcher
+ * Electron Main Process - Galroon Launcher
  *
  * Phase 25.0: The Green Release - Portable application launcher
  *
@@ -25,7 +25,7 @@ let logStream = null;
 
 // Determine portable app root
 const isDev = !app.isPackaged;
-// In Dev: Use current folder. In Prod: Use folder containing Vnite.exe
+// In Dev: Use current folder. In Prod: Use folder containing Galroon.exe
 const APP_ROOT = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
 const LOG_DIR = path.join(APP_ROOT, 'logs');
 
@@ -51,12 +51,12 @@ app.setPath('crashDumps', path.join(LOG_DIR, 'crashes'));
 // ============================================================
 
 function setupLogging() {
-  const logFile = path.join(LOG_DIR, `vnite-${Date.now()}.log`);
+  const logFile = path.join(LOG_DIR, `galroon-${Date.now()}.log`);
 
   logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
   logStream.write(`\n${'='.repeat(70)}\n`);
-  logStream.write(`VNITE LAUNCHER STARTED: ${new Date().toISOString()}\n`);
+  logStream.write(`GALROON LAUNCHER STARTED: ${new Date().toISOString()}\n`);
   logStream.write(`${'='.repeat(70)}\n`);
 
   // Redirect console to log file
@@ -307,5 +307,3 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', err);
 });
- 
-// Audit Trigger 

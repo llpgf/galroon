@@ -19,14 +19,14 @@ if getattr(sys, 'frozen', False):
     sys.path.insert(0, str(app_dir))
 
 # Phase 26.0: Debug environment variables BEFORE importing anything else
-vnite_log_path = os.getenv('VNITE_LOG_PATH')
-vnite_data_path = os.getenv('VNITE_DATA_PATH')
+galroon_log_path = os.getenv('VNITE_LOG_PATH')
+galroon_data_path = os.getenv('VNITE_DATA_PATH')
 
 print("=" * 70)
 print("PHASE 26.0: ENVIRONMENT CHECK")
 print("=" * 70)
-print(f"VNITE_LOG_PATH: {vnite_log_path}")
-print(f"VNITE_DATA_PATH: {vnite_data_path}")
+print(f"VNITE_LOG_PATH: {galroon_log_path}")
+print(f"VNITE_DATA_PATH: {galroon_data_path}")
 print("=" * 70)
 
 # Configure logging for portable app
