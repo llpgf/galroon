@@ -1,0 +1,75 @@
+name: Code Quality Check
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  backend-quality-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+      
+      - name: Run Python linting (pylint)
+        run: |
+          cd backend
+          # Run basedpyright (more reliable than google-gemini)
+          pip install basedpyright
+          basedpyright . --output-format=json > lint-results.json
+          
+          # Check if any issues found
+          cat lint-results.json | jq '.error'
+          
+      - name: Upload lint results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: python-lint-results
+          path: lint-results.json
+          retention-days: 7
+
+  frontend-quality-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm install
+          
+      - name: Run TypeScript/ESLint checks
+        run: |
+          cd frontend
+          # Run ESLint for TypeScript
+          npx eslint 'src/**/*.{ts,tsx}' --format json > eslint-results.json
+          
+          # Check for errors
+          cat eslint-results.json | jq '[.[] | select(.severity == "error") | length]'
+          
+      - name: Upload lint results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: frontend-lint-results
+          path: eslint-results.json
+          retention-days: 7
