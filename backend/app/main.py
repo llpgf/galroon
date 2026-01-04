@@ -667,6 +667,13 @@ from .api.games import router as games_router
 app.include_router(games_router)
 
 # ============================================================================
+# PHASE 3: API v1 Router (Modular Routing)
+# ============================================================================
+# Include all routes under /api/v1 prefix for better versioning
+from .api import api_v1_router
+app.include_router(api_v1_router)
+
+# ============================================================================
 # API Endpoints: Scanner Management
 # ============================================================================
 

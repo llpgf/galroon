@@ -1,0 +1,26 @@
+{
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.10",
+  "pythonPlatform": "All",
+  "exclude": [
+    ".venv",
+    "venv",
+    "dist",
+    "build"
+  ],
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "error",
+  "reportGeneralTypeIssues": "error",
+  "reportOptionalMemberAccess": "error",
+  "reportOptionalCall": "error",
+  "reportPrivateImportUsage": "error",
+  "reportUnnecessaryComparison": "warning",
+  "reportUnnecessaryIsInstance": "warning",
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  "reportUnusedClass": "warning",
+  "reportUnusedFunction": "warning",
+  "reportUnusedParameter": "warning"
+  "stubPath": "type-stubs",
+  "venvPath": ".venv"
+}

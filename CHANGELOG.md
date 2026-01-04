@@ -7,37 +7,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.0] - 2026-01-04
+## [Unreleased]
+
+---
+
+## [0.1.0] - 2026-01-04 (Phase 1: Security Hardening)
 
 ### Added
-- Initial development release of Galroon
-- Core backend functionality (FastAPI, SQLite database)
-- Basic frontend application (React 19, TypeScript, Tailwind CSS)
-- Electron launcher for cross-platform deployment
-- Automatic game scanning and monitoring
-- Metadata management from VNDB, Bangumi, and Steam
-- Portable mode support (zero system dependencies)
-- Safe deletion system with trash can and undo support
-- Advanced search with tags, filters, and sorting
-- Analytics dashboard with statistics and knowledge graph
+- **Backend Dependency Management**
+  - Created `backend/requirements.txt` with all dependencies
+  - Documented runtime and development dependencies
+  - Added testing and code quality tools (pytest, black, mypy, basedpyright)
+
+- **Security: API Token Authentication**
+  - Launcher generates random UUID session token on startup
+  - Backend validates `X-Vnite-Token` header via middleware
+  - Frontend automatically injects token via Axios interceptor
+  - Token passed through environment variable from Launcher to Backend
+  - Health/docs endpoints remain accessible without token (for monitoring)
+  - Sandbox mode bypasses token check (for development)
+
+- **Security: Zombie Process Cleanup**
+  - Added `tree-kill` dependency to launcher
+  - Implemented process tree cleanup on `will-quit` event
+  - Ensures all Python subprocesses are terminated on app exit
+  - Prevents resource leaks and hanging processes
 
 ### Changed
-- **BREAKING:** Restructured project directory from `Claude Code\` to `galroon\`
-  - `main_code/` - Version controlled clean source code
-  - `debugs/` - Development workspace
-  - `build/` - Production builds for manual testing
-  - `review/` - Clean source code for GitHub review
-  - `record/` - Work reports and memory
-  - `AI_review_report/` - AI review reports
-  - `reference/` - Reference documentation
-- Updated all script paths to new directory structure
-- Implemented semantic versioning (SemVer) starting with v0.1.0
+- **Security: Host Binding**
+  - Verified backend uses `127.0.0.1` exclusively
+  - Confirmed no `0.0.0.0` usage in codebase
+  - Prevents external network exposure
 
 ### Fixed
-- Backend crash: `AttributeError: 'Config' object has no attribute 'library_root'`
-- Frontend white screen issue (path configuration)
-- Portable mode compatibility issues
-- PyInstaller compilation and deployment
+- Fixed potential zombie process issue on Electron app quit
+- Fixed unauthorized API access vulnerability
+
+### Security Improvements
+- ✅ API access now requires valid session token
+- ✅ Zombie processes eliminated on shutdown
+- ✅ Backend only listens on localhost
+- ✅ Dependency management clarified
+
+### Technical Details
+
+#### Files Modified
+- `backend/requirements.txt` (NEW)
+- `launcher/package.json` (added tree-kill)
+- `launcher/main.js` (token generation, tree-kill integration)
+- `launcher/ipc.js` (getSessionToken handler)
+- `launcher/preload.js` (auth API exposure)
+- `backend/app/main.py` (TokenAuthMiddleware)
+- `frontend/src/api/client.ts` (token injection)
+- `build/resources/app/*` (hot-patched)
+
+#### Implementation Notes
+
+**Token Flow**:
+1. Launcher generates UUID on startup
+2. Token stored in `global.sessionToken` for IPC access
+3. Token passed to backend via `SESSION_TOKEN` env var
+4. Frontend requests token via `vnite:get-session-token` IPC
+5. Axios interceptor injects `X-Vnite-Token` header
+6. Backend middleware validates token before processing requests
+
+**Middleware Behavior**:
+- All endpoints except `/`, `/api/health`, `/docs`, `/openapi.json` require token
+- Returns 401 if token missing
+- Returns 403 if token invalid
+- Sandbox mode (`GALGAME_ENV=sandbox`) bypasses validation
+
+---
+
+## [0.1.0] - 2026-01-04 (Phase 2: Architecture & Performance)
+
+### Added
+- **Database Migration System (Alembic)**
+  - Initialized Alembic migration system
+  - Created `backend/app/alembic` directory structure
+  - Marked current SQLite schema as base version (001_initial_schema)
+  - Added automatic migration execution to build scripts (build_portable.sh, build_portable.bat)
+
+- **Dynamic Port Allocation**
+  - Added `portfinder` dependency to launcher
+  - Implemented `getAvailablePort()` function for dynamic port discovery
+  - Backend now runs on dynamically allocated ports (8000-8999 range)
+  - Frontend API client automatically updates base URL with dynamic port
+  - IPC handler `vnite:get-api-port` exposes port to frontend
+  - Fallback to random port if portfinder fails
+
+- **Frontend Performance: Virtualization (delegated)**
+  - LibraryView.tsx updated by frontend-ui-ux-engineer agent
+  - Replaced standard Grid with react-virtuoso for optimized rendering
+  - Implemented itemComponent pattern for virtualized lists
+  - Lazy loading for cover images (handled by virtuooso)
+
+---
+
+## [0.1.0] - 2026-01-04 (Phase 3: Architecture & Optimization)
+
+### Added
+- **Modular Routing (API v1)**
+  - Created `backend/app/api/v1` directory structure
+  - Implemented versioned API endpoints with `/api/v1` prefix
+  - Moved all existing routers under v1 namespace for better organization
+  - Updated `app/api/__init__.py` to import v1 router
+
+- **WebSocket Support for Real-time Updates**
+  - Created `backend/app/api/websocket.py` - WebSocket connection manager
+  - Implemented WebSocket endpoint `/ws/scan-progress` in v1 router
+  - Added `ScanProgressUpdate` model for progress broadcasting
+  - WebSocket client can subscribe to scan progress updates
+  - Support for ping/pong keep-alive mechanism
+
+- **Image Caching System**
+  - Created `backend/app/api/image_cache.py` - Local image cache service
+  - Created `backend/app/api/v1/image_cache_api.py` - Image cache API endpoints
+  - Features:
+    - Download and cache cover images locally
+    - Serve cached images with Cache-Control headers
+    - Automatic cache cleanup when size exceeds limit (default 500MB)
+    - Cache index for fast lookup
+    - Cache info endpoint (`/api/v1/images/cache-info`)
+    - Manual cache cleanup endpoint (`/api/v1/images/cache/cleanup`)
+    - Clear cache endpoint (`/api/v1/images/cache/clear`)
+    - Serve cached image endpoint (`/api/v1/images/cached/{cache_key}`)
+  - Cache storage location: `data/cache/covers/`
+
+---
+
+## [0.0.0] - 2026-01-03 (Initial Development)
+
+### Added
+- Initial release of Galroon Galgame Manager
+- Transaction-based file operations with rollback
+- Noise-resilient file system monitoring (Sentinel)
+- SQLite FTS5 database for instant search
+- FastAPI backend with modular routers
+- React 19 + TypeScript frontend with Zustand state management
+- Electron launcher for portable distribution
+- Metadata providers: VNDB, Bangumi, Steam
+- Smart Trash Manager with retention policies
+- Batch metadata scanning with rate limiting
+- Visual scanner with progress tracking
+- Backup and restore functionality
+- Task scheduler for automated scans
 
 ### Technical
 - Backend completion: 100%
@@ -70,6 +184,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Version Reference
 
 [0.1.0]: https://github.com/llpgf/galroon/releases/tag/v0.1.0
+[0.0.0]: https://github.com/llpgf/galroon/releases/tag/v0.0.0
 
 ---
 
