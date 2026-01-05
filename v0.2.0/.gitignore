@@ -1,0 +1,227 @@
+# Vnite Galgame Manager - Git Ignore (Clean Room)
+# This ensures no sensitive data, binaries, or runtime artifacts are committed
+
+# ========================================
+# Python - Backend
+# ========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+.env/
+
+# PyInstaller
+*.spec
+*.manifest
+*.exe
+
+# ========================================
+# Node.js - Frontend & Launcher
+# ========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Build outputs
+frontend/dist/
+launcher/dist/
+launcher/release/
+*.app
+*.dmg
+*.exe
+*.msi
+
+# ========================================
+# IDE & Editors
+# ========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-*
+.history/
+
+# ========================================
+# Runtime Data (CRITICAL - Never Commit)
+# ========================================
+# User data
+data/
+*.db
+*.sqlite
+*.sqlite3
+library/
+trash/
+journal/
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Cache
+cache/
+.cache/
+*.cache
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.old
+
+# ========================================
+# Sensitive Information (CRITICAL)
+# ========================================
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# API Keys & Config (real values)
+# Only commit config.example.yaml
+config/production.yaml
+config/secrets.yaml
+**/config/local.yaml
+
+# ========================================
+# Testing & Coverage
+# ========================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ========================================
+# Debug & Test Artifacts
+# ========================================
+debug_test/
+sandbox_data/
+test_output/
+*.test.log
+
+# Crash dumps
+*.dmp
+*.mdmp
+crashes/
+
+# ========================================
+# Build Artifacts
+# ========================================
+# Backend
+backend/dist/
+backend/build/
+backend/*.exe
+
+# Frontend
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# Launcher
+launcher/dist/
+launcher/build/
+launcher/out/
+
+# ========================================
+# OS Generated
+# ========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ========================================
+# Package Manager Lock Files (Optional)
+# ========================================
+# Uncomment if you want to ignore lock files
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ========================================
+# Misc
+# ========================================
+*.pid
+*.seed
+*.pid.lock
+.npm
+.eslintcache
+.stylelintcache
+
+# ========================================
+# Project Specific
+# ========================================
+# Hot patch directories
+hot_patch/
+
+# Backup directories
+backup/
+backups/
+
+# Archive
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ========================================
+# Documentation (build artifacts)
+# ========================================
+docs/_build/
+site/
+
+# ========================================
+# CI/CD
+# ========================================
+.github/workflows/*.log
+.vscode/settings.json
