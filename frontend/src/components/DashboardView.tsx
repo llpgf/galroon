@@ -9,8 +9,8 @@
 import { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
-import { DiscoveryLens } from './dashboard/DiscoveryLens';
-import { StatsCharts } from './dashboard/StatsCharts';
+import DiscoveryLens from './dashboard/DiscoveryLens';
+import StatsCharts from './dashboard/StatsCharts';
 
 interface DashboardViewProps {
       onNavigateToGallery?: (filter?: string) => void;

@@ -28,7 +28,7 @@ async function initSessionToken(): Promise<void> {
     try {
       const response = await window.electronAPI.auth.getSessionToken();
       if (response && response.success) {
-        sessionToken = response.token;
+        sessionToken = response.token ?? null;
         console.log('[PHASE 27.0] Session token loaded from Electron');
       }
     } catch (error) {
