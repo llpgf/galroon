@@ -1,5 +1,5 @@
 /**
- * Electron Main Process - Galroon Launcher
+ * Electron Main Process - Vnite Launcher
  *
  * Phase 25.0: The Green Release - Portable application launcher
  *
@@ -13,11 +13,19 @@ const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const kill = require('tree-kill');
+const { randomUUID } = require('crypto');
 const { registerIpcHandlers } = require('./ipc');
+const portfinder = require('portfinder');
 
 let mainWindow = null;
 let backendProcess = null;
 let logStream = null;
+let sessionToken = null;  // PHASE 27.0: Store session token for frontend
+let apiPort = null;  // PHASE 28.0: Dynamically allocated API port
+
+// Make sessionToken globally accessible for IPC handlers
+global.sessionToken = null;
 
 // ============================================================
 // PHASE 26.0: PORTABLE PATHS
@@ -25,7 +33,7 @@ let logStream = null;
 
 // Determine portable app root
 const isDev = !app.isPackaged;
-// In Dev: Use current folder. In Prod: Use folder containing Galroon.exe
+// In Dev: Use current folder. In Prod: Use folder containing Vnite.exe
 const APP_ROOT = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
 const LOG_DIR = path.join(APP_ROOT, 'logs');
 
@@ -51,12 +59,12 @@ app.setPath('crashDumps', path.join(LOG_DIR, 'crashes'));
 // ============================================================
 
 function setupLogging() {
-  const logFile = path.join(LOG_DIR, `galroon-${Date.now()}.log`);
+  const logFile = path.join(LOG_DIR, `vnite-${Date.now()}.log`);
 
   logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
   logStream.write(`\n${'='.repeat(70)}\n`);
-  logStream.write(`GALROON LAUNCHER STARTED: ${new Date().toISOString()}\n`);
+  logStream.write(`VNITE LAUNCHER STARTED: ${new Date().toISOString()}\n`);
   logStream.write(`${'='.repeat(70)}\n`);
 
   // Redirect console to log file
@@ -84,6 +92,32 @@ function setupLogging() {
 // BACKEND PROCESS MANAGEMENT
 // ============================================================
 
+// PHASE 28.0: Dynamic Port Allocation
+// =======================================
+function getAvailablePort() {
+  const DEFAULT_PORT = 8000;
+  const PORT_RANGE_START = 8000;
+  const PORT_RANGE_END = 8999;
+
+  return new Promise((resolve, reject) => {
+    portfinder.getPort({
+      port: DEFAULT_PORT,
+      stopPort: false
+    }, (err, port) => {
+      if (err) {
+        console.error('[PHASE 28.0] Failed to find available port:', err);
+        // Fallback: try sequential ports
+        const fallbackPort = Math.floor(Math.random() * (PORT_RANGE_END - PORT_RANGE_START + 1)) + PORT_RANGE_START;
+        console.warn(`[PHASE 28.0] Using fallback port: ${fallbackPort}`);
+        resolve(fallbackPort);
+      } else {
+        console.log(`[PHASE 28.0] Found available port: ${port}`);
+        resolve(port);
+      }
+    });
+  });
+}
+
 function getBackendPath() {
   if (process.env.NODE_ENV === 'development') {
     // Development: Use Python script
@@ -108,12 +142,21 @@ function getBackendPath() {
   }
 }
 
-function startBackend() {
+async function startBackend() {
   const { command, args, name } = getBackendPath();
 
   console.log(`Starting ${name}...`);
   console.log(`Command: ${command}`);
   console.log(`Args: ${args.join(' ')}`);
+
+  // PHASE 28.0: Get available port dynamically
+  apiPort = await getAvailablePort();
+  console.log(`[PHASE 28.0] API will run on port: ${apiPort}`);
+
+  // PHASE 27.0: Generate session token for API authentication
+  sessionToken = randomUUID();
+  global.sessionToken = sessionToken;  // Make available globally for IPC
+  console.log(`[PHASE 27.0] Generated SESSION_TOKEN: ${sessionToken}`);
 
   // PHASE 26.0: Pass portable paths to backend via environment variables
   const backendEnv = {
@@ -122,11 +165,17 @@ function startBackend() {
     PYTHONUNBUFFERED: '1', // Force unbuffered output
     // PHASE 26.0: Portable logging and data paths
     VNITE_LOG_PATH: LOG_DIR,        // Tell Python where to write logs
-    VNITE_DATA_PATH: APP_ROOT       // Tell Python where to store DB/config
+    VNITE_DATA_PATH: APP_ROOT,      // Tell Python where to store DB/config
+    // PHASE 27.0: Session token for API authentication
+    SESSION_TOKEN: sessionToken,       // Pass token to backend for validation
+    // PHASE 28.0: Dynamic API port
+    VNITE_API_PORT: apiPort.toString()  // Pass dynamically allocated port
   };
 
   console.log(`[PHASE 26.0] Backend Log Path: ${backendEnv.VNITE_LOG_PATH}`);
   console.log(`[PHASE 26.0] Backend Data Path: ${backendEnv.VNITE_DATA_PATH}`);
+  console.log(`[PHASE 27.0] Session Token sent to backend`);
+  console.log(`[PHASE 28.0] API Port sent to backend: ${apiPort}`);
 
   // Spawn backend process
   backendProcess = spawn(command, args, {
@@ -172,18 +221,21 @@ function stopBackend() {
     console.log('Stopping backend...');
 
     try {
-      // Try graceful shutdown first
-      if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', backendProcess.pid.toString(), '/f']);
-      } else {
-        backendProcess.kill('SIGTERM');
-      }
+      // Use tree-kill to kill Python process and all its children
+      // This prevents zombie processes on shutdown
+      kill(backendProcess.pid, 'SIGTERM', (err) => {
+        if (err) {
+          console.error('Error killing backend process tree:', err);
+        } else {
+          console.log(`Successfully killed backend process tree (PID: ${backendProcess.pid})`);
+        }
+      });
 
-      // Force kill after 5 seconds
+      // Force kill after 5 seconds if tree-kill doesn't work
       setTimeout(() => {
         if (backendProcess && !backendProcess.killed) {
           console.log('Force killing backend...');
-          backendProcess.kill('SIGKILL');
+          kill(backendProcess.pid, 'SIGKILL');
         }
       }, 5000);
 
@@ -257,7 +309,7 @@ function createWindow() {
 // APP LIFECYCLE
 // ============================================================
 
-app.on('ready', () => {
+app.on('ready', async () => {
   console.log('App ready');
   setupLogging();
 
@@ -265,7 +317,8 @@ app.on('ready', () => {
   registerIpcHandlers();
 
   createWindow();
-  startBackend();
+  // PHASE 28.0: Start backend with async port allocation
+  await startBackend();
 });
 
 app.on('window-all-closed', () => {
@@ -307,3 +360,5 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', err);
 });
+ 
+// Audit Trigger 

@@ -75,7 +75,7 @@ class VNDBProvider:
 
         # Set user agent
         session.headers.update({
-            "User-Agent": "Galroon-Metadata-Manager/1.0",
+            "User-Agent": "Vnite-Killer-Metadata-Manager/1.0",
             "Content-Type": "application/json"
         })
 

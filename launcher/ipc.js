@@ -1,5 +1,5 @@
 /**
- * IPC Handlers for Galroon Launcher
+ * IPC Handlers for Vnite Launcher
  *
  * Phase 26.0: Portable Telemetry
  * - Open logs folder
@@ -19,8 +19,46 @@ const fs = require('fs');
  * Register all IPC handlers
  */
 function registerIpcHandlers() {
+  // PHASE 27.0: Get session token for API authentication
+  ipcMain.handle('vnite:get-session-token', async () => {
+    // Get token from main process (passed via module global)
+    // This is called by frontend to authenticate API requests
+    const token = global.sessionToken;
+
+    if (!token) {
+      console.error('[PHASE 27.0] Session token not available!');
+      return {
+        success: false,
+        error: 'Session token not available'
+      };
+    }
+
+    return {
+      success: true,
+      token: token
+    };
+  });
+
+  // PHASE 28.0: Get API port
+  ipcMain.handle('vnite:get-api-port', async () => {
+    const port = global.apiPort;
+
+    if (!port) {
+      console.error('[PHASE 28.0] API port not available!');
+      return {
+        success: false,
+        error: 'API port not available'
+      };
+    }
+
+    return {
+      success: true,
+      port: port
+    };
+  });
+
   // PHASE 26.0: Open Logs Folder
-  ipcMain.handle('galroon:open-logs-folder', async () => {
+  ipcMain.handle('vnite:open-logs-folder', async () => {
     const isDev = !app.isPackaged;
     const APP_ROOT = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
     const LOG_DIR = path.join(APP_ROOT, 'logs');
@@ -40,14 +78,14 @@ function registerIpcHandlers() {
   });
 
   // PHASE 26.0: Export Logs (create zip)
-  ipcMain.handle('galroon:export-logs', async () => {
+  ipcMain.handle('vnite:export-logs', async () => {
     const archiver = require('archiver');
     const isDev = !app.isPackaged;
     const APP_ROOT = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
     const LOG_DIR = path.join(APP_ROOT, 'logs');
 
     // Create zip file in app root
-    const zipPath = path.join(APP_ROOT, `galroon-logs-${Date.now()}.zip`);
+    const zipPath = path.join(APP_ROOT, `vnite-logs-${Date.now()}.zip`);
     const output = fs.createWriteStream(zipPath);
     const archive = archiver('zip', { zlib: { level: 9 } });
 
@@ -76,7 +114,7 @@ function registerIpcHandlers() {
   });
 
   // PHASE 26.0: Get System Info for debugging
-  ipcMain.handle('galroon:get-system-info', async () => {
+  ipcMain.handle('vnite:get-system-info', async () => {
     const isDev = !app.isPackaged;
     const APP_ROOT = isDev ? path.join(__dirname, '..') : path.dirname(process.execPath);
     const LOG_DIR = path.join(APP_ROOT, 'logs');

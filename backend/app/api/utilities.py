@@ -12,6 +12,7 @@ Provides REST API for manual file operations:
 """
 
 import logging
+from pathlib import Path
 from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, status
@@ -19,11 +20,27 @@ from pydantic import BaseModel, Field
 
 from ..services.system import get_system_bridge
 from ..services.archiver import get_archive_service
+from ..config import get_config
+from ..core.config import settings
+from ..core.path_safety import is_safe_path
 
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/utils", tags=["utilities"])
+
+
+def _resolve_library_path(path_value: str, library_root: Path, allow_external: bool) -> Path:
+    """Resolve a path relative to library_root and enforce path safety."""
+    candidate = Path(path_value)
+    if not candidate.is_absolute():
+        candidate = library_root / path_value
+    if not allow_external and not is_safe_path(candidate, library_root):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Path is outside library root: {path_value}"
+        )
+    return candidate
 
 
 # ============================================================================
@@ -93,8 +110,12 @@ async def reveal_in_explorer(request: RevealRequest):
         }
     """
     try:
+        config = get_config()
+        library_root = config.library_roots[0]
+        resolved_path = _resolve_library_path(request.path, library_root, settings.ALLOW_EXTERNAL_PATHS)
+
         bridge = get_system_bridge()
-        result = bridge.reveal_in_explorer(request.path)
+        result = bridge.reveal_in_explorer(str(resolved_path))
 
         if not result["success"]:
             raise HTTPException(
@@ -178,11 +199,14 @@ async def open_file(request: OpenRequest):
         }
     """
     try:
+        config = get_config()
+        library_root = config.library_roots[0]
+        resolved_path = _resolve_library_path(request.path, library_root, settings.ALLOW_EXTERNAL_PATHS)
+
         bridge = get_system_bridge()
-        path_obj = request.path
+        path_obj = str(resolved_path)
 
         # Check if it's a directory
-        from pathlib import Path
         if Path(path_obj).is_dir():
             result = bridge.open_directory(path_obj)
         else:
@@ -248,10 +272,23 @@ async def extract_archive(request: ExtractRequest):
         }
     """
     try:
+        config = get_config()
+        library_root = config.library_roots[0]
+        target_dir = _resolve_library_path(request.target_dir, library_root, settings.ALLOW_EXTERNAL_PATHS)
+
+        source_path = Path(request.source_path)
+        if not source_path.is_absolute():
+            source_path = library_root / request.source_path
+        if not settings.ALLOW_EXTERNAL_PATHS and not is_safe_path(source_path, library_root):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Path is outside library root: {request.source_path}"
+            )
+
         archiver = get_archive_service()
         result = archiver.extract_archive(
-            source_path=request.source_path,
-            target_dir=request.target_dir,
+            source_path=str(source_path),
+            target_dir=str(target_dir),
             background=request.background
         )
 

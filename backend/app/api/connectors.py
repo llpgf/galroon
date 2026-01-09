@@ -20,11 +20,25 @@ from ..config import get_config
 from ..metadata.enricher import get_enricher, EnrichmentResult
 from ..metadata.manager import get_resource_manager
 from ..metadata.models import UnifiedMetadata
+from ..core.path_safety import is_safe_path
 
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/connectors", tags=["connectors"])
+
+
+def _resolve_game_path(game_path: str, library_root: Path) -> Path:
+    """Resolve a game path relative to library_root and enforce path safety."""
+    candidate = Path(game_path)
+    if not candidate.is_absolute():
+        candidate = library_root / game_path
+    if not is_safe_path(candidate, library_root):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Path is outside library root"
+        )
+    return candidate
 
 
 # ============================================================================
@@ -109,7 +123,7 @@ async def sync_game(request: SyncRequest):
         library_root = config.library_roots[0]
 
         # Build game folder path
-        game_folder = library_root / request.game_path
+        game_folder = _resolve_game_path(request.game_path, library_root)
 
         if not game_folder.exists():
             raise HTTPException(

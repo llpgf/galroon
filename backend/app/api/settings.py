@@ -18,7 +18,6 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..config import get_config, Config
-from ..core.path_safety import is_safe_path
 
 logger = logging.getLogger(__name__)
 
@@ -156,11 +155,11 @@ async def add_library_root(request: AddRootRequest):
                 detail=f"Path does not exist: {new_root}"
             )
 
-        # Validate path is safe
-        if not is_safe_path(new_root, config.config_dir):
+        # Validate path is absolute to avoid ambiguous root handling
+        if not new_root.is_absolute():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Path is not safe (outside allowed directories)"
+                detail="Path must be absolute"
             )
 
         # Check if already in list
@@ -623,4 +622,124 @@ async def update_scanner_config(request: UpdateScannerConfigRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating scanner config: {str(e)}"
+        )
+
+# ============================================================================
+# PHASE 24.5: Settings Import/Export
+# ============================================================================
+
+class SettingsExport(BaseModel):
+    """Model for full settings export."""
+    version: int = 1
+    timestamp: str
+    library_roots: List[str]
+    scanner: Dict[str, Any]
+    connectors: Dict[str, bool]
+    update: Dict[str, Any]
+
+
+class ImportSettingsResponse(BaseModel):
+    """Response for settings import."""
+    success: bool
+    message: str
+    changes: List[str]
+
+
+@router.get("/export", response_model=SettingsExport)
+async def export_settings():
+    """
+    Export all application settings.
+    
+    Returns:
+        JSON structure containing all configuration
+    """
+    try:
+        config = get_config()
+        
+        # Load connector config
+        connectors_config = _load_connectors_config()
+        
+        return SettingsExport(
+            version=1,
+            timestamp=datetime.now().isoformat(),
+            library_roots=[str(r) for r in config.library_roots],
+            scanner={
+                "scan_on_startup": config.scan_on_startup,
+                "scan_interval_min": config.scan_interval_min
+            },
+            connectors=connectors_config,
+            update={
+                "auto_check_enabled": config.auto_check_enabled,
+                "check_interval_hours": config.check_interval_hours
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error exporting settings: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error exporting settings: {str(e)}"
+        )
+
+
+@router.post("/import", response_model=ImportSettingsResponse)
+async def import_settings(settings: SettingsExport):
+    """
+    Import application settings.
+    
+    Args:
+        settings: SettingsExport model
+    
+    Returns:
+        Result of import with list of changes
+    """
+    try:
+        config = get_config()
+        changes = []
+        
+        # Update Library Roots
+        # We append new roots, but don't delete existing ones to be safe?
+        # Or we replace? "Import" usually implies replacement or merge.
+        # Let's merge: add if missing.
+        for path_str in settings.library_roots:
+            path = Path(path_str)
+            if path not in config.library_roots:
+                # Basic validation
+                if path.exists():
+                     config.library_roots.append(path)
+                     changes.append(f"Added library root: {path}")
+                else:
+                    logger.warning(f"Skipping non-existent root in import: {path}")
+
+        # Update Scanner
+        if settings.scanner:
+            config.update_scanner_settings(
+                scan_on_startup=settings.scanner.get("scan_on_startup", config.scan_on_startup),
+                scan_interval_min=settings.scanner.get("scan_interval_min", config.scan_interval_min)
+            )
+            changes.append("Updated scanner configuration")
+
+        # Update Connectors
+        if settings.connectors:
+            _save_connectors_config(settings.connectors)
+            changes.append("Updated connectors configuration")
+
+        # Update Update Settings
+        if settings.update:
+            config.update_update_settings(
+                auto_check_enabled=settings.update.get("auto_check_enabled", config.auto_check_enabled),
+                check_interval_hours=settings.update.get("check_interval_hours", config.check_interval_hours)
+            )
+            changes.append("Updated update configuration")
+            
+        return ImportSettingsResponse(
+            success=True,
+            message="Settings imported successfully",
+            changes=changes
+        )
+        
+    except Exception as e:
+        logger.error(f"Error importing settings: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error importing settings: {str(e)}"
         )

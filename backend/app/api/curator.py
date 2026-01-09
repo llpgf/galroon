@@ -20,11 +20,36 @@ from pydantic import BaseModel, Field
 from ..metadata.curator import Curator, get_curator
 from ..metadata.models import UnifiedMetadata
 from ..config import get_config
+from ..core.path_safety import is_safe_path
 
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/curator", tags=["curator"])
+
+
+def _resolve_folder_path(folder_path: str, library_root: Path) -> Path:
+    """Resolve a folder path relative to library_root and enforce path safety."""
+    candidate = Path(folder_path)
+    if not candidate.is_absolute():
+        candidate = library_root / folder_path
+    if not is_safe_path(candidate, library_root):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Path is outside library root"
+        )
+    return candidate
+
+
+def _resolve_child_path(parent_dir: Path, child_path: str) -> Path:
+    """Resolve a child path relative to parent_dir and enforce path safety."""
+    candidate = parent_dir / child_path
+    if not is_safe_path(candidate, parent_dir):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Path is outside game folder"
+        )
+    return candidate
 
 
 # ============================================================================
@@ -158,9 +183,10 @@ async def identify_game(request: IdentifyRequest):
         library_root = config.library_roots[0]  # Use first root
 
         curator = get_curator(library_root)
+        resolved_folder = _resolve_folder_path(request.folder_path, library_root)
 
         result = curator.identify_game(
-            folder_path=Path(request.folder_path),
+            folder_path=resolved_folder,
             vndb_id=request.vndb_id,
             fetch_metadata=request.fetch_metadata
         )
@@ -211,7 +237,7 @@ async def lock_fields(request: LockFieldsRequest):
         library_root = config.library_roots[0]
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
-        folder_path = Path(request.folder_path)
+        folder_path = _resolve_folder_path(request.folder_path, library_root)
 
         # Load metadata
         metadata_dict = resource_manager.load_metadata(folder_path)
@@ -270,7 +296,7 @@ async def unlock_fields(request: LockFieldsRequest):
         library_root = config.library_roots[0]
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
-        folder_path = Path(request.folder_path)
+        folder_path = _resolve_folder_path(request.folder_path, library_root)
 
         # Load metadata
         metadata_dict = resource_manager.load_metadata(folder_path)
@@ -329,7 +355,7 @@ async def update_field(request: UpdateFieldRequest):
         library_root = config.library_roots[0]
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
-        folder_path = Path(request.folder_path)
+        folder_path = _resolve_folder_path(request.folder_path, library_root)
 
         # Load metadata
         metadata_dict = resource_manager.load_metadata(folder_path)
@@ -409,7 +435,7 @@ async def get_extras(folder_path: str):
         library_root = config.library_roots[0]
 
         # Resolve full path
-        full_path = library_root / folder_path
+        full_path = _resolve_folder_path(folder_path, library_root)
 
         if not full_path.exists():
             raise HTTPException(
@@ -532,9 +558,15 @@ async def merge_versions(request: MergeVersionsRequest):
 
         curator = get_curator(library_root)
 
+        primary_folder = (
+            _resolve_folder_path(request.primary_folder, library_root)
+            if request.primary_folder
+            else None
+        )
+
         result = curator.merge_versions(
             vndb_id=request.vndb_id,
-            primary_folder=Path(request.primary_folder) if request.primary_folder else None
+            primary_folder=primary_folder
         )
 
         return MergeVersionsResponse(
@@ -574,7 +606,7 @@ async def update_game_tags(request: UpdateTagsRequest):
         library_root = config.library_roots[0]
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
-        folder_path = Path(request.folder_path)
+        folder_path = _resolve_folder_path(request.folder_path, library_root)
 
         # Load metadata
         metadata_dict = resource_manager.load_metadata(folder_path)
@@ -742,7 +774,7 @@ async def add_game_version(vndb_id: str, request: AddVersionRequest):
         library_root = config.library_roots[0]
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
-        folder_path = Path(request.folder_path)
+        folder_path = _resolve_folder_path(request.folder_path, library_root)
 
         # Validate folder exists
         if not folder_path.exists():
@@ -946,7 +978,7 @@ async def smart_identify_game(folder_path: str, request: SmartIdentifyRequest):
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
         # Resolve full path
-        full_path = library_root / folder_path
+        full_path = _resolve_folder_path(folder_path, library_root)
 
         if not full_path.exists():
             raise HTTPException(
@@ -1072,7 +1104,7 @@ async def update_game_metadata(
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
         # Resolve full path
-        full_path = library_root / folder_path
+        full_path = _resolve_folder_path(folder_path, library_root)
 
         if not full_path.exists():
             raise HTTPException(
@@ -1168,7 +1200,7 @@ async def select_game_image(folder_path: str, request: ImageSelectRequest):
         resource_manager = get_resource_manager(library_root, quota_gb=2.0)
 
         # Resolve full path
-        full_path = library_root / folder_path
+        full_path = _resolve_folder_path(folder_path, library_root)
 
         if not full_path.exists():
             raise HTTPException(
@@ -1186,10 +1218,8 @@ async def select_game_image(folder_path: str, request: ImageSelectRequest):
 
         metadata = UnifiedMetadata(**metadata_dict)
 
-        # Resolve image path (can be relative or absolute)
-        image_path = Path(request.image_path)
-        if not image_path.is_absolute():
-            image_path = full_path / image_path
+        # Resolve image path (relative to game folder)
+        image_path = _resolve_child_path(full_path, request.image_path)
 
         # Validate image exists
         if not image_path.exists():
@@ -1297,7 +1327,7 @@ async def list_game_images(folder_path: str):
         library_root = config.library_roots[0]
 
         # Resolve full path
-        full_path = library_root / folder_path
+        full_path = _resolve_folder_path(folder_path, library_root)
 
         if not full_path.exists():
             raise HTTPException(

@@ -1,3 +1,0 @@
-## Code Review
-
-This pull request introduces significant frontend features, including WebSocket integration for real-time scan progress and an image caching mechanism. The implementation is generally well-structured. However, I've identified a few critical and high-severity issues that need attention. The `useWebSocket` hook has a critical import error that will cause a runtime crash. The `useImageCache` hook has a major design flaw where its state is not shared across components, defeating its purpose, and it also contains a bug where it returns an unusable server path to the frontend. Addressing these points will be crucial for the stability and correctness of these new features.

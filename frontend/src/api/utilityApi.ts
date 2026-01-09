@@ -30,10 +30,12 @@ interface UtilityResponse {
 export const revealInExplorer = async (path: string): Promise<UtilityResponse> => {
   try {
     const response = await api.revealFolder(path);
+    const success = Boolean(response.data?.success);
     return {
-      success: true,
+      success,
       operation: 'reveal',
-      message: 'Folder revealed in Explorer',
+      message: response.data?.message || (success ? 'Folder revealed in Explorer' : undefined),
+      error: success ? undefined : response.data?.message || 'Failed to reveal',
     };
   } catch (error) {
     console.error('[UtilityAPI] Failed to reveal in Explorer:', error);
@@ -53,10 +55,12 @@ export const revealInExplorer = async (path: string): Promise<UtilityResponse> =
 export const copyToClipboard = async (text: string): Promise<UtilityResponse> => {
   try {
     const response = await api.copyToClipboard(text);
+    const success = Boolean(response.data?.success);
     return {
-      success: true,
+      success,
       operation: 'copy',
-      message: 'Text copied to clipboard',
+      message: response.data?.message || (success ? 'Text copied to clipboard' : undefined),
+      error: success ? undefined : response.data?.message || 'Failed to copy',
     };
   } catch (error) {
     console.error('[UtilityAPI] Failed to copy to clipboard:', error);
@@ -77,11 +81,13 @@ export const copyToClipboard = async (text: string): Promise<UtilityResponse> =>
  */
 export const openFile = async (path: string): Promise<UtilityResponse> => {
   try {
-    await api.openFile(path);
+    const response = await api.openFile(path);
+    const success = Boolean(response.data?.success);
     return {
-      success: true,
+      success,
       operation: 'open',
-      message: 'File opened with default application',
+      message: response.data?.message || (success ? 'File opened with default application' : undefined),
+      error: success ? undefined : response.data?.message || 'Failed to open',
     };
   } catch (error) {
     console.error('[UtilityAPI] Failed to open file:', error);

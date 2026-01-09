@@ -17,6 +17,7 @@ from send2trash import send2trash
 
 from ..core.path_safety import is_safe_path
 from ..config import get_config
+from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,11 @@ async def safe_delete(request: DeleteRequest):
         DeleteResponse with result
     """
     try:
+        config = get_config()
+        library_root = Path(request.library_root) if request.library_root else config.library_roots[0]
         target_path = Path(request.path)
+        if not target_path.is_absolute():
+            target_path = library_root / request.path
 
         # Validate path exists
         if not target_path.exists():
@@ -83,23 +88,11 @@ async def safe_delete(request: DeleteRequest):
             )
 
         # Safety check: Validate path is safe
-        if request.library_root:
-            library_root = Path(request.library_root)
-
-            # Resolve paths for comparison
-            try:
-                target_resolved = target_path.resolve()
-                library_resolved = library_root.resolve()
-
-                # Check if target is within library root
-                if not str(target_resolved).startswith(str(library_resolved)):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Path is outside library root: {target_path}"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Could not resolve paths for safety check: {e}")
+        if not settings.ALLOW_EXTERNAL_PATHS and not is_safe_path(target_path, library_root):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Path is outside library root: {target_path}"
+            )
 
         # Perform safe deletion (move to trash)
         try:
@@ -161,7 +154,17 @@ async def open_folder(request: OpenFolderRequest):
         OpenFolderResponse with result
     """
     try:
+        config = get_config()
+        library_root = config.library_roots[0]
         folder_path = Path(request.path)
+        if not folder_path.is_absolute():
+            folder_path = library_root / request.path
+
+        if not settings.ALLOW_EXTERNAL_PATHS and not is_safe_path(folder_path, library_root):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Path is outside library root: {folder_path}"
+            )
 
         # Validate path exists
         if not folder_path.exists():

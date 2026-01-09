@@ -1,15 +1,62 @@
-/**
+﻿/**
  * API Client - Phase 18: The Great Wiring
  *
  * Central nervous system for all backend communication.
  * Single entry point for Axios calls with global error handling.
  *
  * Phase 19: Added toast notifications for errors
+ * Phase 27.0: Added API token authentication
  */
 
 import axios from 'axios';
 import type { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
 import toast from 'react-hot-toast';
+
+// ============================================================================
+// PHASE 27.0: API TOKEN MANAGEMENT
+// ============================================================================
+
+let sessionToken: string | null = null;
+let apiPort: number = 8000;  // PHASE 28.0: Dynamic API port (default fallback)
+let initPromise: Promise<void> | null = null;
+
+// Get session token from Electron (only in production)
+async function initSessionToken(): Promise<void> {
+  // Check if we're running in Electron
+  if (typeof window !== 'undefined' && (window as any).electronAPI) {
+    try {
+      const response = await (window as any).electronAPI.auth.getSessionToken();
+      if (response && response.success) {
+        sessionToken = response.token;
+        console.log('[PHASE 27.0] Session token loaded from Electron');
+      }
+    } catch (error) {
+      console.error('[PHASE 27.0] Failed to get session token:', error);
+    }
+  } else {
+    console.log('[PHASE 27.0] Not running in Electron - no session token');
+  }
+}
+
+// PHASE 28.0: Get dynamic API port from Electron
+async function initApiPort(): Promise<void> {
+  if (typeof window !== 'undefined' && (window as any).electronAPI) {
+    try {
+      const response = await (window as any).electronAPI.auth.getApiPort();
+      if (response && response.success) {
+        apiPort = response.port;
+        console.log(`[PHASE 28.0] Dynamic API port loaded: ${apiPort}`);
+        // Update API base URL with dynamic port
+        apiClient.defaults.baseURL = `http://127.0.0.1:${apiPort}`;
+      }
+    } catch (error) {
+      console.error('[PHASE 28.0] Failed to get API port:', error);
+      console.log('[PHASE 28.0] Using default port: 8000');
+    }
+  } else {
+    console.log('[PHASE 28.0] Not running in Electron - using default port: 8000');
+  }
+}
 
 // ============================================================================
 // TYPE DEFINITIONS (Prepare for Phase 19)
@@ -53,13 +100,31 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
+function initApiClient(): Promise<void> {
+  if (!initPromise) {
+    initPromise = Promise.all([initSessionToken(), initApiPort()]).then(() => undefined);
+  }
+  return initPromise;
+}
+
+// Initialize token and port on module load (async, non-blocking)
+initApiClient();
+
 // ============================================================================
 // REQUEST INTERCEPTOR
 // ============================================================================
 
 apiClient.interceptors.request.use(
-  (config) => {
+  async (config) => {
+    await initApiClient();
     console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`);
+
+    // PHASE 27.0: Inject session token for authentication
+    if (sessionToken) {
+      config.headers = config.headers || {};
+      config.headers['X-Vnite-Token'] = sessionToken;
+    }
+
     return config;
   },
   (error) => {
@@ -74,7 +139,7 @@ apiClient.interceptors.request.use(
 
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => {
-    console.log(`[API] ✅ ${response.config.url} - ${response.status}`);
+    console.log(`[API] ??${response.config.url} - ${response.status}`);
     return response;
   },
   (error: AxiosError<ApiError>) => {
@@ -129,7 +194,7 @@ apiClient.interceptors.response.use(
         message: 'Backend is offline or unreachable',
       };
 
-      console.error('[API] 🔴 No response - Backend offline?');
+      console.error('[API] ?�� No response - Backend offline?');
 
       // Phase 19: Trigger connection lost toast
       toast.error('Connection Lost: Backend is offline or unreachable', {
@@ -172,7 +237,7 @@ export const api = {
    * Get all games from library
    * Endpoint: GET /api/games
    *
-   * Phase 19.6: ✅ SEMANTIC SANITIZATION
+   * Phase 19.6: ??SEMANTIC SANITIZATION
    * Supports: search, tag, library_status, sort_by, limit, offset
    *
    * Example: getAllGames({ search: 'fate', sort_by: 'rating', limit: 20 })
@@ -184,13 +249,14 @@ export const api = {
     sort_by?: string;
     limit?: number;
     offset?: number;
+    is_curated?: boolean; // Sprint 9.5
   }) => apiClient.get('/api/games', { params }),
 
   /**
    * Get game by ID
    * Endpoint: GET /api/games/{id}
    *
-   * Phase 19.7: ✅ IMPLEMENTED
+   * Phase 19.7: ??IMPLEMENTED
    * Returns full game details with versions, characters, staff, screenshots
    */
   getGameById: (id: string) => apiClient.get(`/api/games/${id}`),
@@ -199,7 +265,7 @@ export const api = {
    * Update library status
    * Endpoint: PATCH /api/games/{id}/status
    *
-   * Phase 19.6: ✅ SEMANTIC SANITIZATION
+   * Phase 19.6: ??SEMANTIC SANITIZATION
    * Persists library status to metadata.json
    */
   updateLibraryStatus: (gameId: string, libraryStatus: string) =>
@@ -273,6 +339,28 @@ export const api = {
   // ============================================================
   // ORGANIZER (Workbench)
   // ============================================================
+
+  /**
+   * Preview Reorganization - Sprint 10.5
+   * Endpoint: POST /api/v1/organizer/preview
+   */
+  previewReorg: (canonicalId: string, mode: 'A' | 'B', rootOverride?: string) =>
+    apiClient.post('/api/v1/organizer/preview', {
+      canonical_id: canonicalId,
+      mode,
+      root_override: rootOverride
+    }),
+
+  /**
+   * Execute Reorganization - Sprint 10.5
+   * Endpoint: POST /api/v1/organizer/execute
+   */
+  executeReorg: (canonicalId: string, mode: 'A' | 'B', rootOverride?: string) =>
+    apiClient.post('/api/v1/organizer/execute', {
+      canonical_id: canonicalId,
+      mode,
+      root_override: rootOverride
+    }),
 
   /**
    * Generate organization proposal
@@ -378,6 +466,33 @@ export const api = {
       user_tags: userTags,
     }),
 
+
+  // ============================================================
+  // SPRINT 9: TAGS MANAGEMENT
+  // ============================================================
+
+  /** List all tags - GET /api/v1/tags */
+  getAllTags: () => apiClient.get('/api/v1/tags'),
+
+  /** Create a new tag - POST /api/v1/tags */
+  createTag: (name: string, color?: string) =>
+    apiClient.post('/api/v1/tags', { name, color }),
+
+  /** Update tag - PATCH /api/v1/tags/{id} */
+  updateTagInfo: (tagId: string, data: { name?: string; color?: string }) =>
+    apiClient.patch(`/api/v1/tags/${tagId}`, data),
+
+  /** Delete a tag - DELETE /api/v1/tags/{id} */
+  deleteTag: (tagId: string) => apiClient.delete(`/api/v1/tags/${tagId}`),
+
+  /** Apply tag to games - POST /api/v1/tags/{id}/apply */
+  applyTagToGames: (tagId: string, gameIds: string[]) =>
+    apiClient.post(`/api/v1/tags/${tagId}/apply`, { game_ids: gameIds }),
+
+  /** Remove tag from games - POST /api/v1/tags/{id}/remove */
+  removeTagFromGames: (tagId: string, gameIds: string[]) =>
+    apiClient.post(`/api/v1/tags/${tagId}/remove`, { game_ids: gameIds }),
+
   // ============================================================
   // UTILITIES (The "Tools")
   // ============================================================
@@ -402,7 +517,7 @@ export const api = {
    */
   extractArchive: (archivePath: string, targetDir: string) =>
     apiClient.post('/api/utils/extract', {
-      archive_path: archivePath,
+      source_path: archivePath,
       target_dir: targetDir,
     }),
 
@@ -517,14 +632,14 @@ export const api = {
   /**
    * Trigger library scan (Phase 20.0 scanner)
    * Endpoint: POST /api/games/scan
-   * Phase 20.0: ✅ IMPLEMENTED - Background scanning with fast diff
+   * Phase 20.0: ??IMPLEMENTED - Background scanning with fast diff
    */
   triggerLibraryScan: () => apiClient.post('/api/games/scan'),
 
   /**
    * Get library scan status (Phase 20.0 scanner)
    * Endpoint: GET /api/games/scan/status
-   * Phase 20.0: ✅ IMPLEMENTED - Check if scan is in progress
+   * Phase 20.0: ??IMPLEMENTED - Check if scan is in progress
    */
   getLibraryScanStatus: () => apiClient.get('/api/games/scan/status'),
 
@@ -579,14 +694,14 @@ export const api = {
   /**
    * Get scanner configuration
    * Endpoint: GET /api/settings/scanner
-   * Phase 19.5: ✅ IMPLEMENTED
+   * Phase 19.5: ??IMPLEMENTED
    */
   getScannerConfig: () => apiClient.get('/api/settings/scanner'),
 
   /**
    * Update scanner configuration
    * Endpoint: POST /api/settings/scanner
-   * Phase 19.5: ✅ IMPLEMENTED
+   * Phase 19.5: ??IMPLEMENTED
    */
   updateScannerConfig: (scanOnStartup: boolean, scanIntervalMin: number) =>
     apiClient.post('/api/settings/scanner', {
@@ -601,28 +716,28 @@ export const api = {
   /**
    * Get scan progress
    * Endpoint: GET /api/settings/scanner/progress
-   * Phase 24.5: ✅ IMPLEMENTED - Real-time scan progress
+   * Phase 24.5: ??IMPLEMENTED - Real-time scan progress
    */
   getScanProgress: () => apiClient.get('/api/settings/scanner/progress'),
 
   /**
    * Pause scan
    * Endpoint: POST /api/settings/scanner/pause
-   * Phase 24.5: ✅ IMPLEMENTED - Pause current scan
+   * Phase 24.5: ??IMPLEMENTED - Pause current scan
    */
   pauseScan: () => apiClient.post('/api/settings/scanner/pause'),
 
   /**
    * Resume scan
    * Endpoint: POST /api/settings/scanner/resume
-   * Phase 24.5: ✅ IMPLEMENTED - Resume paused scan
+   * Phase 24.5: ??IMPLEMENTED - Resume paused scan
    */
   resumeScan: () => apiClient.post('/api/settings/scanner/resume'),
 
   /**
    * Cancel scan
    * Endpoint: POST /api/settings/scanner/cancel
-   * Phase 24.5: ✅ IMPLEMENTED - Cancel current scan
+   * Phase 24.5: ??IMPLEMENTED - Cancel current scan
    */
   cancelScan: () => apiClient.post('/api/settings/scanner/cancel'),
 
@@ -633,21 +748,21 @@ export const api = {
   /**
    * Get scheduler status
    * Endpoint: GET /api/settings/scheduler/status
-   * Phase 24.5: ✅ IMPLEMENTED - Scheduler configuration
+   * Phase 24.5: ??IMPLEMENTED - Scheduler configuration
    */
   getSchedulerStatus: () => apiClient.get('/api/settings/scheduler/status'),
 
   /**
    * Get scheduled jobs
    * Endpoint: GET /api/settings/scheduler/jobs
-   * Phase 24.5: ✅ IMPLEMENTED - List all scheduled jobs
+   * Phase 24.5: ??IMPLEMENTED - List all scheduled jobs
    */
   getScheduledJobs: () => apiClient.get('/api/settings/scheduler/jobs'),
 
   /**
    * Update scan interval
    * Endpoint: POST /api/settings/scheduler/interval
-   * Phase 24.5: ✅ IMPLEMENTED - Configure scan interval
+   * Phase 24.5: ??IMPLEMENTED - Configure scan interval
    */
   updateScanInterval: (intervalMin: number) =>
     apiClient.post('/api/settings/scheduler/interval', { interval_min: intervalMin }),
@@ -655,7 +770,7 @@ export const api = {
   /**
    * Trigger manual scan
    * Endpoint: POST /api/settings/scheduler/trigger
-   * Phase 24.5: ✅ IMPLEMENTED - Immediate scan trigger
+   * Phase 24.5: ??IMPLEMENTED - Immediate scan trigger
    */
   triggerSchedulerScan: () => apiClient.post('/api/settings/scheduler/trigger'),
 
@@ -666,21 +781,21 @@ export const api = {
   /**
    * Create backup
    * Endpoint: POST /api/settings/backup/create
-   * Phase 24.5: ✅ IMPLEMENTED - Create backup
+   * Phase 24.5: ??IMPLEMENTED - Create backup
    */
   createBackup: () => apiClient.post('/api/settings/backup/create'),
 
   /**
    * List backups
    * Endpoint: GET /api/settings/backup/list
-   * Phase 24.5: ✅ IMPLEMENTED - List all backups
+   * Phase 24.5: ??IMPLEMENTED - List all backups
    */
   listBackups: () => apiClient.get('/api/settings/backup/list'),
 
   /**
    * Restore backup
    * Endpoint: POST /api/settings/backup/restore
-   * Phase 24.5: ✅ IMPLEMENTED - Restore from backup
+   * Phase 24.5: ??IMPLEMENTED - Restore from backup
    */
   restoreBackup: (filename: { filename: string }) =>
     apiClient.post('/api/settings/backup/restore', filename),
@@ -688,21 +803,21 @@ export const api = {
   /**
    * Delete backup
    * Endpoint: DELETE /api/settings/backup/{filename}
-   * Phase 24.5: ✅ IMPLEMENTED - Delete backup
+   * Phase 24.5: ??IMPLEMENTED - Delete backup
    */
   deleteBackup: (filename: string) => apiClient.delete(`/api/settings/backup/${filename}`),
 
   /**
    * Get backup statistics
    * Endpoint: GET /api/settings/backup/stats
-   * Phase 24.5: ✅ IMPLEMENTED - Backup stats
+   * Phase 24.5: ??IMPLEMENTED - Backup stats
    */
   getBackupStats: () => apiClient.get('/api/settings/backup/stats'),
 
   /**
    * Set max backups
    * Endpoint: POST /api/settings/backup/max-backups
-   * Phase 24.5: ✅ IMPLEMENTED - Configure auto-prune
+   * Phase 24.5: ??IMPLEMENTED - Configure auto-prune
    */
   setMaxBackups: (maxBackups: number) =>
     apiClient.post('/api/settings/backup/max-backups', { max_backups: maxBackups }),
@@ -714,21 +829,21 @@ export const api = {
   /**
    * Check for updates
    * Endpoint: GET /api/settings/update/check
-   * Phase 24.5: ✅ IMPLEMENTED - Check GitHub releases
+   * Phase 24.5: ??IMPLEMENTED - Check GitHub releases
    */
   checkForUpdates: () => apiClient.get('/api/settings/update/check'),
 
   /**
    * Get update configuration
    * Endpoint: GET /api/settings/update/config
-   * Phase 24.5: ✅ IMPLEMENTED - Update settings
+   * Phase 24.5: ??IMPLEMENTED - Update settings
    */
   getUpdateConfig: () => apiClient.get('/api/settings/update/config'),
 
   /**
    * Update update configuration
    * Endpoint: POST /api/settings/update/config
-   * Phase 24.5: ✅ IMPLEMENTED - Save update settings
+   * Phase 24.5: ??IMPLEMENTED - Save update settings
    */
   updateUpdateConfig: (autoCheckEnabled: boolean, checkIntervalHours: number) =>
     apiClient.post('/api/settings/update/config', {
@@ -743,23 +858,168 @@ export const api = {
   /**
    * Get trash status
    * Endpoint: GET /api/trash/status
-   * Phase 19: ✅ IMPLEMENTED
+   * Phase 19: ??IMPLEMENTED
    */
   getTrashStatus: () => apiClient.get('/api/trash/status'),
 
   /**
    * Get trash config
    * Endpoint: GET /api/trash/config
-   * Phase 19: ✅ IMPLEMENTED
+   * Phase 19: ??IMPLEMENTED
    */
   getTrashConfig: () => apiClient.get('/api/trash/config'),
 
   /**
    * Empty trash
    * Endpoint: POST /api/trash/empty
-   * Phase 19: ✅ IMPLEMENTED
+   * Phase 19: ✅IMPLEMENTED
    */
   emptyTrash: () => apiClient.post('/api/trash/empty'),
+
+  // ============================================================
+  // SPRINT 9.5: CURATE (Gallery/Workshop Workflow)
+  // ============================================================
+
+  /**
+   * Curate a single game (move to Gallery)
+   * Endpoint: POST /api/v1/canonical/{id}/curate
+   * Sprint 9.5: ✅IMPLEMENTED
+   */
+  curateGame: (canonicalId: string, data: { curate: boolean }) =>
+    apiClient.post(`/api/v1/canonical/${canonicalId}/curate`, data),
+
+  /**
+   * Batch curate multiple games
+   * Endpoint: POST /api/v1/canonical/batch-curate
+   * Sprint 9.5: ✅IMPLEMENTED
+   */
+  batchCurateGames: (data: { ids: string[]; curate: boolean }) =>
+    apiClient.post('/api/v1/canonical/batch-curate', data),
+
+  /**
+   * Update canonical game metadata (The Truth)
+   * Endpoint: PATCH /api/v1/canonical/{id}
+   * Sprint 10: ✅IMPLEMENTED
+   */
+  updateCanonicalGame: (
+    canonicalId: string,
+    data: {
+      display_title?: string;
+      description?: string;
+      developer?: string;
+      release_date?: string;
+      cover_image_url?: string;
+      tags?: string[];
+    }
+  ) => apiClient.patch(`/api/v1/canonical/${canonicalId}`, data),
+
+  // ============================================================
+  // SPRINT 10: CLOUD BACKUP
+  // ============================================================
+
+  /**
+   * Get Google Drive Auth URL
+   * Endpoint: GET /api/v1/auth/gdrive/login
+   */
+  getGDriveAuthUrl: () => apiClient.get('/api/v1/auth/gdrive/login'),
+
+  /**
+   * Get Backup Status
+   * Endpoint: GET /api/v1/sync/status
+   */
+  getBackupStatus: () => apiClient.get('/api/v1/sync/status'),
+
+  /**
+   * Trigger Backup
+   * Endpoint: POST /api/v1/sync/gdrive
+   */
+  triggerBackup: () => apiClient.post('/api/v1/sync/gdrive'),
+
+  // ============================================================
+  // SPRINT 10: SETTINGS I/O
+  // ============================================================
+
+  /**
+   * Export Settings
+   * Endpoint: GET /api/settings/export
+   */
+  exportSettings: () => apiClient.get('/api/settings/export'),
+
+  /**
+   * Import Settings
+   * Endpoint: POST /api/settings/import
+   */
+  importSettings: (data: any) => apiClient.post('/api/settings/import', data),
+
+  // ============================================================
+  // SPRINT 10: METADATA EDITOR (Dual-Track)
+  // ============================================================
+
+  /**
+   * Patch Canonical Metadata (Per-field update with authority tracking)
+   * Endpoint: PATCH /api/v1/canonical/{id}
+   */
+  patchCanonicalMetadata: (canonicalId: string, data: {
+    display_title?: string;
+    description?: string;
+    developer?: string;
+    release_date?: string;
+    cover_image_url?: string;
+    tags?: string[];
+    source_overrides?: Record<string, 'api' | 'manual'>;
+  }) => apiClient.patch(`/api/v1/canonical/${canonicalId}`, data),
+
+  /**
+   * Get VNDB Images (Cover + Screenshots)
+   * Endpoint: GET /api/v1/vndb/{vndb_id}/images
+   */
+  getVndbImages: (vndbId: string) => apiClient.get(`/api/v1/vndb/${vndbId}/images`),
+
+  // ============================================================
+  // SPRINT 10.5: SELF-AUDIT DIAGNOSTIC
+  // ============================================================
+
+  /**
+   * Run all diagnostics
+   * Endpoint: GET /api/v1/organizer/diagnostic/run
+   */
+  runDiagnostics: () => apiClient.get('/api/v1/organizer/diagnostic/run'),
+
+  /**
+   * Run physical safety checks
+   * Endpoint: POST /api/v1/organizer/diagnostic/safety
+   */
+  checkPhysicalSafety: () => apiClient.post('/api/v1/organizer/diagnostic/safety'),
+
+  /**
+   * Generate diagnostic report to file
+   * Endpoint: POST /api/v1/organizer/diagnostic/report
+   */
+  generateDiagnosticReport: (outputDir?: string) =>
+    apiClient.post('/api/v1/organizer/diagnostic/report', { output_dir: outputDir }),
+
+  // ============================================================
+  // SPRINT 11: DISCOVERY LENS (Knowledge Graph)
+  // ============================================================
+
+  /**
+   * Get discovery graph data (D3-compatible)
+   * Endpoint: GET /api/v1/graph/discovery
+   */
+  getDiscoveryGraph: (forceRefresh: boolean = false) =>
+    apiClient.get('/api/v1/graph/discovery', { params: { force_refresh: forceRefresh } }),
+
+  /**
+   * Get discovery stats
+   * Endpoint: GET /api/v1/graph/discovery/stats
+   */
+  getDiscoveryStats: () => apiClient.get('/api/v1/graph/discovery/stats'),
+
+  /**
+   * Invalidate graph cache
+   * Endpoint: POST /api/v1/graph/discovery/invalidate
+   */
+  invalidateGraphCache: () => apiClient.post('/api/v1/graph/discovery/invalidate'),
 };
 
 export default apiClient;

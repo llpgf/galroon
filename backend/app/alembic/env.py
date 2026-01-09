@@ -18,16 +18,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from alembic import context
 from app.core.database import Database
-from app.config import get_config
+from sqlalchemy import create_engine
+from app.core.config import settings
 
-# Interpret the config file for Python logging.
-if context.config.config_file_name is not None:
-    fileConfig(context.config.config_file_name)
-
-# Set target_metadata to None for non-SQLAlchemy migrations
-# We use raw SQL for SQLite schema
 target_metadata = None
-
 
 def run_migrations_online() -> None:
     """
@@ -37,24 +31,24 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
     """
     # Get database path from config
-    config = get_config()
-    db_path = config.config_dir / "library.db"
+    db_path = Path(settings.DATABASE_PATH)
+    
+    # Ensure parent dir exists
+    if not db_path.parent.exists():
+        db_path.parent.mkdir(parents=True)
 
-    # Create database instance to initialize schema if needed
-    db = Database(db_path)
+    # Use SQLAlchemy engine
+    url = f"sqlite:///{db_path}"
+    connectable = create_engine(url)
 
-    # Get connection for Alembic
-    # We use SQLite's execute for migrations
-    import sqlite3
-    connection = sqlite3.connect(db_path)
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+        )
 
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-    )
-
-    with context.begin_transaction():
-        context.run_migrations()
+        with context.begin_transaction():
+            context.run_migrations()
 
 
 def run_migrations_offline() -> None:

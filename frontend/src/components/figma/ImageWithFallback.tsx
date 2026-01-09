@@ -1,43 +1,27 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react'
 
-/**
- * ImageWithFallback - Image component with fallback handling
- *
- * From Figma Design: Handles broken images gracefully
- */
+const ERROR_IMG_SRC =
+  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODgiIGhlaWdodD0iODgiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBvcGFjaXR5PSIuMyIgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSIzLjciPjxyZWN0IHg9IjE2IiB5PSIxNiIgd2lkdGg9IjU2IiBoZWlnaHQ9IjU2IiByeD0iNiIvPjxwYXRoIGQ9Im0xNiA1OCAxNi0xOCAzMiAzMiIvPjxjaXJjbGUgY3g9IjUzIiBjeT0iMzUiIHI9IjciLz48L3N2Zz4KCg=='
 
-interface ImageWithFallbackProps {
-  src: string;
-  alt: string;
-  className?: string;
-  fallback?: string;
+export function ImageWithFallback(props: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const [didError, setDidError] = useState(false)
+
+  const handleError = () => {
+    setDidError(true)
+  }
+
+  const { src, alt, style, className, ...rest } = props
+
+  return didError ? (
+    <div
+      className={`inline-block bg-gray-100 text-center align-middle ${className ?? ''}`}
+      style={style}
+    >
+      <div className="flex items-center justify-center w-full h-full">
+        <img src={ERROR_IMG_SRC} alt="Error loading image" {...rest} data-original-url={src} />
+      </div>
+    </div>
+  ) : (
+    <img src={src} alt={alt} className={className} style={style} {...rest} onError={handleError} />
+  )
 }
-
-export const ImageWithFallback: React.FC<ImageWithFallbackProps> = ({
-  src,
-  alt,
-  className = '',
-  fallback = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600"%3E%3Crect fill="%231a1a1c" width="400" height="600"/%3E%3Ctext fill="%2371717a" font-family="sans-serif" font-size="48" dy="205.85" x="50%25" text-anchor="middle"%3ENo Image%3C/text%3E%3C/svg%3E'
-}) => {
-  const [imgSrc, setImgSrc] = useState(src);
-  const [hasError, setHasError] = useState(false);
-
-  const handleError = useCallback(() => {
-    if (!hasError) {
-      setHasError(true);
-      setImgSrc(fallback);
-    }
-  }, [fallback, hasError]);
-
-  return (
-    <img
-      src={imgSrc}
-      alt={alt}
-      className={className}
-      onError={handleError}
-      loading="lazy"
-    />
-  );
-};
-
-export default ImageWithFallback;

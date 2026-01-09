@@ -1,5 +1,5 @@
 """
-Bangumi (番组计划) API Provider.
+Bangumi API Provider (Chinese ACG database, formerly known as 番组计划).
 
 Bangumi is a Chinese ACG database covering anime, manga, and games.
 API Documentation: https://github.com/bangumi/api

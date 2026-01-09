@@ -90,7 +90,7 @@ async def list_games(
     request: Request,
     skip: int = Query(0, ge=0, description="Number of games to skip"),
     limit: int = Query(50, ge=1, le=200, description="Number of games to return"),
-    sort_by: str = Query("最近添加", description="Sort by: 最近添加, 名称, 发行日期, 评分"),
+    sort_by: str = Query("recently_added", description="Sort by: recently_added, name, release_date, rating"),
     descending: bool = Query(True, description="Sort order"),
     search: Optional[str] = Query(None, description="Full-text search in title/developer/tags"),
     filter_tag: Optional[str] = Query(None, description="Filter by tag")

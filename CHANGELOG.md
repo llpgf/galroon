@@ -87,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Created `backend/app/alembic` directory structure
   - Marked current SQLite schema as base version (001_initial_schema)
   - Added automatic migration execution to build scripts (build_portable.sh, build_portable.bat)
+  - Environment variable `VNITE_API_PORT` passed to backend for dynamic port support
 
 - **Dynamic Port Allocation**
   - Added `portfinder` dependency to launcher
@@ -101,6 +102,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaced standard Grid with react-virtuoso for optimized rendering
   - Implemented itemComponent pattern for virtualized lists
   - Lazy loading for cover images (handled by virtuooso)
+
+- **Backend Configuration**
+  - Added `VNITE_API_PORT` environment variable support
+  - Updated `app/alembic/env.py` for migration integration
+
+### Changed
+- **Build Scripts**
+  - `build_portable.sh`: Added Alembic upgrade step (step 2.5)
+  - `build_portable.bat`: Added Alembic upgrade step (step 2.5)
+
+### Technical Details
+
+#### Files Created
+- `backend/requirements.txt` - Added alembic>=1.12.0
+- `backend/alembic.ini` - Alembic configuration
+- `backend/app/alembic/env.py` - Migration environment
+- `backend/app/alembic/__init__.py` - Migration scripts package
+- `backend/app/alembic/001_initial_schema.py` - Base schema migration
+- `backend/app/alembic/README.md` - Migration documentation
+
+#### Files Modified (main_code/v0.1.0/)
+- `launcher/package.json` - Added portfinder dependency
+- `launcher/main.js` - Dynamic port allocation, async startBackend, port IPC
+- `launcher/ipc.js` - getApiPort handler
+- `launcher/preload.js` - auth.getApiPort exposure
+
+#### Files Modified (build hot patch)
+- `build/resources/app/package.json` - Added portfinder, tree-kill
+- `build/resources/app/main.js` - Phase 27.0, Phase 28.0
+- `build/resources/app/ipc.js` - getApiPort handler
+- `build/resources/app/preload.js` - auth.getApiPort
+
+#### Files Modified (frontend - delegated)
+- `frontend/src/views/LibraryView.tsx` - Virtualization (by frontend-ui-ux-engineer)
+- `frontend/src/api/client.ts` - Dynamic port initialization (initApiPort)
+
+### Migration System
+```
+Initial Schema (001_initial_schema):
+- Marks current database schema as base version
+- No schema changes (Database._init_db already creates tables)
+- Provides version tracking for future migrations
+
+Migration Commands:
+- alembic revision -m "description" - Create new migration
+- alembic upgrade head - Apply all pending migrations
+- alembic downgrade -1 - Revert last migration
+```
+
+### Port Allocation Flow
+```
+1. Launcher starts
+2. getAvailablePort() checks port 8000
+3. If busy, search 8000-8999 range
+4. Allocate available port
+5. Pass via VNITE_API_PORT to backend
+6. Frontend requests port via IPC (vnite:get-api-port)
+7. API client updates baseURL dynamically
+```
+
+### Performance Improvements
+- Virtual scrolling reduces DOM nodes from 1000+ to only visible items
+- Large libraries (>500 games) now render smoothly
+- Lazy loading images reduces initial load time
+- Dynamic port allocation avoids port conflicts
 
 ---
 
@@ -134,6 +200,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Serve cached image endpoint (`/api/v1/images/cached/{cache_key}`)
   - Cache storage location: `data/cache/covers/`
 
+### Changed
+- **Backend Structure**
+  - `backend/app/api/v1/__init__.py` - New versioned router
+  - `backend/app/api/__init__.py` - Updated to include v1 router
+  - `backend/app/main.py` - Added v1 router registration
+  - `backend/requirements.txt` - Added `websockets>=11.0` dependency
+
+### Technical Details
+
+#### Files Created
+- `backend/app/api/v1/__init__.py` - Versioned API router with WebSocket
+- `backend/app/api/v1/image_cache_api.py` - Image cache API endpoints
+- `backend/app/api/websocket.py` - WebSocket manager for real-time updates
+- `backend/app/api/image_cache.py` - Image cache service
+
+#### Files Modified (backend)
+- `backend/app/api/__init__.py` - Added v1 router import
+- `backend/app/main.py` - Added v1 router registration
+- `backend/requirements.txt` - Added websockets dependency
+
+#### WebSocket Message Format
+
+**Client → Server**:
+```json
+{
+  "action": "subscribe"
+}
+```
+
+**Server → Client** (Scan Progress):
+```json
+{
+  "type": "scan_progress",
+  "data": {
+    "current": 150,
+    "total": 1000,
+    "percentage": 15.0,
+    "message": "Scanning...",
+    "is_complete": false
+  }
+}
+```
+
+**Ping/Pong**:
+```json
+{"action": "ping"}  // Client → Server
+{"action": "pong"}   // Server → Client
+```
+
+#### Image Cache API Endpoints
+
+```
+POST   /api/v1/images/download          # Download and cache image
+GET    /api/v1/images/cache-info        # Get cache statistics
+POST   /api/v1/images/cache/cleanup     # Clean up if exceeds limit
+POST   /api/v1/images/cache/clear       # Clear all cached images
+GET    /api/v1/images/cached/{cache_key}  # Serve cached image
+```
+
+#### Image Cache Features
+- **Automatic Download**: Images are downloaded on first access
+- **Local Storage**: Cached in `data/cache/covers/`
+- **Size Limit**: Default 500MB, automatic cleanup
+- **Cache Index**: Fast MD5 hash-based lookup
+- **Cache Headers**: 7-day cache-control for cached images
+- **Manual Management**: Info, cleanup, and clear endpoints
+
 ---
 
 ## [0.0.0] - 2026-01-03 (Initial Development)
@@ -152,40 +285,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visual scanner with progress tracking
 - Backup and restore functionality
 - Task scheduler for automated scans
-
-### Technical
-- Backend completion: 100%
-- Frontend completion: 45%
-- Launcher completion: 90%
-- Documentation: 60%
-- Testing: 20%
-- Overall: 73%
-
-### Notes
-- This is a development release (v0.x.x)
-- API stability is not guaranteed
-- Features may change or be removed in future versions
-- Documentation is still incomplete
-- Not recommended for production use
-
----
-
-## [Unreleased]
-
-### Planned
-- Complete frontend implementation (target: v0.6.0)
-- Increase test coverage (target: ≥80% for v1.0.0)
-- Complete documentation
-- Performance optimizations
-- Additional features and improvements
-
----
-
-## Version Reference
-
-[0.1.0]: https://github.com/llpgf/galroon/releases/tag/v0.1.0
-[0.0.0]: https://github.com/llpgf/galroon/releases/tag/v0.0.0
-
----
-
-**Note:** For detailed version history and release criteria, see [VERSION_HISTORY.md](VERSION_HISTORY.md)

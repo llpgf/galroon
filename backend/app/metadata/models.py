@@ -1,11 +1,11 @@
 """
-Data models for the 'Galroon' Metadata System.
+Data models for the 'Vnite-Killer' Metadata System.
 
 Provides field-level locking, multilingual support, and provider tracking.
 """
 
 from typing import TypeVar, Generic, List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from enum import Enum
 import logging
@@ -328,11 +328,11 @@ class UnifiedMetadata(BaseModel):
         description="List of providers that contributed data"
     )
 
-    class Config:
-        """Pydantic configuration."""
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat()
         }
+    )
 
     def get_preferred_title(self, prefer_traditional: bool = True) -> str:
         """

@@ -1,5 +1,5 @@
 /**
- * Electron Preload Script - Galroon
+ * Electron Preload Script - Vnite
  *
  * Phase 25.0: Security bridge between main and renderer
  * Phase 26.0: Log management APIs
@@ -24,13 +24,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // PHASE 26.0: Log Management APIs
   logs: {
     // Open logs folder in system file manager
-    openFolder: () => ipcRenderer.invoke('galroon:open-logs-folder'),
+    openFolder: () => ipcRenderer.invoke('vnite:open-logs-folder'),
 
     // Export logs to zip file
-    export: () => ipcRenderer.invoke('galroon:export-logs'),
+    export: () => ipcRenderer.invoke('vnite:export-logs'),
 
     // Get system info and log files
-    getSystemInfo: () => ipcRenderer.invoke('galroon:get-system-info')
+    getSystemInfo: () => ipcRenderer.invoke('vnite:get-system-info')
+  },
+
+  // PHASE 27.0: API Authentication
+  auth: {
+    // Get session token for API authentication
+    getSessionToken: () => ipcRenderer.invoke('vnite:get-session-token'),
+
+    // PHASE 28.0: Get dynamically allocated API port
+    getApiPort: () => ipcRenderer.invoke('vnite:get-api-port')
   }
 });
 

@@ -6,13 +6,13 @@ Supports SANDBOX mode for safe testing with isolated data paths.
 Phase 19.5: Scanner configuration with JSON persistence
 """
 
-import os
 import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+from .core.config import settings
 
 
 class Config:
@@ -59,11 +59,11 @@ class Config:
 
     def __init__(self):
         """Initialize configuration based on environment."""
-        self.sandbox_mode = os.getenv("GALGAME_ENV", "").lower() == "sandbox"
+        self.sandbox_mode = (settings.GALGAME_ENV or "").lower() == "sandbox"
 
         # Phase 26.0: Check for portable mode
-        self.portable_mode = os.getenv("VNITE_DATA_PATH") is not None
-        self.portable_data_path = Path(os.getenv("VNITE_DATA_PATH", "."))
+        self.portable_mode = settings.VNITE_DATA_PATH is not None
+        self.portable_data_path = Path(settings.VNITE_DATA_PATH or ".")
 
         # Phase 19.5: Initialize scanner settings
         self.scan_on_startup = self.DEFAULT_SCAN_ON_STARTUP
@@ -169,11 +169,10 @@ class Config:
     def _setup_production(self):
         """Setup production mode with default paths."""
         # PHASE 9: Support multiple library roots via GALGAME_LIBRARY_ROOTS (JSON list) or GALGAME_LIBRARY_ROOT (single)
-        library_roots_env = os.getenv("GALGAME_LIBRARY_ROOTS")
+        library_roots_env = settings.GALGAME_LIBRARY_ROOTS
         if library_roots_env:
             # Parse JSON list of paths
             try:
-                import json
                 paths = json.loads(library_roots_env)
                 self.library_roots = [Path(p) for p in paths]
             except (json.JSONDecodeError, TypeError):
@@ -181,10 +180,10 @@ class Config:
                 self.library_roots = [self.DEFAULT_LIBRARY_ROOT]
         else:
             # Fallback to single path (backward compatibility)
-            single_root = os.getenv("GALGAME_LIBRARY_ROOT", str(self.DEFAULT_LIBRARY_ROOT))
+            single_root = settings.GALGAME_LIBRARY_ROOT or str(self.DEFAULT_LIBRARY_ROOT)
             self.library_roots = [Path(single_root)]
 
-        self.config_dir = Path(os.getenv("GALGAME_CONFIG_DIR", self.DEFAULT_CONFIG_DIR))
+        self.config_dir = Path(settings.GALGAME_CONFIG_DIR or self.DEFAULT_CONFIG_DIR)
         self.trash_dir = self.config_dir / "trash"
         self.journal_dir = self.config_dir / "journal"
 
@@ -437,3 +436,4 @@ def reset_config():
     """Reset configuration (mainly for testing)."""
     global _config
     _config = None
+ 
