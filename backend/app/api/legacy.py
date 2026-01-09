@@ -24,7 +24,7 @@ from ..core import is_safe_path
 from ..models.journal import JournalEntry
 from ..metadata import get_batch_manager, get_resource_manager
 from ..metadata import get_vndb_provider
-from ..metadata import PlayStatus
+from ..metadata import LibraryStatus as PlayStatus
 from .dependencies import verify_not_read_only
 
 logger = logging.getLogger(__name__)

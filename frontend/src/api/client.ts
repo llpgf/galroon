@@ -11,6 +11,7 @@
 import axios from 'axios';
 import type { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
 import toast from 'react-hot-toast';
+import type { VndbMetadata } from '../types/metadata';
 
 // ============================================================================
 // PHASE 27.0: API TOKEN MANAGEMENT
@@ -23,9 +24,9 @@ let initPromise: Promise<void> | null = null;
 // Get session token from Electron (only in production)
 async function initSessionToken(): Promise<void> {
   // Check if we're running in Electron
-  if (typeof window !== 'undefined' && (window as any).electronAPI) {
+  if (typeof window !== 'undefined' && window.electronAPI) {
     try {
-      const response = await (window as any).electronAPI.auth.getSessionToken();
+      const response = await window.electronAPI.auth.getSessionToken();
       if (response && response.success) {
         sessionToken = response.token;
         console.log('[PHASE 27.0] Session token loaded from Electron');
@@ -40,9 +41,9 @@ async function initSessionToken(): Promise<void> {
 
 // PHASE 28.0: Get dynamic API port from Electron
 async function initApiPort(): Promise<void> {
-  if (typeof window !== 'undefined' && (window as any).electronAPI) {
+  if (typeof window !== 'undefined' && window.electronAPI) {
     try {
-      const response = await (window as any).electronAPI.auth.getApiPort();
+      const response = await window.electronAPI.auth.getApiPort();
       if (response && response.success) {
         apiPort = response.port;
         console.log(`[PHASE 28.0] Dynamic API port loaded: ${apiPort}`);
@@ -79,8 +80,42 @@ export interface ApiError {
   status?: number;
   message: string;
   code?: string;
-  details?: any;
+  details?: unknown;
 }
+
+type ErrorDetailItem = {
+  msg?: string;
+};
+
+type ErrorPayload = {
+  detail?: string | ErrorDetailItem[];
+  details?: ErrorDetailItem[];
+  code?: string;
+  message?: string;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object';
+
+const extractApiMessage = (data: unknown): string | undefined => {
+  if (!isRecord(data)) {
+    return undefined;
+  }
+  const payload = data as ErrorPayload;
+  if (typeof payload.message === 'string') {
+    return payload.message;
+  }
+  if (typeof payload.detail === 'string') {
+    return payload.detail;
+  }
+  if (Array.isArray(payload.details) && payload.details[0]?.msg) {
+    return payload.details[0].msg;
+  }
+  if (Array.isArray(payload.detail) && payload.detail[0]?.msg) {
+    return payload.detail[0].msg;
+  }
+  return undefined;
+};
 
 // ============================================================================
 // CONFIGURATION
@@ -144,10 +179,8 @@ apiClient.interceptors.response.use(
   },
   (error: AxiosError<ApiError>) => {
     // Phase 18 Hotfix: Fixed error handling logic
-    const message =
-      (error.response?.data as any)?.details?.[0]?.msg ||
-      (error.response?.data as any)?.detail ||
-      error.message;
+    const responseData = error.response?.data as unknown;
+    const message = extractApiMessage(responseData) || error.message;
 
     let apiError: ApiError = {
       message: message || 'Unknown error occurred',
@@ -156,12 +189,13 @@ apiClient.interceptors.response.use(
     if (error.response) {
       // Server responded with error status
       const status = error.response.status;
-      const data = error.response.data;
+      const data = error.response.data as unknown;
+      const code = isRecord(data) && typeof data.code === 'string' ? data.code : undefined;
 
       apiError = {
         status,
         message,
-        code: (data as any)?.code,
+        code,
         details: data,
       };
 
@@ -369,7 +403,7 @@ export const api = {
   generateProposal: (data: {
     source_path: string;
     target_root: string;
-    vndb_metadata: any;
+    vndb_metadata: VndbMetadata;
   }) => apiClient.post('/api/organizer/generate', data),
 
   /**
@@ -431,7 +465,7 @@ export const api = {
    * Update single metadata field
    * Endpoint: POST /api/curator/update_field
    */
-  updateField: (folderPath: string, field: string, value: any) =>
+  updateField: (folderPath: string, field: string, value: unknown) =>
     apiClient.post('/api/curator/update_field', {
       folder_path: folderPath,
       field,
@@ -949,7 +983,8 @@ export const api = {
    * Import Settings
    * Endpoint: POST /api/settings/import
    */
-  importSettings: (data: any) => apiClient.post('/api/settings/import', data),
+  importSettings: (data: Record<string, unknown>) =>
+    apiClient.post('/api/settings/import', data),
 
   // ============================================================
   // SPRINT 10: METADATA EDITOR (Dual-Track)

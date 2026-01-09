@@ -17,7 +17,14 @@
  * Usage:
  * <input type="file" {...directoryInputProps} />
  */
-export const directoryInputProps = {
+import type { InputHTMLAttributes } from 'react';
+
+type DirectoryInputProps = InputHTMLAttributes<HTMLInputElement> & {
+  webkitdirectory?: string;
+  directory?: string;
+};
+
+export const directoryInputProps: DirectoryInputProps = {
   webkitdirectory: '',
   directory: '',
-} as any;
+};

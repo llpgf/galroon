@@ -1,21 +1,12 @@
 import { X, Plus, Trash2, Lock, Edit2, Music, FileText, User } from 'lucide-react';
 import { useState } from 'react';
+import type { MetadataDraft } from '../types/metadata';
 
 interface MetadataEditorProps {
   isOpen: boolean;
   onClose: () => void;
-  game: {
-    title: string;
-    originalTitle?: string;
-    developer?: string;
-    releaseDate?: string;
-    description?: string;
-    tags?: string[];
-    rating?: number;
-    playStatus?: string;
-    staff?: { role: string; name: string }[];
-  };
-  onSave: (data: any) => void;
+  game: MetadataDraft;
+  onSave: (data: MetadataDraft) => void;
 }
 
 export function MetadataEditor({ isOpen, onClose, game, onSave }: MetadataEditorProps) {

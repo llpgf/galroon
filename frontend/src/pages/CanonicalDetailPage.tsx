@@ -1,6 +1,7 @@
 import { FolderOpen, ArrowLeft, Play, Edit, MoreHorizontal, Heart, Copy, ChevronDown, ChevronUp, Mic } from 'lucide-react';
 import { ImageWithFallback } from '../components/figma/ImageWithFallback';
 import { useState } from 'react';
+import type { MetadataDraft } from '../types/metadata';
 import { MetadataEditor } from '../components/MetadataEditor';
 import { VoiceActorDetail, VoiceActor } from '../components/VoiceActorDetail';
 
@@ -77,7 +78,7 @@ export function CanonicalDetailPage({
   const [expandedCharacters, setExpandedCharacters] = useState<Set<number>>(new Set());
   const [selectedVoiceActor, setSelectedVoiceActor] = useState<VoiceActor | null>(null);
 
-  const handleSaveMetadata = (data: any) => {
+  const handleSaveMetadata = (data: MetadataDraft) => {
     console.log('Saving metadata:', data);
     // In a real app, this would update the game data
   };

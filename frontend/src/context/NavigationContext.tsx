@@ -12,9 +12,9 @@ type Route = 'library' | 'settings' | 'trash' | 'organizer' | 'details';
 
 interface NavigationContextType {
   currentRoute: Route;
-  navigate: (route: Route, params?: any) => void;
+  navigate: (route: Route, params?: Record<string, unknown> | null) => void;
   goBack: () => void;
-  params: any;
+  params: Record<string, unknown> | null;
 }
 
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
@@ -25,9 +25,9 @@ interface NavigationProviderProps {
 
 export const NavigationProvider: React.FC<NavigationProviderProps> = ({ children }) => {
   const [currentRoute, setCurrentRoute] = useState<Route>('library');
-  const [params, setParams] = useState<any>(null);
+  const [params, setParams] = useState<Record<string, unknown> | null>(null);
 
-  const navigate = (route: Route, newParams?: any) => {
+  const navigate = (route: Route, newParams?: Record<string, unknown> | null) => {
     setCurrentRoute(route);
     setParams(newParams || null);
     window.scrollTo(0, 0);

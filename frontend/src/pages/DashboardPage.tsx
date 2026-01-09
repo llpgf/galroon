@@ -9,8 +9,8 @@
 import { useState, useCallback, Suspense, lazy } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
-const DiscoveryLens = lazy(() => import('./dashboard/DiscoveryLens'));
-const StatsCharts = lazy(() => import('./dashboard/StatsCharts'));
+const DiscoveryLens = lazy(() => import('../components/dashboard/DiscoveryLens'));
+const StatsCharts = lazy(() => import('../components/dashboard/StatsCharts'));
 
 interface DashboardPageProps {
       onNavigateToGallery?: (filter?: string) => void;
