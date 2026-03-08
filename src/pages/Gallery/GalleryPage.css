@@ -1,0 +1,15 @@
+/* GalleryPage styles */
+
+.gallery-page {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+}
+
+.gallery-page>.gallery-grid,
+.gallery-page>.gallery-grid-skeleton,
+.gallery-page>.gallery-empty {
+      flex: 1;
+      overflow-y: auto;
+}

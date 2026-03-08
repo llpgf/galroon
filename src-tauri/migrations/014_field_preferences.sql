@@ -1,0 +1,3 @@
+-- Compatibility placeholder for persistent field preference storage.
+-- Column creation is handled in db::Database::ensure_works_compat so
+-- fresh and upgraded databases converge without fragile ALTER ordering.

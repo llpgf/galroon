@@ -1,0 +1,160 @@
+/* App layout styles */
+
+.app-layout {
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+}
+
+.app-content {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+}
+
+/* Loading state */
+.app-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 16px;
+      color: var(--text-muted);
+}
+
+.loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border, #333);
+      border-top-color: var(--accent-primary, #4f8cff);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+      to {
+            transform: rotate(360deg);
+      }
+}
+
+/* Workspace setup (first-launch) */
+.workspace-setup {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      background: var(--bg-primary, #0a0a0f);
+}
+
+.setup-card {
+      max-width: 480px;
+      width: 100%;
+      padding: 40px;
+      background: var(--surface-elevated, #151520);
+      border-radius: 16px;
+      border: 1px solid var(--border-subtle, #2a2a3a);
+      text-align: center;
+}
+
+.setup-icon {
+      font-size: 3.5rem;
+      margin-bottom: 8px;
+}
+
+.setup-card h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-primary, #e8e8f0);
+      margin: 0 0 4px;
+}
+
+.setup-subtitle {
+      color: var(--text-muted, #888);
+      font-size: 0.85rem;
+      margin-bottom: 32px;
+}
+
+.setup-section {
+      text-align: left;
+      margin-bottom: 24px;
+}
+
+.setup-section h3 {
+      font-size: 0.75rem;
+      color: var(--text-secondary, #aaa);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+}
+
+.recent-ws-btn {
+      display: block;
+      width: 100%;
+      padding: 10px 14px;
+      margin-bottom: 4px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-primary, #e8e8f0);
+      font-size: 0.85rem;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.15s;
+}
+
+.recent-ws-btn:hover {
+      background: var(--bg-tertiary, #1a1a2a);
+      border-color: var(--border, #333);
+}
+
+.setup-input-row {
+      display: flex;
+      gap: 8px;
+}
+
+.setup-input-row input {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border, #333);
+      background: var(--bg-primary, #0a0a0f);
+      color: var(--text-primary, #e8e8f0);
+      font-size: 0.85rem;
+}
+
+.setup-input-row input:focus {
+      outline: none;
+      border-color: var(--accent-primary, #4f8cff);
+}
+
+.setup-input-row button {
+      padding: 10px 24px;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent-primary, #4f8cff);
+      color: white;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: opacity 0.15s;
+}
+
+.setup-input-row button:hover {
+      opacity: 0.9;
+}
+
+.setup-error {
+      color: #f44;
+      font-size: 0.8rem;
+      margin-top: 8px;
+      text-align: left;
+}
+
+.setup-hint {
+      color: var(--text-muted, #666);
+      font-size: 0.75rem;
+      margin-top: 20px;
+      line-height: 1.6;
+}

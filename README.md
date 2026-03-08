@@ -1,130 +1,95 @@
-# Galroon Galgame Manager
+# Galroon
 
-**A modern, portable visual novel (galgame) library management system.**
+Galroon is a desktop galgame library manager built with Tauri 2, Rust, React, and SQLite. It scans local folders, classifies bundled assets, enriches works from VNDB, Bangumi, and DLsite, and gives you a poster-first library with review, merge, collection, and metadata provenance tools.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![React 19](https://img.shields.io/badge/react-19-61DAFB.svg)](https://react.dev/)
-[![Electron](https://img.shields.io/badge/Electron-Latest-9FEAF9.svg)](https://www.electronjs.org/)
-[![Status: Development](https://img.shields.io/badge/Status-Development%20Only-orange.svg)](https://github.com/llpgf/galroon)
+## Current baseline
 
----
+- Poster-first library view with canonical work grouping
+- Background scan, enrichment, backup, and update-check jobs
+- Bangumi OAuth support for R18/private metadata access
+- Multi-source enrichment and field-level source preference
+- Characters, creators, collections, workshop, and review workflows
+- AI gateway support through LiteLLM or any OpenAI-compatible endpoint
+- Scheduled workspace backups and official Tauri updater integration
 
-## Development build notice
+## Stack
 
-This is an active development build (**v0.3.0**). It is not production ready.
+- Frontend: React 19, TypeScript, Vite
+- Desktop shell: Tauri 2
+- Backend: Rust, Tokio, SQLx, SQLite
+- Metadata sources: VNDB, Bangumi, DLsite
+- AI gateway: LiteLLM recommended, OpenAI-compatible supported
 
-Do not use for:
-- production use
-- managing important libraries
-- daily game management
-- expecting stable performance
+## Repository layout
 
----
-
-## Current status
-
-- Backend: feature-complete for current roadmap (API and services stable)
-- Frontend: in progress (core library UI is functional; remaining pages in progress)
-- Launcher: feature-complete
-- Testing: partial coverage (backend tests exist, frontend tests limited)
-
----
-
-## What changed in v0.3.0
-
-- Backend legacy endpoints moved out of `main.py` into a dedicated legacy router.
-- Legacy endpoints now share read-only dependency logic.
-- Frontend routing structure standardized with `src/pages` for page components.
-- API client initialization fixed to wait for session token and dynamic port.
-- UI tokens consolidated into a single global stylesheet.
-- Manual chunk splitting and lazy loading for heavy dashboards.
-- New onboarding and architecture docs for faster handoff.
-
----
-
-## Features (planned and in progress)
-
-- Automatic library scanning (manual, scheduled, realtime)
-- Rich metadata (VNDB, others in progress)
-- Portable mode (launcher supported)
-- Smart search and filtering
-- Analytics and knowledge graphs (in progress)
-- Safe trash management
-
----
-
-## Quick start (dev)
-
-Backend:
-```
-cd backend
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```text
+public/        Static assets
+src/           React frontend
+src-tauri/     Tauri app, Rust backend, migrations, updater config
 ```
 
-Frontend:
-```
-cd frontend
+## Local development
+
+Requirements:
+
+- Node.js 20+
+- Rust stable
+- Windows is the current primary dev target
+
+Install and run:
+
+```bash
 npm install
-npm run dev
+npm run tauri dev
 ```
 
-Tests:
-```
-python -m pytest backend/tests
-```
+Build:
 
----
-
-## Project structure
-
-```
-backend/                 # FastAPI backend
-  app/
-    api/                 # REST API endpoints
-    core/                # core systems (sentinel, transaction)
-    metadata/            # metadata providers
-    models/              # data models
-  tests/
-frontend/                # React frontend
-  src/
-    api/                 # API client
-    components/          # reusable UI components
-    pages/               # route-level pages
-    styles/              # global styles/tokens
-launcher/                # Electron desktop wrapper
-docs/                    # documentation
-tests/                   # integration tests
+```bash
+npm run build
+cd src-tauri
+cargo check
+cargo test
 ```
 
----
+## AI gateway
 
-## Documentation
+Galroon stores AI settings in the workspace, not in the repo. The recommended setup is LiteLLM so one OpenAI-compatible endpoint can front OpenAI, Anthropic, Gemini, OpenRouter, and local models.
 
-- `docs/ONBOARDING.md`
-- `docs/ARCHITECTURE.md`
-- `docs/API_MAP.md`
-- `CHANGELOG.md`
+Supported presets in Settings:
 
----
+- LiteLLM
+- Generic OpenAI-compatible
+- OpenAI
+- OpenRouter
+- Ollama
 
-## Contributing
+Translated text is cached in the workspace database so repeated translation does not keep spending tokens.
 
-1. Fork the repo
-2. Create a feature branch
-3. Make changes and add tests where possible
-4. Open a pull request
+## Bangumi auth
 
-Code style:
-- Python: follow PEP 8
-- TypeScript: follow ESLint rules
+Bangumi support includes browser-based OAuth for authenticated and R18/private-visible entries. Tokens are stored in the workspace config and are never meant to be committed.
 
----
+## Auto update
+
+Galroon uses the official Tauri updater.
+
+To publish signed updater packages from GitHub Actions, set these repository secrets:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if your key is password protected
+
+The updater public key is already embedded in the app config. Release artifacts and updater manifests are expected to be uploaded through GitHub Releases.
+
+## Release workflow
+
+This repo includes an official Tauri GitHub Actions release workflow. Tagging a release such as `v0.5.0` should build and upload signed updater artifacts.
+
+## Notes
+
+- Workspace data, thumbnails, logs, databases, sandbox content, and signing keys are intentionally ignored.
+- This repo tracks the current Tauri-based codebase, not the older Python/Electron generations.
 
 ## License
 
-GPL v3. See `LICENSE`.
+GPL-3.0. See `LICENSE`.

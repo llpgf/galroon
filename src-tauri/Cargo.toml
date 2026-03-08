@@ -1,0 +1,51 @@
+[package]
+name = "galroon"
+version = "0.5.0"
+description = "Galgame Library Manager"
+authors = ["Ben"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "galroon_lib"
+crate-type = ["lib", "staticlib", "cdylib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "sqlite-unbundled"] }
+# R22: If unbundled causes version issues on any platform, switch to:
+# sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+# which bundles SQLite and guarantees RETURNING/LIMIT support.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+notify = "7"
+notify-debouncer-full = "0.4"
+unicode-normalization = "0.1"
+directories = "5"
+reqwest = { version = "0.12", features = ["json"] }
+image = "0.25"
+trash = "5"
+governor = "0.8"
+nonzero_ext = "0.3"
+regex = "1"
+# lindera will be added when CJK tokenizer is implemented (v0.6)
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"

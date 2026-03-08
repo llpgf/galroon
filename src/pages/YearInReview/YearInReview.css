@@ -1,0 +1,99 @@
+.yir-page {
+      padding: 32px;
+      max-width: 800px;
+}
+
+.yir-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+}
+
+.yir-header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+}
+
+.yir-header select {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle, #1e1e2e);
+      background: var(--surface-default, #0d0d15);
+      color: var(--text-primary);
+}
+
+.yir-stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 32px;
+}
+
+.yir-stat {
+      flex: 1;
+      padding: 20px;
+      border-radius: 12px;
+      background: var(--surface-elevated, #151520);
+      border: 1px solid var(--border-subtle, #1e1e2e);
+      text-align: center;
+}
+
+.yir-num {
+      display: block;
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent-primary, #4f8cff);
+}
+
+.yir-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+}
+
+.yir-chart {
+      margin-bottom: 32px;
+}
+
+.yir-chart h2 {
+      font-size: 1rem;
+      margin-bottom: 12px;
+}
+
+.yir-brands h2 {
+      font-size: 1rem;
+      margin-bottom: 12px;
+}
+
+.yir-brand-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--surface-elevated, #151520);
+      margin-bottom: 6px;
+}
+
+.yir-rank {
+      font-weight: 700;
+      color: var(--accent-primary, #4f8cff);
+      width: 28px;
+}
+
+.yir-brand-name {
+      flex: 1;
+      font-weight: 600;
+}
+
+.yir-brand-count {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+}
+
+.yir-empty {
+      text-align: center;
+      padding: 60px;
+      color: var(--text-muted);
+}

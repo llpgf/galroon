@@ -1,0 +1,123 @@
+/* BrandDetail styles */
+
+.brand-detail {
+      padding: 24px 32px;
+      overflow-y: auto;
+      height: 100%;
+}
+
+.brand-detail.loading,
+.brand-detail.empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 60vh;
+      color: var(--text-muted);
+}
+
+.brand-header {
+      margin-bottom: 24px;
+}
+
+.back-btn {
+      background: none;
+      border: none;
+      color: var(--accent-primary, #4f8cff);
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 4px 0;
+      margin-bottom: 12px;
+}
+
+.back-btn:hover {
+      text-decoration: underline;
+}
+
+.brand-hero {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+}
+
+.brand-icon {
+      font-size: 3rem;
+}
+
+.brand-hero h1 {
+      font-size: 1.8rem;
+      font-weight: 800;
+      margin: 0;
+      color: var(--text-primary);
+}
+
+.brand-count {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin: 2px 0 0;
+}
+
+.brand-works-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 16px;
+}
+
+.brand-work-card {
+      cursor: pointer;
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--surface-elevated, #151520);
+      border: 1px solid var(--border-subtle, #1e1e2e);
+      transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.brand-work-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.bw-cover {
+      width: 100%;
+      aspect-ratio: 3/4;
+      overflow: hidden;
+      background: var(--bg-tertiary, #1a1a2a);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+}
+
+.bw-cover img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+}
+
+.bw-placeholder {
+      font-size: 2rem;
+}
+
+.bw-info {
+      padding: 8px 10px;
+}
+
+.bw-info h3 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin: 0;
+}
+
+.bw-date {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+}
+
+.bw-rating {
+      font-size: 0.65rem;
+      color: #ffd43b;
+      margin-left: 6px;
+}
