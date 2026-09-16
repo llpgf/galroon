@@ -1,0 +1,21 @@
+Galroon
+Copyright (C) 2026 llpgf and Galroon contributors
+SPDX-License-Identifier: GPL-3.0-only
+
+Galroon is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, version 3 only.
+
+Galroon is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for details.
+
+A copy of the license is provided in LICENSE (LICENSE.txt in the installed
+application). If it is missing, see https://www.gnu.org/licenses/gpl-3.0.html.
+
+This grant covers Galroon's original project code and applies to the
+Galroon v0.0.2 distribution. Third-party components, fonts and upstream
+source archives retain their own copyrights and licenses. See third-party/
+and tools/7zip/runtime/License.txt (runtime/License.txt when installed).
+
+Project and source: https://github.com/llpgf/galroon

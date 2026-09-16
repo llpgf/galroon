@@ -170,8 +170,10 @@ Build output, game data, catalogs, login state, local acceptance records and his
 
 ## 授權與第三方元件 / Licensing and third-party components
 
-此份 Galroon 原始碼尚未選定專案授權；公開原始碼不代表另行授予開源授權。第三方元件仍遵循各自的授權，請保留其聲明、來源封存檔與雜湊紀錄。
+Galroon 採用 **GNU General Public License v3.0（僅第 3 版）**，SPDX 識別碼為 `GPL-3.0-only`。你可以使用、修改、散布及商用；散布修改版時，須依 GPLv3 提供相應源碼並保留版權與授權聲明。本軟體不提供擔保。完整條款見 [LICENSE](LICENSE)，專案聲明見 [COPYRIGHT](COPYRIGHT)。
 
-A project license has not yet been selected for this Galroon source tree. Public source availability does not itself grant an open-source license. Third-party components retain their own licenses; preserve their notices, source archives and provenance.
+Galroon is licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). Use, modification, redistribution and commercial use are permitted under its terms. Distributed modified versions must provide corresponding source under GPLv3 and preserve copyright and license notices. The software is provided without warranty. See [LICENSE](LICENSE) for the full terms and [COPYRIGHT](COPYRIGHT) for the project notice.
 
-See [third-party notices and sources](third-party/README.md) and the [7-Zip license](tools/7zip/runtime/License.txt).
+第三方元件、字型與上游來源封存檔維持各自的授權；Galroon 的授權不取代其聲明。
+
+Third-party components, fonts and upstream source archives retain their own licenses. See [third-party notices and sources](third-party/README.md) and the [7-Zip license](tools/7zip/runtime/License.txt).

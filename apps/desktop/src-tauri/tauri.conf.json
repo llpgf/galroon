@@ -38,12 +38,16 @@
       "../../../third-party/": "third-party/",
       "../../../docs/user/USER_GUIDE.md": "docs/USER_GUIDE.md",
       "../../../docs/user/SUPPORT.md": "docs/SUPPORT.md",
-      "../../../docs/development/API_CONTRACT.md": "docs/API_CONTRACT.md"
+      "../../../docs/development/API_CONTRACT.md": "docs/API_CONTRACT.md",
+      "../../../LICENSE": "LICENSE.txt",
+      "../../../COPYRIGHT": "COPYRIGHT.txt"
     },
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"
       }
-    }
+    },
+    "license": "GPL-3.0-only",
+    "licenseFile": "../../../LICENSE"
   }
 }
