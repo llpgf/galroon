@@ -1,0 +1,1 @@
+fn main(){let root=std::path::PathBuf::from(std::env::args_os().nth(1).unwrap()).canonicalize().unwrap();println!("root={root:?}");for entry in std::fs::read_dir(&root).unwrap(){let path=entry.unwrap().path();println!("entry={path:?} relative={:?}",path.strip_prefix(&root));}}

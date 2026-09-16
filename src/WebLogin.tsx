@@ -1,0 +1,8 @@
+import {useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {api,browserCoreUrl,setSession,webLogin} from './api';
+export function WebLogin({onConnected}:{onConnected:()=>Promise<void>}){
+ const {t}=useTranslation();const [url,setUrl]=useState(browserCoreUrl()),[password,setPassword]=useState(''),[name,setName]=useState(''),[token,setToken]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const act=async(fn:()=>Promise<void>)=>{setBusy(true);setError('');try{await fn();await onConnected();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);setPassword('');setToken('');}};
+ return <><p>{t('webLoginHint')}</p><form onSubmit={e=>{e.preventDefault();void act(()=>webLogin(url,password,name||t('readOnlyBrowser')));}}>{import.meta.env.DEV&&<label>{t('coreUrl')}<input value={url} onChange={e=>setUrl(e.target.value)}/></label>}<label>{t('deviceName')}<input autoComplete="off" value={name} maxLength={80} onChange={e=>setName(e.target.value)}/></label><label>{t('ownerPassword')}<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary" disabled={busy||!password}>{t('signInReadOnly')}</button></form>{import.meta.env.DEV&&<details><summary>{t('developmentConnection')}</summary><form onSubmit={e=>{e.preventDefault();void act(async()=>{setSession({url,token});await api('/access/me');});}}><label>{t('accessToken')}<input type="password" value={token} onChange={e=>setToken(e.target.value)} autoComplete="off"/></label><button disabled={busy||!token}>{t('connect')}</button></form></details>}{error&&<p role="alert" className="error-text">{error}</p>}</>;
+}

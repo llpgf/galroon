@@ -1,0 +1,21 @@
+import {useEffect,useRef,useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {api} from './api';
+import {IssueScan} from './IssueScan';
+import {IssueTask} from './IssueTask';
+type Issue={id:number;resource_id:string|null;kind:string;category?:string;state:string;reason:string;revision:number;retry_pending?:boolean;title:string|null;path:string|null;source:string|null};
+type Page={items:Issue[];next:number|null};
+export function IssuesPanel({onReview,onSource}:{onSource:()=>void;onReview:(resource:{id:string;title:string;path:string})=>void}){
+ const {t}=useTranslation();const [filter,setFilter]=useState('open'),[items,setItems]=useState<Issue[]>([]),[next,setNext]=useState<number|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[queued,setQueued]=useState(false);const generation=useRef(0);const [taskIssue,setTaskIssue]=useState<number|null>(null);const [scanIssue,setScanIssue]=useState<Issue|null>(null),[scanQueued,setScanQueued]=useState(false);
+ async function load(cursor:number|null){const gen=generation.current;setBusy(true);setError('');try{const p=await api<Page>(`/issues?state=${filter}${cursor===null?'':`&before=${cursor}`}`);if(gen!==generation.current)return;setItems(old=>cursor===null?p.items:[...old,...p.items]);setNext(p.next);}catch(e){if(gen===generation.current)setError(e instanceof Error?e.message:String(e));}finally{if(gen===generation.current)setBusy(false);}}
+ useEffect(()=>{generation.current++;setItems([]);setNext(null);void load(null);return()=>{generation.current++;};},[filter]);
+ async function change(issue:Issue,state:string){setBusy(true);setError('');try{await api(`/issues/${issue.id}`,{revision:issue.revision,state});await load(null);}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ async function retry(issue:Issue){setBusy(true);setError('');setQueued(false);try{await api('/issues/'+issue.id+'/retry',{revision:issue.revision});await load(null);setQueued(true);}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ return <section className="section issues-panel"><h2>{t('issueCenter')}</h2><p>{t('issueScope')}</p><div className="inline">{['open','deferred','resolved'].map(state=><button key={state} disabled={busy} aria-pressed={filter===state} onClick={()=>setFilter(state)}>{t('issue_'+state)}</button>)}<button disabled={busy} onClick={()=>void load(null)}>{t('refreshView')}</button></div>
+ {items.map(issue=><article className="plan-item" key={issue.id}><h3>{issue.title||issue.resource_id}</h3><small>{issue.source} · {t('issueKind_'+issue.kind)}</small><p className="path">{issue.path}</p><p>{issue.reason}</p><div className="inline"><button onClick={()=>issue.category==='acquire'?setTaskIssue(issue.id):(issue.category==='availability'||issue.category==='source')?onSource():onReview({id:issue.resource_id||'',title:issue.title||'',path:issue.path||''})}>{t(issue.category==='acquire'?'issueTask':(issue.category==='availability'||issue.category==='source')?'issueViewSource':'matchingHistory')}</button>{filter!=='resolved'&&(issue.category==='availability'||issue.category==='source')&&<button disabled={busy||issue.retry_pending} onClick={()=>{setScanQueued(false);setScanIssue(issue);}}>{t('issueScan')}</button>}{filter!=='resolved'&&(issue.category!=='availability'&&issue.category!=='source'&&issue.category!=='acquire')&&<button disabled={busy||issue.retry_pending} onClick={()=>void retry(issue)}>{t('issueRetry')}</button>}{filter!=='resolved'&&<button disabled={busy} onClick={()=>void change(issue,filter==='deferred'?'open':'deferred')}>{t(filter==='deferred'?'issueReopen':'issueDefer')}</button>}</div></article>)}
+ {taskIssue!==null&&<IssueTask id={taskIssue} onClose={()=>{setTaskIssue(null);void load(null);}}/>}{scanIssue&&<IssueScan issue={scanIssue} onClose={()=>setScanIssue(null)} onQueued={()=>{setScanIssue(null);setScanQueued(true);void load(null);}}/>}{scanQueued&&<p role="status">{t('issueScanQueued')}</p>}{queued&&<p role="status">{t('issueRetryQueued')}</p>}{error&&<p role="alert">{error}</p>}{busy&&<p role="status">{t('loading')}</p>}{!error&&!busy&&items.length===0&&<p>{t('issueEmpty')}</p>}{next!==null&&<button disabled={busy} onClick={()=>void load(next)}>{t('historyOlder')}</button>}</section>;
+}
+
+
+
+

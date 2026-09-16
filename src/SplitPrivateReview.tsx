@@ -1,0 +1,12 @@
+import {useEffect,useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {api} from './api';
+type Row={id:string;name:string;deleted:boolean;notes?:string;preferred_release_id?:string|null};
+type Preview={digest:string;tags:Row[];entries:Row[]};
+export type SplitSelection={digest:string;tags:{id:string;follow:string}[];entries:{id:string;follow:string}[]};
+export function SplitPrivateReview({workId,onChange}:{workId:string;onChange:(value:SplitSelection|null)=>void}){
+ const {t}=useTranslation(),[data,setData]=useState<Preview|null>(null),[selection,setSelection]=useState<SplitSelection|null>(null),[error,setError]=useState(''),[attempt,setAttempt]=useState(0);
+ useEffect(()=>{let live=true;onChange(null);setData(null);setSelection(null);setError('');void api<Preview>(`/works/${encodeURIComponent(workId)}/split-preview`).then(result=>{if(!live)return;result.tags=[...new Map(result.tags.map(tag=>[tag.id,tag])).values()];const next={digest:result.digest,tags:result.tags.map(tag=>({id:tag.id,follow:'original'})),entries:result.entries.map(entry=>({id:entry.id,follow:'original'}))};setData(result);setSelection(next);onChange(next);}).catch(e=>{if(live)setError(String(e));});return()=>{live=false;};},[workId,attempt,onChange]);
+ function choose(field:'tags'|'entries',id:string,follow:string){if(!selection)return;const next={...selection,[field]:selection[field].map(row=>row.id===id?{...row,follow}:row)};setSelection(next);onChange(next);}
+ return <section><h3>{t('splitPrivateTitle')}</h3>{error?<p role="alert">{error}<button onClick={()=>setAttempt(v=>v+1)}>{t('retry')}</button></p>:!data?<p role="status">{t('loading')}</p>:<>{!data.tags.length&&!data.entries.length&&<p>{t('splitPrivateEmpty')}</p>}{(['tags','entries'] as const).map(field=><div key={field}>{data[field].map(row=><div key={row.id}><label>{t(field==='tags'?'splitPrivateTag':'splitPrivateList')} · {row.name}{row.deleted?' ('+t('splitPrivateDeleted')+')':''}<select aria-label={`${field}: ${row.name}`} value={selection?.[field].find(v=>v.id===row.id)?.follow} onChange={e=>choose(field,row.id,e.target.value)}>{['original','new','both'].map(v=><option key={v} value={v}>{t('splitFollow_'+v)}</option>)}</select></label>{row.notes&&<p style={{whiteSpace:'pre-wrap'}}>{row.notes}</p>}{row.preferred_release_id&&<p>{t('splitPrivateEdition',{id:row.preferred_release_id})}</p>}</div>)}</div>)}</>}</section>;
+}

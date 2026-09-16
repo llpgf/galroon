@@ -1,0 +1,31 @@
+[package]
+name = "galroon-core"
+version = "0.0.2"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup", "functions", "collation", "hooks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+regex = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+hex = "0.4"
+thiserror = "2"
+fs2 = "0.4"
+argon2 = "0.5"
+notify = "=8.2.0"
+unicode-normalization = "0.1"
+icu_collator = "2.2"
+icu_locale_core = "2.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem","Win32_Foundation","Win32_Security","Win32_Security_Authorization","Win32_System_Threading","Win32_System_Pipes","Win32_System_Memory"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

@@ -1,0 +1,11 @@
+import {describe,it,expect} from 'vitest';
+import {editionResources,resourceStates} from './editionAvailability';
+import type {Resource,Root} from './api';
+const roots:Root[]=[{id:'local',path:'generated/local',label:'Local',role:'source',online:true,missing:0,unverified:0},{id:'offline',path:'generated/offline',label:'Offline',role:'source',online:false,missing:0,unverified:0}];
+const resource=(id:string,edition:string,patch:Partial<Resource>={}):Resource=>({id,title:id,path:id,root_id:'local',root_path:'generated/local',files:1,bytes:100,revision:1,kind:'archive',work_id:'a',release:edition,missing:0,unverified:0,bindings:[{work_id:'a',release_id:edition,role:'main'}],...patch});
+describe('edition-specific resource comparison',()=>{
+ it('keeps an offline Japanese edition separate from the available alternative',()=>{const resources=[resource('jp','japanese',{root_id:'offline'}),resource('en','english')];expect(editionResources('a','japanese',resources,roots).available).toBe(0);expect(editionResources('a','english',resources,roots).available).toBe(1);expect(editionResources('a','japanese',resources,roots).members.map(r=>r.id)).toEqual(['jp']);});
+ it('counts a shared physical group once and associates patches by the current work and edition',()=>{const resources=[resource('shared','e',{bindings:[{work_id:'a',release_id:'e',role:'main'},{work_id:'b',release_id:'other',role:'extra'}]}),resource('patch','e',{bindings:[{work_id:'a',release_id:'e',role:'patch'}]}),resource('other','other')];const result=editionResources('a','e',resources,roots);expect([result.members.length,result.bytes,result.patches]).toEqual([2,200,1]);expect(editionResources('b','e',resources,roots).members).toEqual([]);expect(editionResources('b','other',resources,roots).patches).toBe(0);});
+ it('does not call missing, unverified, empty or unknown-source groups available',()=>{expect(resourceStates(resource('a','e',{missing:1,unverified:1}),roots)).toEqual(['missing','unverified']);for(const r of [resource('empty','e',{files:0}),resource('unknown','e',{root_id:'unknown'}),resource('offline','e',{root_id:'offline'}),resource('missing','e',{missing:1}),resource('unverified','e',{unverified:1}),resource('legacy','e',{unknown:1})])expect(resourceStates(r,roots)).not.toContain('available');});
+});
+

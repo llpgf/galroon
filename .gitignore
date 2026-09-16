@@ -1,39 +1,54 @@
-# Dependencies
+# Dependencies and generated build products
 node_modules/
-
-# Frontend build output
+target/
 dist/
 *.tsbuildinfo
+apps/desktop/src-tauri/gen/
 
-# Rust / Tauri build output
-target/
-src-tauri/target/
+# Local evidence, installers, screenshots and historical handoffs
+/output/
+/test-output/
+/.playwright-cli/
+/docs/local-history/
+/scripts/local-history/
 
-# Signing and secrets
-src-tauri/keys/
-.env
-.env.local
-.env.*.local
-
-# Local workspaces and databases
-*.db
-*.db-wal
-*.db-shm
-thumbnails/
-logs/
-.trash/
+# Catalogs, sessions, private configuration and runtime data
+.galroon/
 sandbox_data/
-sandbox_workplace/
-public/devtools-fixture.json
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+.env
+.env.*
+!.env.example
+ui-session.json
+device.json
+active-library.json
+*.pem
+*.key
+*.pfx
+*.p12
 
-# Editor / OS
+# Downloaded setup helpers and unused upstream 7-Zip components.
+# Preserve the three runtime files referenced by the app/bundler.
+/tools/7zip/*.exe
+/tools/7zip/runtime/*
+!/tools/7zip/runtime/7z.exe
+!/tools/7zip/runtime/7z.dll
+!/tools/7zip/runtime/License.txt
+
+# Local editor / OS files
 .vscode/
 .idea/
-*.swp
-*.swo
+__pycache__/
+*.py[cod]
 .DS_Store
 Thumbs.db
-
-# Misc
-debugs/
-*.log
+Desktop.ini

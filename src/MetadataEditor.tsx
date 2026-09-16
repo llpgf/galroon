@@ -1,0 +1,13 @@
+import {useEffect,useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {X} from 'lucide-react';
+import {api,type Work} from './api';
+const fields=['title','original_title','description','cover','developer','released','tags','aliases'] as const;
+type Snapshot={source:Record<string,unknown>;overrides:Record<string,unknown>;revision:number};
+const format=(v:unknown)=>Array.isArray(v)?v.join('\n'):typeof v==='string'?v:'';
+export function MetadataEditor({work,onClose,onSaved}:{work:Work;onClose:()=>void;onSaved:()=>Promise<void>}){
+ const {t}=useTranslation();const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[values,setValues]=useState<Record<string,string>>({}),[resets,setResets]=useState<string[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ useEffect(()=>{api<Snapshot>(`/works/${work.id}/metadata`).then(s=>{setSnapshot(s);setValues(Object.fromEntries(fields.map(f=>[f,format(s.overrides[f]??s.source[f]??work[f as keyof Work])])));}).catch(e=>setError(e.message));},[work.id]);
+ const save=async()=>{if(!snapshot)return;setBusy(true);setError('');try{const patch:Record<string,unknown>={};for(const f of fields){const original=format(snapshot.overrides[f]??snapshot.source[f]??work[f as keyof Work]);if(!resets.includes(f)&&values[f]!==original)patch[f]=['tags','aliases'].includes(f)?values[f].split('\n').map(x=>x.trim()).filter(Boolean):values[f];}await api(`/works/${work.id}/metadata`,{revision:snapshot.revision,patch,reset:resets});await onSaved();onClose();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}};
+ return <div className="scrim"><aside className="drawer"><button className="drawer-close icon-button" aria-label={t('close')} disabled={busy} onClick={onClose}><X/></button><h2>{t('editMetadata')}</h2><p>{t('metadataHint')}</p>{snapshot?fields.map(f=><section key={f} className="metadata-field"><label>{t(`field_${f}`)}<textarea rows={f==='description'?5:2} value={values[f]||''} onChange={e=>{setValues({...values,[f]:e.target.value});setResets(resets.filter(x=>x!==f));}}/></label><small>{t('sourceValue')}: {format(snapshot.source[f])||t('unknown')}</small>{(Object.hasOwn(snapshot.overrides,f)||resets.includes(f))&&<button className="text-button" disabled={!Object.hasOwn(snapshot.source,f)||resets.includes(f)} onClick={()=>{setResets([...resets,f]);setValues({...values,[f]:format(snapshot.source[f])});}}>{t(resets.includes(f)?'followingSource':'resetSource')}</button>}</section>):<p>{t('loading')}</p>}{error&&<p className="error-text" role="alert">{error}</p>}<footer><button className="primary" disabled={busy||!snapshot} onClick={()=>void save()}>{t('save')}</button></footer></aside></div>;
+}

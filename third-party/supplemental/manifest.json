@@ -1,0 +1,23 @@
+[
+  {
+    "file": "7zip-copying.txt",
+    "sha256": "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531"
+  },
+  {
+    "file": "7zip-License.txt",
+    "sha256": "9ac2b4a97ab5d523965534d8b2d5868e511b39096d51fff458ab72c38b80fccc"
+  },
+  {
+    "file": "7zip-unRarLicense.txt",
+    "sha256": "17bd9fa4399092c777536fff045b41df76ec9d2ac4c9b8e7345d3b8b6ccc7976"
+  },
+  {
+    "file": "SQLite-NOTICE.txt",
+    "sha256": "0930bb34cfd4abddcf3315e8d13d58ad4a6dd152e81ac0b676276f330ccf040a"
+  },
+  {
+    "file": "NSIS-3.11-COPYING.txt",
+    "sha256": "e7dd514003ab96cb3ddccbc028fe5c795fccf57dc41f21cfb9d4dd16ead23bf5",
+    "source": "NSIS 3.11 bundled by Tauri, COPYING (includes LZMA exception)"
+  }
+]

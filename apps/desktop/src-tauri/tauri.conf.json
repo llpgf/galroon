@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Galroon",
+  "version": "0.0.2",
+  "identifier": "app.galroon.desktop",
+  "build": {
+    "frontendDist": "../../../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run prepare:desktop",
+    "beforeDevCommand": "cargo build -p galroon-core --bin galroon-core --release",
+    "beforeBundleCommand": "python scripts/generate_installer_hooks.py"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Galroon",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 640,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "../../../tools/7zip/runtime/7z.exe": "runtime/7z.exe",
+      "../../../tools/7zip/runtime/7z.dll": "runtime/7z.dll",
+      "../../../tools/7zip/runtime/License.txt": "runtime/License.txt",
+      "../../../target/release/galroon-core.exe": "galroon-core.exe",
+      "../../../dist/": "web/",
+      "../../../third-party/": "third-party/",
+      "../../../docs/user/USER_GUIDE.md": "docs/USER_GUIDE.md",
+      "../../../docs/user/SUPPORT.md": "docs/SUPPORT.md",
+      "../../../docs/development/API_CONTRACT.md": "docs/API_CONTRACT.md"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

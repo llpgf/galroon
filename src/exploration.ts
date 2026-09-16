@@ -1,0 +1,18 @@
+export type Artwork={url?:string;sexual?:number;violence?:number};
+export type ExternalLink={url:string;label:string};
+export type Person={local_fields?:string[];id:string;aid?:number;name:string;original?:string;image?:Artwork;role?:string;note?:string;eid?:number|null;description?:string;lang?:string;gender?:string;extlinks?:ExternalLink[];aliases?:{name:string;latin?:string;ismain?:boolean}[]};
+export type Company={local_fields?:string[];id:string;name:string;original?:string;description?:string;type?:string;lang?:string;aliases?:string[];extlinks?:ExternalLink[]};
+export type Character={local_fields?:string[];id:string;name:string;original?:string;description?:string;aliases?:string[];birthday?:[number,number];age?:number;height?:number;blood_type?:string;traits?:{id:string;name:string;group_name:string;spoiler:number;lie:boolean;sexual?:boolean}[];image?:Artwork;vns?:{id:string;title?:string;role?:string;spoiler?:number}[]};
+export type Voice={staff:Person;character:Character;note?:string};
+export type Related={profile_membership?:boolean;id:string;title:string;alttitle?:string;released?:string;relation?:string;image?:Artwork;staff?:Person[];va?:Voice[]};
+export type Exploration={vn:null|{id:string;title?:string;alttitle?:string;description?:string;released?:string;image?:Artwork;developers?:Company[];staff:Person[];va:Voice[];relations:Related[]};characters:Character[];more:boolean;local?:boolean;partial?:boolean;stale?:boolean;warning?:string;fetched_at?:number};
+export type ProfileData={relationship_revision?:number;local_relationships_incomplete?:boolean;continuation_verified?:boolean;person?:Person;character?:Character;company?:Company;works:Related[];more:boolean;page:number;stale?:boolean;partial?:boolean;warning?:string;fetched_at?:number};
+export type PersonData={person:Person;works:Related[];more:boolean;page:number;stale?:boolean;warning?:string};
+export function initials(name:string){const words=name.trim().split(/\s+/u).filter(Boolean);return words.length>1?words.slice(0,2).map(w=>Array.from(w)[0]).join('').toLocaleUpperCase():Array.from(words[0]||'?').slice(0,2).join('').toLocaleUpperCase();}
+export function safeExternalUrl(url:string){try{const parsed=new URL(url);return ['https:','http:'].includes(parsed.protocol)?parsed.href:null;}catch{return null;}}
+export function visibleTraits(character:Character,spoilers:boolean,safe:boolean){return (character.traits||[]).filter(trait=>!trait.lie&&(spoilers||trait.spoiler===0)&&(!safe||!trait.sexual));}
+export function appendWorks(previous:Related[],incoming:Related[]){const unique=new Map(previous.map(work=>[work.id,work]));for(const work of incoming)unique.set(work.id,work);return [...unique.values()];}
+export function imageAllowed(image:Artwork|undefined,hidden:boolean){return !hidden&&!!image?.url&&!(Number(image.sexual)>0)&&!(Number(image.violence)>0);}
+export function visibleCharacter(c:Character,vndbId:string,spoilers:boolean){return c.vns?.some(v=>v.id===vndbId&&(spoilers||v.spoiler===0))===true;}
+export function voiceFor(data:Exploration,cid:string):Voice[]{const seen=new Set<string>();return (data.vn?.va||[]).filter(v=>{const key=`${v.staff.id}:${v.staff.aid??''}:${v.note??''}`;if(v.character.id!==cid||seen.has(key))return false;seen.add(key);return true;});}
+export function plainDescription(text:string,spoilers=false){return text.replace(/\[spoiler\][\s\S]*?\[\/spoiler\]/gi,m=>spoilers?m.replace(/\[\/?spoiler\]/gi,''):'[Spoiler hidden]').replace(/\[url=([^\]]+)\]([\s\S]*?)\[\/url\]/gi,'$2').replace(/\[url\]([\s\S]*?)\[\/url\]/gi,'$1').replace(/\[\/?(?:b|i|u|s|quote|raw|code|center|right|left|list|item|spoiler)(?:=[^\]]*)?\]/gi,'');}

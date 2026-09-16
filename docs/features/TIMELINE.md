@@ -1,0 +1,9 @@
+# Activity timeline
+
+Schema41 adds transactional file audit to the existing decision timeline. File-plan creation/state, operation insertion/state or error change, and acquisition task creation/state all append allowlisted scalar events in the same SQLite statement/transaction as their mutation. They cover organization/undo, quarantine/restore, copy/extraction/reuse and recovery transitions. They are state records, not reconstructed actor attribution. Raw errors, paths, transfer specs and passwords are not put in these events; retained plan/task records provide current details. Operation errors there are current values, not a full immutable error-text transcript.
+
+Existing plans/transfers are not backfilled. A40→41 migration with existing file records adds a boundary event with counts after preserving the original credential-free migration snapshot. Completed event history is retained by backup/restore; restored or restarted pending states can append explicit recovery transitions. File publication journals and prepared operation rows remain the recovery authority if a later catalog/audit write fails.
+
+GET /api/timeline?before=<sequence> remains Desktop/owner-only and returns at most50 entries with an exclusive cursor. It includes existing matching/manual/task-control/triage events. The UI links exact file plans and GET /api/jobs/{id}; current task detail is explicitly separated from the historical event. Earlier file plans remain accessible through File plans.
+
+Source tests now cover schema40 migration boundary/rollback, quarantine audit failure after physical rename followed by retry/restore/organization/undo, transfer completion audit failure followed by receipt-based retry, and backup/restore preservation. Component fixture1200/390 verifies rendering, older entries and plan/task detail callbacks; this is not native Desktop interaction. Installed report and remaining gates are tracked in MVP_STATUS.md.

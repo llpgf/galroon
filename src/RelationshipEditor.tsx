@@ -1,0 +1,25 @@
+import {ExactRelationshipEditor} from './ExactRelationshipEditor';
+import {relationshipsChanged} from './relationshipChanges';
+import {useEffect,useRef,useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {api} from './api';
+export type RelationKind='people'|'characters'|'companies'|'works';
+type Hidden=Record<RelationKind,string[]>;
+type Decision={revision:number;hidden:Hidden;labels?:Record<string,string>};
+type History={items:{revision:number;created:number;before:Hidden;after:Hidden}[];next:number|null};
+export type RelationChoice={kind:RelationKind;id:string;name:string};
+const kinds:RelationKind[]=['people','characters','companies','works'];
+function BroadRelationshipEditor({id,choices,onClose,onSaved,onExact}:{onExact:()=>void;id:string;choices:RelationChoice[];onClose:()=>void;onSaved:()=>void}){
+ const {t}=useTranslation(),dialog=useRef<HTMLDialogElement>(null),gate=useRef(false),receipt=useRef({key:'',id:''});
+ const [saved,setSaved]=useState<Decision|null>(null),[draft,setDraft]=useState<Hidden|null>(null),[history,setHistory]=useState<History>({items:[],next:null}),[busy,setBusy]=useState(true),[error,setError]=useState(''),[review,setReview]=useState(false);
+ const base=`/vns/${encodeURIComponent(id)}`;
+ async function load(){const [decision,entries]=await Promise.all([api<Decision>(base+'/relationship-decisions'),api<History>(base+'/relationship-history')]);setSaved(decision);setDraft(decision.hidden);setHistory(entries);setReview(false);receipt.current={key:'',id:''};}
+ async function run(action:()=>Promise<void>){if(gate.current)return;gate.current=true;setBusy(true);setError('');try{await action();}catch(e){setError(String(e));}finally{gate.current=false;setBusy(false);}}
+ useEffect(()=>{dialog.current?.showModal();void run(load);},[]);
+ const options=kinds.flatMap(kind=>{const names=new Map(choices.filter(c=>c.kind===kind).map(c=>[c.id,c.name]));for(const value of [...(saved?.hidden[kind]||[]),...(draft?.[kind]||[])])if(!names.has(value))names.set(value,saved?.labels?.[kind+':'+value]||value);return [...names].map(([id,name])=>({kind,id,name}));});
+ const changes=options.filter(c=>saved?.hidden[c.kind].includes(c.id)!==draft?.[c.kind].includes(c.id));
+ async function save(){if(!saved||!draft)return;const body={revision:saved.revision,hidden:draft},key=JSON.stringify(body);if(receipt.current.key!==key)receipt.current={key,id:crypto.randomUUID()};await api(base+'/relationship-decisions',{...body,request_id:receipt.current.id});relationshipsChanged();onSaved();onClose();}
+ return <dialog ref={dialog} className="focus-tag-dialog relationship-editor" aria-labelledby="relationship-heading" onCancel={e=>{e.preventDefault();if(!busy)onClose();}}><h2 id="relationship-heading">{t('relationEdit')}</h2><p>{t('relationScope')}</p><button disabled={busy} onClick={onExact}>{t('exactOpen')}</button>{error&&<p role="alert">{error}</p>}{busy&&<p role="status">{t('loading')}</p>}{!busy&&error&&<button onClick={()=>void run(load)}>{t('relationReload')}</button>}{draft&&saved&&<>{review?<><h3>{t('relationReview')}</h3><ul>{changes.map(c=><li key={c.kind+c.id}>{t(draft[c.kind].includes(c.id)?'relationHide':'relationRestore')} · {c.name}</li>)}</ul></>:<><div className="relationship-options">{kinds.map(kind=><section key={kind}><h3>{t('relation_'+kind)}</h3>{options.filter(c=>c.kind===kind).map(c=><button key={c.id} disabled={busy} aria-pressed={draft[kind].includes(c.id)} onClick={()=>setDraft({...draft,[kind]:draft[kind].includes(c.id)?draft[kind].filter(v=>v!==c.id):[...draft[kind],c.id].sort()})}><span>{c.name}</span><small>{t(draft[kind].includes(c.id)?'relationHidden':'relationVisible')}</small></button>)}</section>)}</div><details><summary>{t('relationHistory')}</summary>{history.items.map(item=><div className="relationship-history" key={item.revision}><span>#{item.revision} · {new Date(item.created*1000).toLocaleString()}</span><button disabled={busy} onClick={()=>{setDraft(item.before);setReview(false);}}>{t('relationUseBefore')}</button></div>)}{history.next!==null&&<button disabled={busy} onClick={()=>void run(async()=>{const page=await api<History>(base+`/relationship-history?before=${history.next}`);setHistory({items:[...history.items,...page.items],next:page.next});})}>{t('historyOlder')}</button>}</details></>}</>}<footer><button disabled={busy} onClick={onClose}>{t('cancel')}</button>{review?<><button disabled={busy} onClick={()=>setReview(false)}>{t('back')}</button><button className="primary" disabled={busy||!changes.length} onClick={()=>void run(save)}>{t('relationSave')}</button></>:<button disabled={busy||!changes.length} onClick={()=>setReview(true)}>{t('relationReview')}</button>}</footer></dialog>;
+}
+
+export function RelationshipEditor(props:{id:string;choices:RelationChoice[];onClose:()=>void;onSaved:()=>void}){const [exact,setExact]=useState(false);return exact?<ExactRelationshipEditor key={props.id} id={props.id} onClose={props.onClose} onSaved={props.onSaved}/>:<BroadRelationshipEditor key={props.id} {...props} onExact={()=>setExact(true)}/>;}

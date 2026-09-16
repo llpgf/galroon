@@ -1,2 +1,0 @@
--- Migration 013: persistent field sources, user overrides, and content signatures
--- Column compatibility is handled in db::Database::ensure_works_compat.

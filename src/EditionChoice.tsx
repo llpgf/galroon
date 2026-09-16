@@ -1,0 +1,11 @@
+import {useEffect,useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {readApi} from './api';
+type Choice={id:string;label:string};type Page={items:Choice[];next:string|null;total:number};
+export function EditionChoice({workId,value,selectedLabel,onChange,onLabels}:{workId:string;value:string|null;selectedLabel?:string;onChange:(id:string|null)=>void;onLabels:(rows:Choice[])=>void}){
+ const {t}=useTranslation(),[query,setQuery]=useState(''),[trail,setTrail]=useState<(string|null)[]>([null]),[retry,setRetry]=useState(0);
+ const cursor=trail.at(-1),key=JSON.stringify([workId,query,cursor,retry]);const [state,setState]=useState<{key:string;data:Page|null;error:string}|null>(null);
+ useEffect(()=>{const controller=new AbortController();const params=new URLSearchParams({query});if(cursor)params.set('before',cursor);const timer=setTimeout(()=>{void readApi<Page>(`/works/${encodeURIComponent(workId)}/edition-options?${params}`,controller.signal).then(data=>{if(!controller.signal.aborted){setState({key,data,error:''});onLabels(data.items);}}).catch(e=>{if(!controller.signal.aborted)setState({key,data:null,error:e instanceof Error?e.message:String(e)});});},200);return()=>{clearTimeout(timer);controller.abort();};},[key]);
+ const current=state?.key===key,data=current?state.data:null,error=current?state.error:'',loading=!current;
+ return <section><label>{t('editionSearch')}<input type="search" value={query} onChange={e=>{setQuery(e.target.value);setTrail([null]);}}/></label><label>{t('edition')}<select value={value||''} onChange={e=>onChange(e.target.value||null)}><option value="">{t('noEdition')}</option>{value&&!data?.items.some(e=>e.id===value)&&<option value={value}>{selectedLabel||value}</option>}{data?.items.map(e=><option key={e.id} value={e.id}>{e.label}</option>)}</select></label>{loading&&<p role="status">{t('loading')}</p>}{error&&<div role="alert"><p>{error}</p><button type="button" onClick={()=>{setTrail([null]);setRetry(n=>n+1);}}>{t('retry')}</button></div>}<div className="inline"><button type="button" disabled={loading||trail.length===1} onClick={()=>setTrail(old=>old.slice(0,-1))}>{t('previousPage')}</button><span>{trail.length}</span><button type="button" disabled={loading||!data?.next} onClick={()=>setTrail(old=>[...old,data!.next])}>{t('nextPage')}</button></div></section>;
+}

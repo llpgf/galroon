@@ -1,0 +1,52 @@
+//! Generated-only HTTP acceptance for the exact relationship editor.
+use galroon_core::local_core::{self,Session};
+use serde_json::{json,Value};use std::{fs,path::PathBuf,time::Duration};
+fn client()->reqwest::Client{reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(20)).build().unwrap()}
+async fn call(s:&Session,path:&str,body:Option<Value>)->Value{let req=if let Some(body)=body{client().post(format!("{}/api{path}",s.url)).json(&body)}else{client().get(format!("{}/api{path}",s.url))};let response=req.bearer_auth(&s.token).send().await.unwrap();let status=response.status();let text=response.text().await.unwrap();assert!(status.is_success(),"{path}: {status}: {text}");serde_json::from_str(&text).unwrap()}
+async fn save(s:&Session,edit:&Value)->Value{let p=call(s,"/vns/v1/relationship-corrections/preview",Some(json!({"edit":edit,"spoilers":true}))).await;let body=json!({"edit":edit,"spoilers":true,"preview_digest":p["preview_digest"]});call(s,"/vns/v1/relationship-corrections",Some(body.clone())).await;body}
+#[tokio::main]async fn main(){
+ let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
+ let raw=json!({"vn":{"id":"v1","title":"Generated exact editor work","developers":[],"staff":[{"id":"s1","aid":1,"role":"scenario","name":"First source alias"},{"id":"s1","aid":2,"role":"scenario","name":"Second source alias"},{"id":"s1","aid":1,"role":"music","name":"Other source role"}],"va":[],"relations":[]},"characters":[],"more":false,"fetched_at":galroon_core::db::now()});
+ {let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();galroon_core::access::setup(&db,"Generated-editor-acceptance-729!",false).unwrap();let c=db.lock().unwrap();c.execute("INSERT INTO settings(key,value) VALUES('exploration.v4.work.v1.1',?1)",[raw.to_string()]).unwrap();
+ for(id,kind,name,aliases)in [("s2","person","Canonical person",json!([{"aid":9,"name":"Actual alias"}])),("c2","character","Generated character",Value::Null),("p2","company","Generated studio",Value::Null),("v2","work","Generated related work",Value::Null)]{c.execute("INSERT INTO settings(key,value) VALUES(?1,?2)",rusqlite::params![format!("relationship.candidate.{id}"),json!({"id":id,"kind":kind,"name":name,"aliases":aliases,"fetched_at":galroon_core::db::now()}).to_string()]).unwrap();}}
+ let first=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();let rs=state.clone();let re=exe.clone();let out=output.clone();
+ let result=tokio::spawn(async move{
+  assert_eq!(call(&first,"/relationship-candidates/s2",None).await["aliases"][0]["aid"],9);
+  let source=json!({"kind":"staff","id":"s1","aid":1,"role":"scenario","note":""});
+  let correction=json!({"id":"staff-rebind","replaces":source,"link":{"key":{"kind":"staff","id":"s2","aid":9,"role":"scenario","note":""},"name":"Actual alias","character_name":null,"spoiler":0}});
+  let mut edits=vec![correction];
+  for(id,key,name,character,spoiler)in [("voice",json!({"kind":"voice","id":"s2","character":"c2","alias":9,"note":"Japanese"}),"Actual alias",json!("Generated character"),2),("company",json!({"kind":"company","id":"p2"}),"Generated studio",Value::Null,0),("related",json!({"kind":"work","id":"v2","relation":"seq"}),"Generated related work",Value::Null,0)]{edits.push(json!({"id":id,"replaces":null,"link":{"key":key,"name":name,"character_name":character,"spoiler":spoiler}}));}
+  let edit=json!({"revision":0,"request_id":"native-editor-first","corrections":edits});let body=save(&first,&edit).await;
+  assert_eq!(call(&first,"/vns/v1/relationship-corrections",Some(body.clone())).await["revision"],1);
+  let safe=call(&first,"/vns/v1/exploration?spoilers=false",None).await;assert_eq!(safe["vn"]["staff"][0]["aid"],2);assert_eq!(safe["vn"]["staff"][1]["role"],"music");assert_eq!(safe["vn"]["staff"][2]["id"],"s2");assert_eq!(safe["vn"]["va"],json!([]));assert_eq!(safe["characters"],json!([]));assert_eq!(safe["vn"]["developers"][0]["id"],"p2");
+  let revealed=call(&first,"/vns/v1/exploration?spoilers=true",None).await;assert_eq!(revealed["vn"]["va"][0]["staff"]["aid"],9);assert_eq!(revealed["characters"][0]["id"],"c2");
+  assert_eq!(call(&first,"/entities/s2/manual-works",None).await["works"][0]["staff"][0]["aid"],9);assert_eq!(call(&first,"/entities/c2/manual-works",None).await["works"],json!([]));assert_eq!(call(&first,"/entities/c2/manual-works?spoilers=true",None).await["works"][0]["id"],"v1");
+  let login=client().post(format!("{}/api/access/login",first.url)).header("origin",&first.url).json(&json!({"password":"Generated-editor-acceptance-729!","name":"generated-web"})).send().await.unwrap().error_for_status().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
+  for(method,path)in [("GET","/vns/v1/relationship-corrections?spoilers=true"),("GET","/vns/v1/relationship-corrections/history?spoilers=true"),("GET","/relationship-candidates/s2"),("POST","/vns/v1/relationship-corrections/preview"),("POST","/vns/v1/relationship-corrections")]{let req=if method=="GET"{client().get(format!("{}/api{path}",first.url))}else{client().post(format!("{}/api{path}",first.url)).json(&json!({}))};assert_eq!(req.header("cookie",cookie).send().await.unwrap().status().as_u16(),403);}
+  // Broad decision changes invalidate a previously generated confirmation.
+  let hide=json!({"revision":1,"request_id":"native-editor-hide","corrections":[{"id":"hide-alias","replaces":source,"link":null}]});let preview=call(&first,"/vns/v1/relationship-corrections/preview",Some(json!({"edit":hide,"spoilers":true}))).await;
+  call(&first,"/vns/v1/relationship-decisions",Some(json!({"revision":0,"request_id":"native-editor-broad","hidden":{"people":["s2"]}}))).await;
+  let response=client().post(format!("{}/api/vns/v1/relationship-corrections",first.url)).bearer_auth(&first.token).json(&json!({"edit":hide,"spoilers":true,"preview_digest":preview["preview_digest"]})).send().await.unwrap();assert_eq!(response.status().as_u16(),400);
+  // Reloading the preview permits the same intended hide; only that exact alias is removed.
+  save(&first,&hide).await;let hidden=call(&first,"/vns/v1/exploration",None).await;assert_eq!(hidden["vn"]["staff"].as_array().unwrap().len(),2);
+  local_core::request(&rs,&re,"stop").await.unwrap();let second=local_core::connect_or_start(rs.clone(),re.clone()).await.unwrap();assert_eq!(first.library_id,second.library_id);assert_eq!(call(&second,"/vns/v1/relationship-corrections?spoilers=true",None).await["revision"],2);
+  // A retry of the first request after later edits still returns its receipt, without reverting the hide.
+  assert_eq!(call(&second,"/vns/v1/relationship-corrections",Some(body.clone())).await["revision"],1);assert_eq!(call(&second,"/vns/v1/relationship-corrections?spoilers=true",None).await["revision"],2);
+  let history=call(&second,"/vns/v1/relationship-corrections/history?spoilers=true",None).await;assert_eq!(history["items"].as_array().unwrap().len(),2);
+  let undo=json!({"revision":2,"request_id":"native-editor-undo","corrections":history["items"][1]["before"]});save(&second,&undo).await;assert_eq!(call(&second,"/vns/v1/exploration",None).await["vn"]["staff"].as_array().unwrap().len(),3);
+  local_core::request(&rs,&re,"stop").await.unwrap();
+  {let db=galroon_core::db::open(&rs.join("library.sqlite")).unwrap();let c=db.lock().unwrap();let saved:String=c.query_row("SELECT value FROM settings WHERE key='exploration.v4.work.v1.1'",[],|r|r.get(0)).unwrap();assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(),raw);assert_eq!(c.query_row("SELECT count(*) FROM works",[],|r|r.get::<_,i64>(0)).unwrap(),0);drop(c);
+  fs::create_dir(out.join("backup")).unwrap();let backup=galroon_core::backup::export(&db,&out.join("backup")).unwrap();let restored=galroon_core::backup::restore_new(&backup,&out.join("restored"),None).unwrap();let restored=galroon_core::db::open(&restored.join("library.sqlite")).unwrap();let c=restored.lock().unwrap();assert_eq!(galroon_core::relation_correction_store::read(&c,"v1").ok().unwrap().0,3);assert_eq!(galroon_core::relation_correction_store::history(&c,"v1",None).ok().unwrap()["items"].as_array().unwrap().len(),3);
+  let original:galroon_core::relation_correction_store::Edit=serde_json::from_value(edit).unwrap();assert_eq!(galroon_core::relation_correction_store::replay(&c,"v1",&original).ok().unwrap().unwrap()["revision"],1);
+  drop(c);drop(restored);}
+  let restored_state=out.join("restored");let restored_session=local_core::connect_or_start(restored_state.clone(),re.clone()).await.unwrap();
+  assert_eq!(call(&restored_session,"/vns/v1/relationship-corrections?spoilers=true",None).await["source_unavailable"],true);
+  let history=call(&restored_session,"/vns/v1/relationship-corrections/history?spoilers=true",None).await;
+  let historical=json!({"revision":3,"request_id":"native-restored-history","corrections":history["items"][1]["before"]});
+  let preview=call(&restored_session,"/vns/v1/relationship-corrections/preview",Some(json!({"edit":historical,"spoilers":true,"history_revision":2}))).await;
+  assert_eq!(call(&restored_session,"/vns/v1/relationship-corrections",Some(json!({"edit":historical,"spoilers":true,"history_revision":2,"preview_digest":preview["preview_digest"]}))).await["revision"],4);
+  local_core::request(&restored_state,&re,"stop").await.unwrap();
+  json!({"offline_history_restore_through_http":true,"separate_core_http":true,"candidate_actual_alias":true,"add_rebind_hide_undo":true,"other_alias_and_role_preserved":true,"spoiler_forward_reverse":true,"preview_broad_conflict":true,"receipt_replay_after_restart_and_later_edits":true,"web_private_routes_403":true,"raw_cache_unchanged":true,"backup_restore_history_receipts":true,"source_files":0,"collection_works":0,"schema":galroon_core::db::SCHEMA_VERSION})
+ }).await;
+ let _=local_core::request(&state,&exe,"stop").await;let _=local_core::request(&output.join("restored"),&exe,"stop").await;let mut report=result.expect("Validation failed; stop attempted");report["core_sha256"]=json!(galroon_core::plans::hash(&exe).unwrap().1);fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
+}

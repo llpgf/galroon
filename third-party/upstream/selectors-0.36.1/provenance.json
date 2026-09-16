@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/servo/stylo",
+  "commit": "635e1a19d02960588a00e189bd4bd5bdb150ec3d",
+  "files": [
+    {
+      "file": "LICENSE-MPL-2.0",
+      "url": "crate:cssparser@0.36.0/LICENSE",
+      "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+    },
+    {
+      "file": "NOTICE-selector-source.txt",
+      "url": "crate:selectors@0.36.1/lib.rs (leading license notice)",
+      "sha256": "766674381e88a468d55e07de3596987391cf0e8beebe51baf4fddf11078785b3"
+    }
+  ]
+}

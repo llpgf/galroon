@@ -1,0 +1,99 @@
+## M4 shared reference name projection — 2026-09-07
+
+Added memoized bounded traversal for typed entity references across local/reference work exploration, profile relations, discovery cards and smart relation options/reasons. Character/company names use current custom name. Staff credit name/aid remain source values; separate display_name supports person-level option/reason labels. Biographies are not copied into reference rows. Main profile fields remain projected separately. Raw caches unchanged.
+
+Validation: full191 Core library tests passed. Added nested-reference test covers company/character labels, voice-character labels, actual staff/voice aliases and exclusion of private biography text. Existing source/cache, backup, API permissions, search and smart tests pass. Frontend unchanged this increment62 present,last full60. Source schema33; debug32 predates entity changes, installed15 unchanged. Remaining native UI/name propagation, custom-name search semantics, large-cache performance, add/rebind relationships, offline/privacy and other MVP gates remain. Goal active; originals/NAS untouched.
+
+## M4 entity profile field editor — 2026-09-07
+
+EntityProfile now exposes Edit profile to writable clients with loaded data. Shared modal supports per-field Follow source(null), custom name/introduction, explicit empty introduction, history-before drafts, preview, stable receipt retry and success invalidation. Core projection marks overridden local_fields so empty manual introduction does not claim VNDB omitted it. Name/description controls bounded to server limits. Actual credit aliases remain separate.
+
+Validation: TypeScript passed; entity_overrides3 passed. verify-fields.cjs tests1200/390 follow/custom modes, name edit, empty description, zero pre-preview writes, correct revision/payload and close; fields-390.png inspected. This is standalone mocked editor evidence; full profile/native read-after-write, history restore/retry, all-surface name propagation and remaining M4/MVP gates still open. Source schema33, debug32, installed15. Core190 present,last full185; frontend62 present,last full60. Goal active; originals/NAS unchanged.
+
+## M4 entity field API and main profile projection — 2026-09-07
+
+Added private GET/POST /api/entities/{id}/field-decisions and paged GET field-history for owner/paired Desktop. Web raw decisions/history and mutations denied. Person/character/company main profile objects apply current name/description fields after source load, keeping raw cache and actual per-work staff alias/name/aid untouched. Empty description stays empty; reset semantics remain null follows source.
+
+Validation: entity_overrides3 tests passed (Core190 present,last full185). New router test writes all three entity types, reads effective profile name/empty biography, checks retained credit alias and unchanged cache, and verifies Web GET/POST403. Existing backup/reset/replay/rollback tests pass. No frontend editing controls or all-surface field propagation yet; empty manual introduction copy and history UI still to implement. Source schema33, debug32, installed15; frontend62 present,last full60 unchanged. Goal active; original games/NAS untouched; remaining M4/MVP gates retained.
+
+## M4 entity text correction foundation — 2026-09-07
+
+Rechecked ../EXPLORATION_PAGES_PLAN.md: E1 includes entity name/biography overrides and manual add/hide/rebind relationships. Existing hide/restore does not complete it. Added entity_overrides module and schema33: separate name/description decisions, optimistic revisions, atomic before/after history and idempotent receipts. Null follows provider source; empty description intentionally suppresses source text; blank names and invalid identities/control characters are rejected. Smart revision invalidates on entity override changes. Projection helper changes only supplied fields on a copy.
+
+Validation: focused entity_overrides2 tests passed (Core189 present,last full185): reopen/replay, empty-vs-null projection, backup/restore/reset, stale edit and receipt-failure rollback. No public entity-edit API or frontend projection/editor yet; not an end-user feature completion claim. Source33, debug32, installed15; older executables must not open schema33 fixtures. Frontend unchanged62 present,last full60. Next entity fields API/projection/editor plus add/rebind relationships, all remaining M4/MVP gates retained. Goal active; original games/NAS untouched.
+
+## M4 native live discovery membership — 2026-09-07
+
+Rebuilt current debug Core schema32. New verify_discovery_membership fetches public VNDB v1 title/developers, seeds one isolated search-row fixture, then exercises separate-Core real HTTP: baseline1, hide current developers0, warm-cache0, restore1. Cold membership calls VNDB; measured1180ms, warm2ms. Read-only SQLite confirms exactly one false verdict retained unchanged by warm read and zero collection entries. Final Core stop passed.
+
+Evidence: test-output/mvp-goal/discovery-membership-native/report.json and public-source.json; cargo run -p galroon-core --example verify_discovery_membership --offline -- test-output/mvp-goal/discovery-membership-native target/debug/galroon-core.exe exited0. --offline applies to Cargo dependency resolution; verifier intentionally performs public VNDB reads. No credentials or original source files in fixture/report. This is a seeded one-row search with a live membership check, not a full provider search page, multi-branch latency, trait check or installed UI acceptance. Source/debug32 aligned, installed15 unchanged. Core187 present,last full185; frontend62 present,last full60. Remaining M4/MVP gates retained. Goal active, originals/NAS untouched.
+
+## M4 bounded discovery membership batches — 2026-09-07
+
+Cold membership checks now batch per-work existential predicates under OR: up to8 candidates and16000 bytes of constituent bodies per batch. Each branch retains its work ID and excluded relationship IDs; per-work verdict cache keys remain compatible. Recheck caches after acquiring provider gate to avoid duplicate waiting callers. Response more must be false; duplicate, unexpected or malformed IDs reject before verdict writes. Final local revision checks remain.
+
+Validation: discovery7 tests passed (Core187 present,last full185). New tests show24 small requests become3 batches, preserve every branch, enforce byte splitting, correctly map retained IDs and reject partial/duplicate/unexpected responses. Existing cached trait/studio membership tests remain green. This is structural/cached evidence, not measured live latency, cancellation or full native search correctness. Frontend unchanged62 present,last full60. Source schema32, debug32 predates recent discovery changes, installed15 unchanged. Remaining M4/MVP gates preserved. Goal active; originals/NAS untouched.
+
+## M4 relationship-aware search membership — 2026-09-07
+
+Studio/trait-to-work search now rechecks each affected returned work using the original nested relationship predicate with hidden IDs excluded inside that predicate. A different matching retained relation can still qualify the work. Verdicts cache1h keyed by full query/exclusions; raw search cache remains unchanged. Removed rows preserve provider more and verified continuation. Every observed work decision revision is rechecked before response; query errors/change races fail explicitly rather than assert unverified membership. This introduces bounded per-page provider calls for cold affected works; latency/cancellation/rate-limit and native end-to-end coverage remain to measure.
+
+Validation: discovery6 tests passed (Core186 present,last full185). Cached-handler tests cover trait/studio verdict rejection vs alternate retained match, nested predicate shape, raw cache and continuation. Official https://api.vndb.org/kana documents nested existential developer/character filters; two live results:0 validation requests for the generated v1/c1/p1 predicates succeeded (empty results, no credentials or provider writes). This validates syntax, not independent live result correctness. Debug32 predates this source change, installed15 unchanged. Frontend62 present,last full60. Goal active; full native/search latency, offline and broader correction/privacy/MVP gates remain. Originals/NAS untouched.
+
+## M4 filtered entity pagination fix — 2026-09-07
+
+Fixed full-scope list preparation stopping when a provider page became empty after local relationship hiding. Core reverse projection now marks continuation_verified only when it removed rows and provider more is true; no removed count or IDs are exposed. entityListScope accepts such empty pages and continues to later works. Unexplained empty pages, repeated nonempty pages, stale/partial responses, cancellation,10000-entry cap and1000-page bound remain enforced.
+
+Validation: TypeScript, entityListScope9 and relationship5 passed. Added traversal test covers two filtered pages followed by a visible locally owned work; negative tests retain unexplained-empty failure and exact1000-page bound. Core reverse test checks continuation marker and source/reset behavior. Frontend62 present,last full60; Core185,last full185 (prior to marker), focused5 current. No visual changes or new installed evidence. Source schema32, debug32 predates recent changes, installed15 unchanged. Goal active; native combined pagination and remaining MVP gates open; original games/NAS untouched.
+
+## M4 same-client relationship invalidation and full regression — 2026-09-07
+
+Found stale navigation: DiscoverySearch skipped already-fetched paths and EntityProfile retained prior credits after edits elsewhere. Successful relationship saves now publish a shared revision. Local/reference work projections and reasons reload; entity/search pages discard prior pagination and rebuild. Hidden search waits until visible before reading; draft/cancel do not publish. This covers same-client edits, not cross-client revision polling.
+
+Validation: TypeScript and full60 frontend tests passed. verify-invalidation.cjs proves a hidden mounted search does not fetch at the change signal, then refetches once on return and removes the obsolete character. Existing reference history/cancel/save flow passes1200/390 after integration. Full185 Core library tests passed. Core source schema32; debug32 predates discovery/labels, installed15 unchanged. Remaining query membership consistency, cross-client changes, native combined UI, full correction/offline/privacy and other MVP gates remain. Goal active; original sources/NAS untouched.
+
+## M4 named relationship restoration — 2026-09-07
+
+Private relationship-decisions GET now includes bounded kind:ID -> name labels from local raw work cache, limited to explicitly hidden identities. It does not return unselected characters, biographies, images or the full source payload and performs no provider fetch. Shared editor uses labels for hidden relationships absent from effective exploration, with ID fallback if unavailable. This makes restore previews identifiable while retaining compatibility with older label-less responses.
+
+Validation: focused relationship5 tests passed (185 Core present,last full182). New test checks staff/voice/company/character/work labels, missing IDs/cache and exclusion of unselected spoiler/person names. Existing Web decision/history403 remains green. TypeScript passed; updated1200/390 reference browser flow checks Restore + name, draft/cancel/confirm and refreshed credits. reference-restore-390.png inspected. Source-only API change; debug32 predates labels, installed15 unchanged. Frontend60 present,last full58. Full query membership, broader corrections, native UI/offline/privacy and remaining MVP gates retained. Goal active, originals/NAS untouched.
+
+## M4 reference relationship editor and history interaction — 2026-09-07
+
+ReferenceWork now offers the shared editor to writable clients, with post-save projection/reason refresh and no collection insertion. Extracted relationshipChoices shared by local/reference views: stable kind+ID deduplication, all staff independent of display filter, visible-character-only voice choices. History-before state remains a draft, requires preview, and cancel performs no write. IDs remain fallback labels when the hidden entity name is unavailable in the effective payload.
+
+Validation: TypeScript and2 relationshipChoices tests passed (frontend60 present,last full58). Browser verify-reference.cjs at1200/390 passes history draft/preview/cancel with zero writes, reopen/confirm with exactly one relationship-decision POST, correct current revision and empty restored hidden state, refreshed staff and no readonly edit entry. reference-restore-390.png inspected. Existing mocked API evidence only; installed/native UI, named hidden-label enrichment, discovery membership and broader correction/offline/privacy gates remain. Core184 present,last full182; schema32; no Core rebuild this frontend increment. Goal active, original sources/NAS unchanged.
+
+## M4 discovery relationship display projection — 2026-09-07
+
+Discovery responses now apply local decisions after every cache/fetch path: character vns remove manually hidden appearances, work cards remove hidden developer metadata. Raw search cache is retained; reset appears immediately on the next read. Fresh, duplicate-cache and stale fallback share the projection; provider page/more remain unchanged. This does not yet recompute provider result membership for studio/trait-to-work queries: full local query consistency remains an explicit gap.
+
+Validation: cargo test -p galroon-core discovery --lib --offline:5 passed,179 filtered. Added cached-handler test checks hide/reset without cache rewrite, developer retention, stale projection and pagination preservation. No frontend change this increment. Core184 present,last full182; source schema32, debug32 predates this projection, installed15 unchanged. Original sources/NAS unchanged. Remaining M4/MVP gates preserved, Goal active.
+
+## M4 native relationship projection verification — 2026-09-07
+
+Rebuilt current debug Core schema32 and added verify_relationships. Fresh independent Core fixture stores one work plus cached work/person/character/company pages. Real HTTP hide affects both local/reference forward pages and all three reverse pages; related personal-tag smart preview changes1 ->0. Stop/restart retains decision and receipt replay; reset restores exact forward payload, reverse credits and smart preview1. History has exactly two records with correct before-state; read-only SQLite confirms raw cache unchanged. Final Core stop succeeded.
+
+Evidence: test-output/mvp-goal/relationships-native/report.json. Command: cargo run -p galroon-core --example verify_relationships --offline -- test-output/mvp-goal/relationships-native target/debug/galroon-core.exe (fresh output required); exit0. All fixture metadata generated, zero source files, no credentials written in report. Source/debug schema32 now aligned; isolated installed remains15. This proves native API projection/restart, not installed UI or discovery consistency. Core183 present,last full182/focused4; frontend58 unchanged. Next remaining M4 items include editor native/history/reset interaction, reference editor entry, discovery consistency, broader role/add/change corrections, offline artwork/privacy and other MVP gates. Goal active; original games/NAS untouched.
+
+## M4 relationship editor UI — 2026-09-07
+
+Local work details now expose Edit relationships only for canWrite users with VNDB exploration data. Midnight modal groups visible people/characters/companies/related works, deduplicates stable IDs, loads persisted hidden IDs for restoration, stages history-before states and requires a changed-item preview before save. Hidden IDs without a current name display their provider ID. Staff scope explicitly covers all roles. Repeated failed saves reuse the same request receipt; explicit reload discards the draft. Success reloads work projection and related-tag reasons. No Web editing control, no file or provider mutation.
+
+Validation: TypeScript passed; frontend58 passed. test-output/relationship-ui/verify.cjs passed keyboard selection, zero pre-confirm writes, preview and identical receipt/body retry at1200/390; review-390.png visually inspected. Initial translation insertion targeted a string occurrence incorrectly; corrected to the en object before successful checks. Browser fixture mocks API; full native work/history integration, reference-work entry point, history/reset UX verification, discovery consistency and full add/change/role corrections remain. Core unchanged (183 present,last full182); source32/debug31/installed15 unchanged. Goal remains active; originals/NAS untouched.
+
+## M4 relationship decision and history API — 2026-09-07
+
+Added GET/POST /api/vns/{id}/relationship-decisions and GET /api/vns/{id}/relationship-history. Owner and paired Desktop may read/edit; Web cannot read hidden IDs/history or write. Edits commit decision/history/receipt atomically and enforce optimistic revision; replay returns the original result. History uses exclusive revision cursors,50 records per page. No UI controls yet; discovery projection and full role/add/change correction still pending.
+
+Validation: cargo test -p galroon-core relation_overrides --lib --offline:4 passed,179 filtered. New router test performs52 POSTs, checks replay/stale conflict and continued history after a new record, and proves Web GET/POST403 without hidden ID disclosure. Existing reopen/backup/reset/rollback/reverse-profile tests pass. Added test-only tower util using the already cached transitive version; no production dependency change. Source183 tests present, last full182; schema32 unchanged, debug31/installed15 unchanged. Goal active. Original games/NAS untouched. This is in-process router evidence, not native installed acceptance.
+
+## M4 durable relationship projection foundation — 2026-09-07
+
+Source schema32 stores per-VN hidden people/characters/companies/related works separately from provider snapshots, with optimistic revision, request receipts and before/after history in one caller transaction. Reset follows source again. Forward local/reference exploration, reverse person/character/company pages, smart facts/options and related-tag reasons now apply current decisions. Hiding a sole voice role removes that work from the person page; another staff role keeps it. Character vns are filtered, provider page/more remain unchanged, raw caches remain unchanged. Fixed projection inserting null into absent provider fields.
+
+Validation: full182 Core library tests passed after fixing two initially failing cache-shape/reset assertions. Tests cover backup/reopen/reset, receipt failure rollback, stale revision, typed identity, reverse sole-voice versus independent staff role and pagination. Frontend unchanged (previous58 baseline). Source32; debug executable remains31; installed15 unchanged. Relationship editing/history API now exposed to owner/paired Desktop; no UI yet. Discovery consistency, full add/change/role correction, history UI, native cross-projection evidence and remaining M0–M6 gates remain open. Goal active; generated tests only, originals/NAS unchanged.
+
+Implementation: crates/core/src/relation_overrides.rs; callers in exploration.rs, smart_relations.rs, smart_facts.rs and entity_tags.rs. Raw provider settings are retained so decisions can be reset after refresh. Mutation function requires an outer transaction; public editing routes and exclusive-cursor history are now available to owner/paired Desktop. This is a foundation, not completion of M4 relationship correction.
+
+Reproduce: cargo test -p galroon-core --lib. Current182 passed. No UI changes this increment, so no new rendered UI evidence claimed.
