@@ -12,6 +12,12 @@ Galroon 是以 **Rust Core + React / TypeScript + Tauri 2** 開發的 Windows �
 
 目前版本為 **0.0.2**，API **1**，收藏資料庫 schema **43**。主要功能已實作；目前仍屬開發版本，完整發佈驗收尚未完成。
 
+### 下載
+
+[下載 Windows x64 安裝包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) · [v0.0.2 發佈說明與校驗值](https://github.com/llpgf/galroon/releases/tag/v0.0.2)
+
+此版本標示為 **Pre-release（預發佈）**。歷史 `v0.5.0` 屬於先前原型；請使用上述連結取得目前版本。
+
 ### 主要功能
 
 - **掃描與匹配**：索引來源資料夾、監視檔案變更、匹配 VNDB 資料，保留手動修改與關聯修正。
@@ -76,6 +82,12 @@ npm run desktop:build
 Galroon is a **Windows desktop catalog for visual novel collections**, built with a Rust Core, React / TypeScript and Tauri 2. It treats works, editions, resource packages and physical files as separate entities: multiple editions share one work card, and shared resources do not require duplicate files.
 
 Current version: **0.0.2**, API **1**, catalog schema **43**. Core features are implemented; full release acceptance is still in progress. This is a development build.
+
+### Download
+
+[Download the Windows x64 installer](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) · [v0.0.2 release notes and checksums](https://github.com/llpgf/galroon/releases/tag/v0.0.2)
+
+This is a **Pre-release**. The historical `v0.5.0` belongs to the earlier prototype; use the links above for the current version.
 
 ### Features
 
