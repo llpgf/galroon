@@ -2,6 +2,8 @@
 
 **Galgame 收藏管理｜A local catalog for visual novel collections**
 
+[v0.0.2 Pre-release](https://github.com/llpgf/galroon/releases/tag/v0.0.2) · **Windows x64** · [GPL-3.0-only](LICENSE)
+
 [繁體中文](#繁體中文) · [English](#english)
 
 ---
@@ -14,7 +16,15 @@ Galroon 是以 **Rust Core + React / TypeScript + Tauri 2** 開發的 Windows �
 
 ### 下載
 
-[下載 Windows x64 安裝包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) · [v0.0.2 發佈說明與校驗值](https://github.com/llpgf/galroon/releases/tag/v0.0.2)
+| 下載 | 用途 |
+|---|---|
+| [Windows x64 安裝包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) | 安裝 Galroon；已附完整 GPLv3 授權與版權聲明。 |
+| [附授權的源碼包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon-0.0.2-source.zip) | 本版源碼、建置設定與授權文件。 |
+| [SHA-256 校驗檔](https://github.com/llpgf/galroon/releases/download/v0.0.2/SHA256SUMS.txt) | 核對下載檔案。 |
+
+下載安裝包後直接執行即可，使用者不需要安裝開發工具。系統需要 WebView2。完整變更與驗證範圍見 [v0.0.2 發佈說明](https://github.com/llpgf/galroon/releases/tag/v0.0.2)。
+
+需要附完整授權的本版源碼時，請使用上方具名源碼包；GitHub 自動產生的原 tag 源碼封存檔早於授權更新。
 
 此版本標示為 **Pre-release（預發佈）**。歷史 `v0.5.0` 屬於先前原型；請使用上述連結取得目前版本。
 
@@ -85,7 +95,15 @@ Current version: **0.0.2**, API **1**, catalog schema **43**. Core features are 
 
 ### Download
 
-[Download the Windows x64 installer](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) · [v0.0.2 release notes and checksums](https://github.com/llpgf/galroon/releases/tag/v0.0.2)
+| Download | Purpose |
+|---|---|
+| [Windows x64 installer](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) | Install Galroon, including the full GPLv3 license and copyright notice. |
+| [Source archive with license](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon-0.0.2-source.zip) | Source, build configuration and license files for this version. |
+| [SHA-256 checksums](https://github.com/llpgf/galroon/releases/download/v0.0.2/SHA256SUMS.txt) | Verify downloaded files. |
+
+Run the installer after downloading it; development tools are not needed to use the app. WebView2 is required. See the [v0.0.2 release notes](https://github.com/llpgf/galroon/releases/tag/v0.0.2) for changes and validation scope.
+
+Use the named source archive above for this version with its complete license notices; GitHub's automatic archives of the original tag predate the licensing update.
 
 This is a **Pre-release**. The historical `v0.5.0` belongs to the earlier prototype; use the links above for the current version.
 
@@ -164,6 +182,7 @@ Build output, game data, catalogs, login state, local acceptance records and his
 ├── scripts/                 Build, notice and repository helpers
 ├── third-party/             Notices, provenance and source archives
 ├── tools/7zip/              Required runtime and its license
+├── LICENSE / COPYRIGHT     GPL-3.0-only and project copyright notice
 ├── Cargo.toml / Cargo.lock  Rust workspace and locked dependencies
 └── package*.json            Frontend commands and locked dependencies
 ```
