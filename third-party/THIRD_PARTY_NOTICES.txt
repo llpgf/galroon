@@ -60333,13 +60333,13 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 ==============================================================================
-npm: @fontsource/dm-sans 5.3.0
+npm: @fontsource-variable/hanken-grotesk 5.3.0
 Declared license: OFL-1.1
 Upstream: git+https://github.com/fontsource/font-files.git
 
---- npm:@fontsource/dm-sans@5.3.0/LICENSE ---
+--- npm:@fontsource-variable/hanken-grotesk@5.3.0/LICENSE ---
 
-Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts) DMSans-Italic[opsz,wght].ttf: Copyright 2014 The DM Sans Project Authors (https://github.com/googlefonts/dm-fonts)
+Copyright 2021 The Hanken Grotesk Project Authors (https://github.com/marcologous/hanken-grotesk) HankenGrotesk-Italic[wght].ttf: Copyright 2021 The Hanken Grotesk Project Authors (https://github.com/marcologous/hanken-grotesk)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
@@ -60435,13 +60435,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 ==============================================================================
-npm: @fontsource/libre-baskerville 5.2.7
+npm: @fontsource/instrument-serif 5.3.0
 Declared license: OFL-1.1
 Upstream: git+https://github.com/fontsource/font-files.git
 
---- npm:@fontsource/libre-baskerville@5.2.7/LICENSE ---
+--- npm:@fontsource/instrument-serif@5.3.0/LICENSE ---
 
-Google Inc.
+Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif) InstrumentSerif-Italic.ttf: Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
@@ -60537,13 +60537,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 ==============================================================================
-npm: @fontsource/manrope 5.3.0
+npm: @fontsource/jetbrains-mono 5.3.0
 Declared license: OFL-1.1
 Upstream: git+https://github.com/fontsource/font-files.git
 
---- npm:@fontsource/manrope@5.3.0/LICENSE ---
+--- npm:@fontsource/jetbrains-mono@5.3.0/LICENSE ---
 
-Copyright 2019 The Manrope Project Authors (https://github.com/sharanda/manrope)
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) JetBrainsMono-Italic[wght].ttf: Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

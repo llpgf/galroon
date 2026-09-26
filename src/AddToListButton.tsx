@@ -1,4 +1,5 @@
 import {useState} from 'react';
 import {useTranslation} from 'react-i18next';
+import {ListPlus} from 'lucide-react';
 import {AddToList,type ListMember} from './AddToList';
-export function AddToListButton({member}:{member:ListMember}){const {t}=useTranslation();const [scope,setScope]=useState<ListMember[]|null>(null);return <><button onClick={()=>setScope([{...member}])}>{t('listAdd')}</button>{scope&&<AddToList members={scope} onClose={()=>setScope(null)}/>}</>;}
+export function AddToListButton({member}:{member:ListMember}){const {t}=useTranslation();const [scope,setScope]=useState<ListMember[]|null>(null);return <><button onClick={()=>setScope([{...member}])}><ListPlus size={16}/>{t('listAdd')}</button>{scope&&<AddToList members={scope} onClose={()=>setScope(null)}/>}</>;}
