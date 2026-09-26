@@ -7,7 +7,7 @@ import {X} from 'lucide-react';
 import {api,type Work,type Resource} from './api';
 export function GroupingEditor({work,onClose,onSaved}:{work:Work;onClose:()=>void;onSaved:()=>Promise<void>}){
  const assets=useWorkAssets(work),{t}=useTranslation();
- if(!assets.data)return <div className="scrim"><aside className="drawer"><button aria-label={t('close')} onClick={onClose}><X/></button>{assets.loading?<p role="status">{t('loading')}</p>:<div role="alert"><p>{assets.error}</p><button onClick={assets.reload}>{t('retry')}</button></div>}</aside></div>;
+ if(!assets.data)return <div className="scrim"><aside className="drawer"><button className="drawer-close icon-button" aria-label={t('close')} onClick={onClose}><X/></button>{assets.loading?<p role="status">{t('loading')}</p>:<div role="alert"><p>{assets.error}</p><button onClick={assets.reload}>{t('retry')}</button></div>}</aside></div>;
  return <GroupingForm key={assets.data.work.id+':'+assets.data.work.revision} work={assets.data.work} resources={assets.data.resources} onClose={onClose} onSaved={onSaved}/>;
 }
 function GroupingForm({work,resources,onClose,onSaved}:{work:Work;resources:Resource[];onClose:()=>void;onSaved:()=>Promise<void>}){
