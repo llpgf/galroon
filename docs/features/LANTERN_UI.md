@@ -19,6 +19,15 @@ All styling lives in `src/theme.css`, which replaces `style.css` and `midnight.c
 - Organize: one primary action per row (Match work, or Preview move once matched). History, references and grouping move to a row menu.
 - Page titles and helper text were rewritten in plain language. Verbose contract-style hints were shortened without dropping safety facts (restore, undo and move behaviour).
 
+## Follow-up polish
+
+- Works without a VNDB link show one notice in place of the empty Characters, Staff and Related sections, and the section links are hidden. Their hero cover uses the same tinted title placeholder as the collection grid (`coverTone` in `src/library.ts`).
+- Related personal tags only take a section when there are tags (or an error to retry).
+- Side drawers (`.scrim > .drawer`) share keyboard handling from `src/drawerKeys.ts`: focus moves into the drawer, Escape does what its close button does, and focus returns to the opener.
+- Disclosures use one chevron instead of the platform triangle. The Settings cover toggle is a switch.
+- Task history hides its pager when there is only one page. Timeline entries show translated states and shortened IDs (full value on hover).
+- Resource kinds (Organize) and source roles (Sources) are translated. An empty Lists page shows an empty-state panel.
+
 ## Language, names and theme
 
 - Interface language: English and Traditional Chinese (`src/locales/zh-TW.ts`). Any `zh*` system locale uses Traditional Chinese, and missing keys fall back to English. In Chinese the UI font prefers Microsoft JhengHei so characters use Taiwanese glyph forms.
