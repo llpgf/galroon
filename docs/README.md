@@ -22,6 +22,7 @@
 - [Connection](features/CONNECTION.md)
 - [Diagnostics](features/DIAGNOSTICS.md)
 - [Issues](features/ISSUES.md)
+- [Lantern UI](features/LANTERN_UI.md)
 - [Library](features/LIBRARY.md)
 - [Lists](features/LISTS.md)
 - [Matching](features/MATCHING.md)

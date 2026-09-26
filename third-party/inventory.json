@@ -1,7 +1,7 @@
 {
   "target": "x86_64-pc-windows-msvc",
   "cargo_lock_sha256": "909f9509db360a32bba8b05403026062bd03a7b08e96b49a8e447aab5f20bdd5",
-  "npm_lock_sha256": "fea0572bb180e0e124e830e6147f26cbfb69a3f61530915fffee734c3f123ace",
+  "npm_lock_sha256": "374f7d334af3de9191e1eaf75a92d2983945d5aff7199e72b453223f6a7e60f0",
   "packages": [
     {
       "ecosystem": "Cargo",
@@ -5998,40 +5998,40 @@
     },
     {
       "ecosystem": "npm",
-      "name": "@fontsource/dm-sans",
+      "name": "@fontsource-variable/hanken-grotesk",
       "version": "5.3.0",
       "declared_license": "OFL-1.1",
       "repository": "git+https://github.com/fontsource/font-files.git",
       "notices": [
         {
-          "source": "npm:@fontsource/dm-sans@5.3.0/LICENSE",
-          "sha256": "6fbd040a29c2037a765dfb9f2561e9965b5c95c6dcb5dce516089d63d5f17af7"
+          "source": "npm:@fontsource-variable/hanken-grotesk@5.3.0/LICENSE",
+          "sha256": "f45f60ca871850c58d8dc9c973bd6fcad40c137e9d037172b961e8ca68c87ef7"
         }
       ]
     },
     {
       "ecosystem": "npm",
-      "name": "@fontsource/libre-baskerville",
-      "version": "5.2.7",
-      "declared_license": "OFL-1.1",
-      "repository": "git+https://github.com/fontsource/font-files.git",
-      "notices": [
-        {
-          "source": "npm:@fontsource/libre-baskerville@5.2.7/LICENSE",
-          "sha256": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3"
-        }
-      ]
-    },
-    {
-      "ecosystem": "npm",
-      "name": "@fontsource/manrope",
+      "name": "@fontsource/instrument-serif",
       "version": "5.3.0",
       "declared_license": "OFL-1.1",
       "repository": "git+https://github.com/fontsource/font-files.git",
       "notices": [
         {
-          "source": "npm:@fontsource/manrope@5.3.0/LICENSE",
-          "sha256": "d826ab6583b12c26807d8716a545bdbbb672df04f48608a364ba9efdbe501c30"
+          "source": "npm:@fontsource/instrument-serif@5.3.0/LICENSE",
+          "sha256": "b6106a757902d2d412e09d94dc4a226fe3da80485208a98003969f1b8b6b1d74"
+        }
+      ]
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@fontsource/jetbrains-mono",
+      "version": "5.3.0",
+      "declared_license": "OFL-1.1",
+      "repository": "git+https://github.com/fontsource/font-files.git",
+      "notices": [
+        {
+          "source": "npm:@fontsource/jetbrains-mono@5.3.0/LICENSE",
+          "sha256": "403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b"
         }
       ]
     },
