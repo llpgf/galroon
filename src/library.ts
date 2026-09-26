@@ -7,6 +7,8 @@ export type Entry={work:Work;studio:string;year:string;languages:string[];tags:s
 export const normalized=(s:string)=>s.normalize('NFKC').trim().toLowerCase();
 export function tagNames(tags:unknown[]):string[]{return [...new Set(tags.flatMap(tag=>typeof tag==='string'?[tag]:tag&&typeof tag==='object'&&'name' in tag&&typeof tag.name==='string'?[tag.name]:[]).map(s=>s.trim()).filter(Boolean))];}
 export function titleFor(work:Work,mode:'display'|'original'){return mode==='original'?work.original_title||work.title:work.title||work.original_title;}
+/** Stable tint index for works shown without artwork, so a work keeps the same colour everywhere it appears. */
+export const coverTone=(id:string)=>[...id].reduce((sum,ch)=>sum+ch.charCodeAt(0),0)%4;
 export function catalogEntries(works:Work[],resources:Resource[],roots:Root[],editions:Edition[]):Entry[]{
  const byRoot=new Map(roots.map(r=>[r.id,r]));const byWork=new Map<string,Resource[]>();
  for(const r of resources)for(const binding of r.bindings){const list=byWork.get(binding.work_id)||[];list.push(r);byWork.set(binding.work_id,list);}

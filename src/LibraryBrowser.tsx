@@ -10,10 +10,9 @@ import {useEffect,useMemo,useState,useRef} from 'react';
 import {useTranslation} from 'react-i18next';
 import {BookOpen,Heart,Plus,ArrowUpRight,Tags,X,Minus,Grid2X2,GalleryVerticalEnd,List,SlidersHorizontal,MoreHorizontal,CheckSquare,ListPlus} from 'lucide-react';
 import type {Work} from './api';
-import {emptyFilters,titleFor,type Filters} from './library';
+import {emptyFilters,titleFor,coverTone,type Filters} from './library';
 const PAGE_SIZE=60;
 /** A stable tint per work, so artless covers do not reshuffle colours between pages. */
-const coverTone=(id:string)=>[...id].reduce((sum,ch)=>sum+ch.charCodeAt(0),0)%4;
 export function LibraryBrowser({generation,query,setQuery,status,setStatus,safe,canWrite,onAdd,onSource,onSelect,onStudio,titleMode,setTitleMode}:{generation:number;query:string;setQuery:(s:string)=>void;status:string;setStatus:(s:string)=>void;safe:boolean;canWrite:boolean;onAdd:()=>void;onSource:()=>void;onSelect:(w:Work)=>void;onStudio:(w:Work,studio:string)=>void;titleMode:'display'|'original';setTitleMode:(s:'display'|'original')=>void}){
  const [selecting,setSelecting]=useState(false),[selected,setSelected]=useState<string[]>([]);
  const [listScope,setListScope]=useState<ListMember[]|null>(null);

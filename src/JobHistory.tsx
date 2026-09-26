@@ -23,14 +23,16 @@ export function JobHistory({latest,render}:{latest:JobPage;render:(job:Job,chang
  const observedRequest=request.current;
  const changed=async()=>{if(mounted.current&&request.current===observedRequest&&cursor!==null)await load(cursor,previous,false);};
  const controls=<><button disabled={busy||previous.length===0} onClick={()=>void load(previous.at(-1)??null,previous.slice(0,-1))}>{t('tasksNewer')}</button><button disabled={busy||shown.next===null} onClick={()=>void load(shown.next,[...previous,cursor])}>{t('historyOlder')}</button></>;
+ // A single page has nowhere to go, so the pager stays out of the way until older tasks exist.
+ const paged=previous.length>0||shown.next!==null;
  return <section aria-busy={busy}>
   <h2 ref={heading} tabIndex={-1} className="task-history-title">{t(cursor===null?'tasksLatest':'tasksOlder')}</h2>
-  <p className="muted">{t(cursor===null?'tasksLiveHint':'tasksHistoryHint')}</p>
-  <nav className="inline" aria-label={t('taskPages')}>{controls}</nav>
+  {paged&&<p className="muted">{t(cursor===null?'tasksLiveHint':'tasksHistoryHint')}</p>}
+  {paged&&<nav className="inline" aria-label={t('taskPages')}>{controls}</nav>}
   {cursor!==null&&<div className="inline"><button disabled={busy} onClick={()=>void load(null,[])}>{t('tasksLatest')}</button><button disabled={busy} onClick={()=>void load(cursor,previous,false)}>{t('refreshView')}</button></div>}
   {error&&<p role="alert">{error}</p>}
   {shown.items.length===0&&<p>{t('noTasks')}</p>}
   {shown.items.map(job=>render(job,changed))}
-  <nav className="inline" aria-label={t('taskPages')}>{controls}</nav>
+  {paged&&<nav className="inline" aria-label={t('taskPages')}>{controls}</nav>}
  </section>;
 }
