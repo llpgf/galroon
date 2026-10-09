@@ -9,7 +9,7 @@
     "desktop": "tauri dev --config apps/desktop/src-tauri/tauri.conf.json",
     "desktop:build": "tauri build --config apps/desktop/src-tauri/tauri.conf.json",
     "test": "vitest run",
-    "prepare:desktop": "python scripts/generate_notices.py && npm run build && cargo build -p galroon-core --bin galroon-core --release"
+    "prepare:desktop": "python scripts/generate_notices.py && npm run build && cargo build -p galroon-core --bin galroon-core --release && cargo build -p galroon-mcp --bin galroon-mcp --release"
   },
   "dependencies": {
     "@fontsource-variable/hanken-grotesk": "^5.3.0",

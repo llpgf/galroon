@@ -7,7 +7,7 @@ function resolve(choice:ThemeChoice){return choice==='system'?(media.matches?'li
 function paint(choice:ThemeChoice){
  const theme=resolve(choice);
  document.documentElement.dataset.theme=theme;
- document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='light'?'#f6f1e9':'#0f0e0d');
+ document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='light'?'#f2f2f7':'#000000');
 }
 export function applyTheme(choice:ThemeChoice){
  try{if(choice==='system')localStorage.removeItem(KEY);else localStorage.setItem(KEY,choice);}catch{/* The choice still applies for this session. */}

@@ -34,11 +34,13 @@
       "../../../tools/7zip/runtime/7z.dll": "runtime/7z.dll",
       "../../../tools/7zip/runtime/License.txt": "runtime/License.txt",
       "../../../target/release/galroon-core.exe": "galroon-core.exe",
+      "../../../target/release/galroon-mcp.exe": "galroon-mcp.exe",
       "../../../dist/": "web/",
       "../../../third-party/": "third-party/",
       "../../../docs/user/USER_GUIDE.md": "docs/USER_GUIDE.md",
       "../../../docs/user/SUPPORT.md": "docs/SUPPORT.md",
       "../../../docs/development/API_CONTRACT.md": "docs/API_CONTRACT.md",
+      "../../../docs/features/MCP.md": "docs/MCP.md",
       "../../../LICENSE": "LICENSE.txt",
       "../../../COPYRIGHT": "COPYRIGHT.txt"
     },
