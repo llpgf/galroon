@@ -878,7 +878,7 @@ matchIncomplete:'搜尋不完整。請檢查這些候選，或修改標題後再
 matchStrong:'標題高度吻合 · 請確認作品',
 matchReview:'待確認',
 matchAmbiguous:'多部作品同名 · 請仔細確認',
-matchReason_exact_release:'VNDB 發行資料連結到此作品',
+matchReason_release_subtitle:'VNDB 發行版本帶有此副標題，但作品標題沒有',matchReason_exact_release:'VNDB 發行資料連結到此作品',
 matchReason_exact_title:'標題相符',
 matchReason_exact_alias:'別名相符',
 matchReason_similar_title:'標題相似',
