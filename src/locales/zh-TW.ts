@@ -1,5 +1,6 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
+home:'首頁',charRole_main:'主角',charRole_primary:'主要角色',charRole_side:'配角',charRole_appears:'登場',allStatuses:'全部',homeGreeting:'今天想玩哪一部？',homeFeatured:'精選',homeContinue:'繼續遊玩',homeRecent:'最近加入',homeViewWork:'查看作品',homePrevious:'上一個',homeNext:'下一個',homeSlide:'顯示 {{title}}',homePickTitle:'下一部玩什麼？',homePickCount_other:'從收藏裡挑，{{count}} 部符合',homePickShuffle:'幫我挑一部',homePickReady:'檔案可立即遊玩',homePickAll:'全部',homePickLead:'就玩這部',homePickNone:'沒有符合的作品。試著換個標籤，或關掉「檔案可立即遊玩」。',homePickSwap:'改選 {{title}}',homeOverview:'收藏一覽',homeShowAll:'全部顯示',homeNeedsMatching_other:'{{count}} 個資源待配對',homeTasksRunning_other:'{{count}} 個任務進行中',
 eyebrowMatch:'辨識作品',
 eyebrowScan:'唯讀掃描',
 eyebrowSource:'新增來源',
