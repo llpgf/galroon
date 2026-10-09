@@ -198,6 +198,26 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     let (missing, is_error) = server.call("add_to_list", json!({"list_id": list_id, "revision": list["revision"], "work_ids": ["no-such-work"]})).await;
     assert!(is_error, "{missing}");
 
+    // Paging past the first 50 entries needs the integer cursor plus the first page's revision.
+    let mut ids = Vec::new();
+    for i in 0..55 {
+        ids.push(f.owner(Method::POST, "/works", Some(json!({"title": format!("Paging fixture {i:02}")}))).await["id"].clone());
+    }
+    let long = server.ok("create_list", json!({"name": "Long list"})).await["list_id"].as_str().unwrap().to_owned();
+    let mut revision = server.ok("get_list", json!({"list_id": long})).await["revision"].clone();
+    for chunk in ids.chunks(30) {
+        server.ok("add_to_list", json!({"list_id": long, "revision": revision, "work_ids": chunk})).await;
+        revision = server.ok("get_list", json!({"list_id": long})).await["revision"].clone();
+    }
+    let first = server.ok("get_list", json!({"list_id": long})).await;
+    let next = first["next_after"].clone();
+    assert!(next.is_i64(), "{first}");
+    let (no_revision, is_error) = server.call("get_list", json!({"list_id": long, "cursor": next})).await;
+    assert!(is_error, "{no_revision}");
+    let second = server.ok("get_list", json!({"list_id": long, "cursor": next, "revision": first["revision"]})).await;
+    assert!(second.to_string().contains("Paging fixture 54"), "{second}");
+    assert!(!second.to_string().contains("Paging fixture 00"), "{second}");
+
     let jobs = server.ok("list_jobs", json!({})).await;
     assert_eq!(jobs["jobs"][0]["kind"], "scan");
     server.ok("list_plans", json!({})).await;
