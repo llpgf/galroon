@@ -82,6 +82,7 @@ npm run desktop:build
 - [操作指南](docs/user/USER_GUIDE.md)・[支援範圍](docs/user/SUPPORT.md)
 - [架構](docs/development/ARCHITECTURE.md)・[本機 API 契約](docs/development/API_CONTRACT.md)
 - [開發說明](CONTRIBUTING.md)・[目錄結構](docs/development/REPOSITORY.md)
+- [AI 助理整合（MCP，開發中）](docs/features/MCP.md)
 
 詳細技術文件目前主要為英文。建置檔、遊戲資料、資料庫、登入狀態、本機驗收紀錄及歷史打包腳本均排除於 Git。
 
@@ -161,6 +162,7 @@ The installer is written to `target/release/bundle/nsis/`. The build generates f
 - [User guide](docs/user/USER_GUIDE.md) · [Support boundaries](docs/user/SUPPORT.md)
 - [Architecture](docs/development/ARCHITECTURE.md) · [Local API contract](docs/development/API_CONTRACT.md)
 - [Development notes](CONTRIBUTING.md) · [Repository organization](docs/development/REPOSITORY.md)
+- [AI assistant integration (MCP, in development)](docs/features/MCP.md)
 
 Build output, game data, catalogs, login state, local acceptance records and historical packaging scripts are excluded from Git.
 
@@ -172,6 +174,7 @@ Build output, game data, catalogs, login state, local acceptance records and his
 .
 ├── apps/desktop/src-tauri/   Windows desktop shell and packaging
 ├── crates/core/             Rust Core, catalog, jobs and APIs
+├── crates/mcp/              MCP server for AI assistants (galroon-mcp)
 ├── src/                     React frontend and colocated tests
 ├── public/                  Public static assets
 ├── assets/                  Source artwork

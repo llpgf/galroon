@@ -27,6 +27,7 @@
 - [Lists](features/LISTS.md)
 - [Matching](features/MATCHING.md)
 - [Matching History](features/MATCHING_HISTORY.md)
+- [MCP server (AI assistants)](features/MCP.md)
 - [Membership](features/MEMBERSHIP.md)
 - [Midnight Ui](features/MIDNIGHT_UI.md)
 - [Pairing](features/PAIRING.md)

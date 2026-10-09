@@ -56,7 +56,7 @@ def main():
             elif not full.exists():
                 problems.append({'file':rel,'issue':'Missing Markdown link','target':target})
     config = json.loads((ROOT/'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
-    generated = {'../../../dist/','../../../target/release/galroon-core.exe'}
+    generated = {'../../../dist/','../../../target/release/galroon-core.exe','../../../target/release/galroon-mcp.exe'}
     for source in config['bundle']['resources']:
         if source not in generated and not (ROOT/'apps/desktop/src-tauri'/source).exists():
             problems.append({'file':'apps/desktop/src-tauri/tauri.conf.json','issue':'Missing source resource','target':source})
