@@ -112,7 +112,11 @@ pub fn definitions() -> Vec<Value> {
             "notes": {"type": "string"},
         }), &["work_id", "revision"]),
         tool("list_lists", "List curated lists", "The user's manual lists.", true, json!({"cursor": cursor}), &[]),
-        tool("get_list", "Get list", "A manual list with its entries (50 per page) and revision.", true, json!({"list_id": {"type": "string"}, "cursor": cursor}), &["list_id"]),
+        tool("get_list", "Get list", "A manual list with its entries (50 per page) and revision.", true, json!({
+            "list_id": {"type": "string"},
+            "cursor": {"type": "integer", "description": "`next_after` from the previous page"},
+            "revision": {"type": "integer", "description": "The list `revision` from the first page; required with cursor"},
+        }), &["list_id"]),
         tool("create_list", "Create list", "Create a new manual list.", false, json!({"name": {"type": "string"}}), &["name"]),
         tool("add_to_list", "Add works to list", "Add collection works to a manual list. Works already in the list are skipped.", false, json!({
             "list_id": {"type": "string"},
@@ -361,7 +365,12 @@ async fn dispatch(core: &Core, name: &str, args: &Value) -> R<Value> {
         }
         "get_list" => {
             let id = segment(need(args, "list_id")?)?;
-            let params: Vec<_> = opt(args, "cursor").map(|c| ("after", c.to_owned())).into_iter().collect();
+            // Core pins continuation pages to the first page's revision.
+            let mut params = Vec::new();
+            if let Some(after) = args["cursor"].as_i64() {
+                params.push(("after", after.to_string()));
+                params.push(("revision", need_i64(args, "revision").map_err(|_| "revision from the first page is required with cursor".to_string())?.to_string()));
+            }
             core.get(&format!("/lists/{id}"), &params).await.map(|v| bounded(&v))
         }
         "create_list" => {
