@@ -797,6 +797,10 @@ main{margin-left:var(--sidebar-w);min-width:0;flex:1;position:relative}
 .row-actions .toolbar-menu-panel{width:220px}
 .size-cell{white-space:nowrap;font-variant-numeric:tabular-nums}
 td .path{white-space:nowrap}
+/* Long source names truncate so the work column keeps room for its title. */
+.organize td:first-child{width:38%;max-width:0}
+.organize td:nth-child(3){width:30%}
+.organize td:first-child>strong,.organize td:first-child>.path{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .unmatched-row td:first-child{box-shadow:inset 3px 0 var(--warn)}
 @media(min-width:901px){.organize .table-wrap{overflow:visible}}
 .table-wrap .empty{border:0;border-radius:0;min-height:220px;background:none}
