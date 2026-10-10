@@ -343,6 +343,8 @@ main{margin-left:var(--sidebar-w);min-width:0;flex:1;position:relative}
 .collection-heading h1{margin:0}
 .collection-heading>span{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
 .collection-browser-tools{position:sticky;top:calc(var(--topbar-h) + 4px);z-index:10;display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:10px 12px;margin:0 0 24px;background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);border:.5px solid var(--line);border-radius:18px;box-shadow:var(--shadow-1)}
+/* Mask the gap under the top bar so scrolled cards do not show between the two glass bars. */
+.collection-browser-tools::before{content:"";position:absolute;left:-1px;right:-1px;bottom:100%;height:5px;background:var(--bg);pointer-events:none}
 .collection-status{margin:0;flex-shrink:0}
 .collection-status button{gap:6px}
 .collection-status [class^=status-dot-]{width:7px;height:7px;border-radius:50%;background:var(--muted)}
@@ -1070,6 +1072,7 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
  .content{padding:18px var(--content-pad) 100px}
  .page-heading{flex-direction:column;align-items:stretch;gap:14px}
  .collection-browser-tools{position:static;gap:10px}
+ .collection-browser-tools::before{display:none}
  .library-results{justify-content:flex-start}
  .collection-focus-panel{grid-template-columns:repeat(2,minmax(0,1fr));padding:16px;gap:18px}
  .book-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:26px 14px}
