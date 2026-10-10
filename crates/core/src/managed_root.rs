@@ -5,7 +5,17 @@ type R<T> = Result<T, String>;
 pub const KEY: &str = "organization.managed_root";
 fn sql<T>(v: rusqlite::Result<T>) -> R<T> { v.map_err(|e| e.to_string()) }
 fn comparable(p: &Path) -> PathBuf {
-    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    // Missing roots cannot be canonicalized; resolve their nearest existing ancestor so
+    // they still compare with live roots reached through links such as macOS /var.
+    let mut base = p;
+    let mut rest = Vec::new();
+    let p = loop {
+        if let Ok(found) = base.canonicalize() { break rest.iter().rev().fold(found, |acc, name| acc.join(name)); }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => { rest.push(name); base = parent; }
+            _ => break p.to_path_buf(),
+        }
+    };
     #[cfg(windows)] {
         let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
         // Offline roots cannot be canonicalized; compare them with Win32/UNC
