@@ -147,10 +147,16 @@ fn observed<T>(app:&App, action:impl FnOnce(&Connection,&Roots)->Result<T,ApiErr
     action(&c,&roots)
 }
 static QUERY_GATE:OnceLock<Arc<tokio::sync::Semaphore>>=OnceLock::new();
+/// Pages start several reads at once; queue briefly for a slot so a normal page load is not
+/// rejected, and only report busy when the slots stay taken.
+pub(crate) async fn admit(gate:&OnceLock<Arc<tokio::sync::Semaphore>>,busy:&str)->Result<tokio::sync::OwnedSemaphorePermit,ApiError>{
+    let gate=gate.get_or_init(||Arc::new(tokio::sync::Semaphore::new(2))).clone();
+    match tokio::time::timeout(std::time::Duration::from_secs(3),gate.acquire_owned()).await{Ok(Ok(permit))=>Ok(permit),_=>Err(ApiError(busy.into()))}
+}
 struct Cancellation(Arc<AtomicBool>);
 impl Drop for Cancellation {fn drop(&mut self){self.0.store(true,Ordering::SeqCst);}}
 async fn run_observed(app:App,action:impl FnOnce(&Connection,&Roots,&dyn Fn()->bool)->Result<Value,ApiError>+Send+'static)->crate::Result<Value> {
-    let permit=QUERY_GATE.get_or_init(||Arc::new(tokio::sync::Semaphore::new(2))).clone().try_acquire_owned().map_err(|_|ApiError("Other collection queries are running. Retry in a moment.".into()))?;
+    let permit=admit(&QUERY_GATE,"Other collection queries are running. Retry in a moment.").await?;
     let cancelled=Arc::new(AtomicBool::new(false));let _guard=Cancellation(cancelled.clone());
     let result=tokio::task::spawn_blocking(move||{let _permit=permit;observed(&app,|c,roots|action(c,roots,&||cancelled.load(Ordering::SeqCst)))}).await.map_err(|e|ApiError(e.to_string()))??;
     Ok(Json(result))
@@ -192,6 +198,12 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
 #[cfg(test)] mod tests {
     use super::*;
     use rusqlite::params;
+    #[tokio::test]async fn burst_of_reads_queues_for_a_slot_and_reports_busy_only_when_slots_stay_taken(){
+        let gate=OnceLock::new();let a=admit(&gate,"busy").await.map_err(|e|e.0).unwrap();let b=admit(&gate,"busy").await.map_err(|e|e.0).unwrap();
+        let waiting=tokio::spawn(async move{admit(&gate,"busy").await.map(|_|()).map_err(|e|e.0)});
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;drop(a);assert_eq!(waiting.await.unwrap(),Ok(()));
+        let full=OnceLock::new();let _held=(admit(&full,"busy").await.map_err(|e|e.0).unwrap(),admit(&full,"busy").await.map_err(|e|e.0).unwrap());assert_eq!(admit(&full,"busy").await.err().map(|e|e.0),Some("busy".into()));drop(b);
+    }
     fn read(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>)->Value {page(c,roots,q,before).unwrap_or_else(|e|panic!("{}",e.0))}
     #[test] fn filtering_and_counts_cover_the_whole_collection_and_cursors_bind_view_and_sources() {
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();

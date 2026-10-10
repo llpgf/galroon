@@ -77,7 +77,7 @@ static READ_GATE:std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>=std
 struct CancelRead(std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl Drop for CancelRead{fn drop(&mut self){self.0.store(true,std::sync::atomic::Ordering::Release);}}
 pub(crate) async fn read_snapshot(a:App,action:impl FnOnce(&Connection)->Result<Value,ApiError>+Send+'static)->crate::Result<Value>{
- let permit=READ_GATE.get_or_init(||std::sync::Arc::new(tokio::sync::Semaphore::new(2))).clone().try_acquire_owned().map_err(|_|ApiError("Other work queries are running. Retry in a moment.".into()))?;
+ let permit=crate::collection_catalog::admit(&READ_GATE,"Other work queries are running. Retry in a moment.").await?;
  // spawn_blocking outlives its awaiting future. Keep cancellation sticky so it
  // also interrupts SQL started after the request future has already gone away.
  let cancelled=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));let _cancel=CancelRead(cancelled.clone());
