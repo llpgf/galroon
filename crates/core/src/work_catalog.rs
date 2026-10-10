@@ -93,7 +93,10 @@ pub(crate) async fn read_snapshot(a:App,action:impl FnOnce(&Connection)->Result<
 #[cfg(test)]mod tests{
  use super::*;
  use rusqlite::params;
+ // READ_GATE is process-wide, so tests that read through it must not overlap or they refuse each other as busy.
+ static SERIAL:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
  #[tokio::test]async fn http_disconnect_interrupts_snapshot_query(){
+  let _serial=SERIAL.lock().await;
   use tokio::io::AsyncWriteExt;
   let temp=tempfile::tempdir().unwrap();let app=crate::initialize(temp.path().join("state")).unwrap();
   let(started_tx,started_rx)=tokio::sync::oneshot::channel();let(done_tx,mut done_rx)=tokio::sync::oneshot::channel();
@@ -121,6 +124,7 @@ pub(crate) async fn read_snapshot(a:App,action:impl FnOnce(&Connection)->Result<
   assert_eq!(result.expect("HTTP disconnect did not cancel SQLite").unwrap(),Some(rusqlite::ErrorCode::OperationInterrupted));
  }
  #[tokio::test]async fn dropped_read_future_interrupts_sql_and_releases_worker(){
+  let _serial=SERIAL.lock().await;
   let temp=tempfile::tempdir().unwrap();let app=crate::initialize(temp.path().join("state")).unwrap();
   let(started_tx,started_rx)=tokio::sync::oneshot::channel();let(done_tx,done_rx)=tokio::sync::oneshot::channel();
   let pending=tokio::spawn(read_snapshot(app.clone(),move|c|{
@@ -166,6 +170,7 @@ pub(crate) async fn read_snapshot(a:App,action:impl FnOnce(&Connection)->Result<
   assert!(work_assets(&c,"absent").is_err());c.execute("UPDATE works SET merged_into='b' WHERE id='a'",[]).unwrap();assert!(work_assets(&c,"a").is_err());
  }
  #[tokio::test]async fn scoped_http_reads_require_auth_and_pin_lookup_revision(){
+  let _serial=SERIAL.lock().await;
   let temp=tempfile::tempdir().unwrap();let app=crate::initialize(temp.path().join("state")).unwrap();scoped_fixture(&app.db.lock().unwrap());
   let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let base=format!("http://{}/api",listener.local_addr().unwrap());let run=app.clone();let server=tokio::spawn(async move{axum::serve(listener,crate::router(run)).await.unwrap()});let client=reqwest::Client::new();
   for path in ["works/a/assets","works/lookup?ids=%5B%22v1%22%5D","releases/shared-edition"]{assert_eq!(client.get(format!("{base}/{path}")).send().await.unwrap().status(),reqwest::StatusCode::UNAUTHORIZED);let response=client.get(format!("{base}/{path}")).bearer_auth(&app.token).send().await.unwrap().error_for_status().unwrap();assert_eq!(response.headers()["cache-control"],"no-store");}
@@ -176,6 +181,7 @@ pub(crate) async fn read_snapshot(a:App,action:impl FnOnce(&Connection)->Result<
  }
 
  #[tokio::test]async fn http_routes_enforce_auth_and_preserve_page_and_detail_contracts(){
+  let _serial=SERIAL.lock().await;
   let temp=tempfile::tempdir().unwrap();let app=crate::initialize(temp.path().join("state")).unwrap();
   {let c=app.db.lock().unwrap();for i in 0..61{c.execute("INSERT INTO works(id,title,original_title) VALUES(?1,?2,'原題')",params![format!("http-{i}"),format!("Work {i}")]).unwrap();}}
   let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let base=format!("http://{}/api",listener.local_addr().unwrap());let server_app=app.clone();let server=tokio::spawn(async move{axum::serve(listener,crate::router(server_app)).await.unwrap()});let client=reqwest::Client::new();
