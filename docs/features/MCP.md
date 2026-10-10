@@ -20,6 +20,8 @@ Status: source increment 2026-10-09. `galroon-mcp` is a [Model Context Protocol]
 
    Claude Code: `claude mcp add galroon -- "C:\path\to\Galroon\galroon-mcp.exe"`.
 
+   Codex CLI: `codex mcp add galroon -- "C:\path\to\Galroon\galroon-mcp.exe"`. For a one-off run without editing `~/.codex/config.toml`, pass `-c 'mcp_servers.galroon.command="..."'` (plus `args` / `env`) to `codex exec`, and close stdin (`< /dev/null`) in scripts, or `codex exec` waits for more input.
+
 Galroon must be running. Core listens on a new loopback port each start, so on Windows the server finds it through the existing identity-checked control pipe (same user, executable path verified against `galroon-core.exe` next to `galroon-mcp.exe`). Only the URL and library identity are kept from that exchange; the owner credential is discarded. After Core restarts, a refused connection triggers one rediscovery. `--url http://127.0.0.1:<port>` or `GALROON_URL` overrides discovery (required on non-Windows development hosts).
 
 ## Tools
@@ -47,5 +49,14 @@ Not exposed: plan approve/execute, quarantine/restore, undo, merge/split, regrou
 ## Evidence
 
 `cargo test -p galroon-mcp` (macOS development host) runs the built binary over stdio against a real in-process Core on an ephemeral loopback port with a generated catalog: pairing and `check`, 0600 credential, owner-only route denied (403), reused code leaves the credential intact, revocation message, protocol negotiation and errors, collection search/tag/studio filters, stale-revision rejection, match/update/list flows, organize preview with source files byte-identical and the plan left `ready`, and the 409 collection pin. The same suite passes on Windows 11 (x86_64-pc-windows-msvc, Rust 1.93.1).
+
+Codex acceptance on macOS (2026-10-10, Codex CLI 0.162.1, release `galroon-mcp` against a `ui_core` catalog of the 31-resource / 1,547-file / 122 GB sandbox collection after scan and auto-matching):
+
+- **Identify.** Codex used only MCP tools (`list_resources`, `list_resource_files`, `search_vndb`). It correctly classified the three unmatched resources: a folder of mixed bonus archives as not a work, and two folders, one with a vocal-CD bonus and update archives, as v59911.
+- **Match.** `match_resource` created the work with the requested edition and confirmed it through `get_work`.
+- **Lists and status.** It created a list and added all six works by two studios, then set a play status.
+- **Organize preview.** A preview of a 4.9 GB resource first failed: the MCP client gave up after 60 s while Core kept hashing, which left an orphan plan, and the retry created a second one. Since then, `preview_organize` waits up to 30 minutes and reuses a ready plan that covers the same files and destination. A 12.1 GB preview then completed in about five minutes and created exactly one plan.
+
+A before/after manifest of the source collection was identical, and the managed folder stayed empty.
 
 `tests/windows_live.rs` (ignored by default; needs `GALROON_TEST_CORE`, `GALROON_TEST_SOURCE`, `GALROON_TEST_STATE`) is the native acceptance run. On 2026-10-09 it passed against a release `galroon-core.exe` and 12 real files (3.65 GB, four Japanese-named folders): scan, `pair` and `check` through control-pipe discovery with no `--url`, VNDB search using file-name hints (a folder named only by its store ID matched v57625 as `exact_title`), `match_resource` creating the work from the candidate, `update_work`, an organize preview of 2 files into a managed folder with nothing moved, a clear error while Core was stopped, and the same MCP process reconnecting after Core restarted on a new port. Source file sizes and modification times were unchanged. Installer packaging (`galroon-mcp.exe` resource) has not been rebuilt.

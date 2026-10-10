@@ -237,7 +237,11 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(preview["plan"]["moves"][0]["target"].as_str().unwrap().contains("Download edition"));
     assert_eq!(walk(&f.source), files_before, "a preview must not move files");
     assert!(walk(&managed).is_empty());
+    // A retry (e.g. after a client-side timeout) reuses the ready plan instead of leaving a duplicate.
+    let again = server.ok("preview_organize", json!({"resource_id": game["id"], "destination": managed})).await;
+    assert_eq!(again["plan"]["id"], preview["plan"]["id"]);
     let plans = server.ok("list_plans", json!({})).await;
+    assert_eq!(plans["plans"].as_array().unwrap().len(), 1, "{plans}");
     assert_eq!(plans["plans"][0]["id"], preview["plan"]["id"]);
     assert_ne!(plans["plans"][0]["state"], "completed");
 
