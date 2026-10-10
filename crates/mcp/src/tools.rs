@@ -88,6 +88,11 @@ pub fn definitions() -> Vec<Value> {
             "root_id": {"type": "string", "description": "Limit to one source folder"},
             "cursor": cursor,
         }), &[]),
+        tool("list_resource_files", "List resource files", "File names, sizes and availability inside one resource (relative to its source folder), 60 per page. Use the names, brands, dates and IDs in them to identify the work before search_vndb.", true, json!({
+            "resource_id": {"type": "string"},
+            "query": {"type": "string", "description": "Filter by file name"},
+            "cursor": cursor,
+        }), &["resource_id"]),
         tool("list_issues", "List issues", "Matching and source issues that need attention (unmatched, offline sources, unscanned folders...).", true, json!({
             "state": {"type": "string", "enum": ["open", "deferred", "resolved"]},
             "cursor": {"type": "integer", "description": "`next` value from the previous page"},
@@ -205,7 +210,7 @@ fn work(v: &Value) -> Value {
 }
 
 fn resource(v: &Value) -> Value {
-    let mut out = pick(v, &["id", "title", "path", "kind", "files", "bytes", "missing", "work_id", "primary_work_title", "release", "root_id", "revision"]);
+    let mut out = pick(v, &["id", "title", "path", "kind", "files", "bytes", "missing", "work_id", "primary_work_title", "release", "root_id", "revision", "auto_match_reason"]);
     if v["bindings"].as_array().is_some_and(|b| b.len() > 1) {
         out["bindings"] = bounded(&v["bindings"]);
     }
@@ -289,6 +294,18 @@ async fn dispatch(core: &Core, name: &str, args: &Value) -> R<Value> {
             }
             let page = core.get("/resources/page", &params).await?;
             Ok(json!({"total": page["total"], "items": items(&page["items"], resource), "next": page["next"]}))
+        }
+        "list_resource_files" => {
+            let id = segment(need(args, "resource_id")?)?;
+            let mut params = Vec::new();
+            for (arg, key) in [("query", "query"), ("cursor", "before")] {
+                if let Some(v) = opt(args, arg) {
+                    params.push((key, v.to_owned()));
+                }
+            }
+            let page = core.get(&format!("/resources/{id}/members/page"), &params).await?;
+            let file = |v: &Value| pick(v, &["relative", "size", "availability"]);
+            Ok(json!({"total": page["total"], "items": bounded(&json!(page["items"].as_array().map(|a| a.iter().map(file).collect::<Vec<_>>()).unwrap_or_default())), "next": page["next"]}))
         }
         "list_issues" => {
             let mut params = vec![("state", opt(args, "state").unwrap_or("open").to_owned())];

@@ -153,6 +153,10 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert_eq!(unmatched["total"], 3);
     let game = unmatched["items"].as_array().unwrap().iter().find(|r| r["title"] == "Sakura Note").unwrap().clone();
     assert!(game.get("root_path").is_none());
+    let files = server.ok("list_resource_files", json!({"resource_id": game["id"]})).await;
+    let entries = files["items"].as_array().unwrap();
+    assert!(!entries.is_empty() && entries.iter().all(|e| e["relative"].is_string() && e["size"].is_number()), "{files}");
+    assert!(!files.to_string().contains(f.source.to_str().unwrap()), "absolute source paths must not leak: {files}");
 
     let issues = server.ok("list_issues", json!({})).await;
     assert!(issues["items"].as_array().unwrap().iter().any(|i| i["kind"] == "unmatched"));
