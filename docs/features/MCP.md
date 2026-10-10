@@ -26,7 +26,7 @@ Galroon must be running. Core listens on a new loopback port each start, so on W
 
 | Tool | Effect |
 | --- | --- |
-| `galroon_overview`, `search_collection`, `get_work`, `list_resources`, `list_issues`, `list_jobs`, `list_lists`, `get_list`, `list_plans` | Read only. Output is compacted (≤60 works per page, long text and arrays clipped, 100 KB cap). |
+| `galroon_overview`, `search_collection`, `get_work`, `list_resources`, `list_resource_files`, `list_issues`, `list_jobs`, `list_lists`, `get_list`, `list_plans` | Read only. Output is compacted (≤60 items per page, long text and arrays clipped, 100 KB cap). `list_resources` includes Core's auto-match review reason for unmatched resources; `list_resource_files` lists the file names, sizes and availability inside one resource, relative to its source folder, so the assistant can identify a work from names, brands, dates and store IDs before searching VNDB. |
 | `search_vndb` | Read only; queries VNDB through Core with optional resource file-name hints. |
 | `match_resource` | Binds a resource to an existing work, or creates the work from a VNDB candidate exactly as the match dialog does, then binds. Resource revision required. |
 | `update_work` | Status, favorite, notes. Only these fields are sent, because Core merges the body into work overrides. Work revision required. |

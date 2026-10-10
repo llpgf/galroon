@@ -76,6 +76,27 @@ npm run desktop:build
 
 安裝包輸出到 `target/release/bundle/nsis/`。建置會產生前端與第三方聲明，並打包 Core、所需的 7-Zip 執行元件及操作文件。原始碼 repository 不包含已建置的安裝包。
 
+#### 在 macOS 上開發與測試
+
+發佈目標仍是 Windows，但 Core 與前端可以在 macOS 上開發和測試（Rust stable、Node.js）。桌面殼層、控制管道與安裝包只能在 Windows 驗證。
+
+```bash
+cargo test -p galroon-core -p galroon-mcp --lib --bins --tests
+npm test
+```
+
+Core 的 `examples/` 多數需要 Windows，因此上面只跑 lib、bin 與整合測試。要在瀏覽器裡操作介面，先用 `ui_core` 範例以獨立的資料目錄啟動 Core，再讓 Vite 讀取它輸出的 session：
+
+```bash
+cargo run --release -p galroon-core --example ui_core -- /tmp/galroon-ui-state 14800 > /tmp/galroon-session.json
+```
+
+```bash
+GALROON_DEV_SESSION=/tmp/galroon-session.json npm run dev
+```
+
+然後開啟 `http://localhost:1420`。請一律使用新的資料目錄，不要指向正式收藏。
+
 ### 文件與開發
 
 - [文件索引](docs/README.md)
@@ -155,6 +176,27 @@ npm run desktop:build
 ```
 
 The installer is written to `target/release/bundle/nsis/`. The build generates frontend assets and third-party notices, then bundles Core, the required 7-Zip runtime and user/API documentation. Built installers are not included in source history.
+
+#### Developing and testing on macOS
+
+Windows remains the release target, but Core and the frontend can be developed and tested on macOS (Rust stable, Node.js). The desktop shell, control pipe and installer can only be verified on Windows.
+
+```bash
+cargo test -p galroon-core -p galroon-mcp --lib --bins --tests
+npm test
+```
+
+Most Core `examples/` require Windows, so the command above runs only the library, binary and integration tests. To use the interface in a browser, start Core with the `ui_core` example and its own data directory, then let Vite read the session it prints:
+
+```bash
+cargo run --release -p galroon-core --example ui_core -- /tmp/galroon-ui-state 14800 > /tmp/galroon-session.json
+```
+
+```bash
+GALROON_DEV_SESSION=/tmp/galroon-session.json npm run dev
+```
+
+Then open `http://localhost:1420`. Always use a fresh data directory, never your real collection.
 
 ### Documentation and development
 
