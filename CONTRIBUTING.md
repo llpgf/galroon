@@ -19,3 +19,5 @@ Frontend code lives under `src/`, Core logic under `crates/core/src/`, and nativ
 Run `python scripts/check_repository.py` to check the upload candidate, local document links and Tauri resource paths. Review `git status --short` and the actual staged diff before committing. The checker uses tracked and non-ignored paths; it does not stage files, publish anything or guarantee that every possible secret can be detected.
 
 No remote, release publication or license selection is performed by the local preparation scripts. Do not commit databases, game files, sessions, `.env` values, installers or local acceptance archives.
+
+On macOS or Linux, `cargo test -p galroon-core --lib` needs a temporary directory that is not behind a symlink, because Core refuses to mutate linked paths. Point `TMPDIR` at a real folder first, for example `TMPDIR=/private/tmp/galroon-tmp` on macOS. Core still only ships on Windows; the Unix file-move path exists so the organizing logic can be tested elsewhere.

@@ -58,8 +58,21 @@ pub fn no_replace_move(a:&Path,b:&Path)->R<()> {
             std::thread::sleep(std::time::Duration::from_millis(100*(attempt+1)));
         }
     }
-    #[cfg(not(windows))] {return Err("Mutation adapter has only been enabled for Windows in this build".into());}
-    #[allow(unreachable_code)] Ok(())
+    #[cfg(unix)] {
+        use std::os::unix::ffi::OsStrExt;
+        let c=|p:&Path|std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_|"Path contains a NUL byte".to_string());
+        let (aw,bw)=(c(a)?,c(b)?);
+        // Same guarantee as MoveFileExW without MOVEFILE_REPLACE_EXISTING: the kernel refuses to replace an existing destination.
+        #[cfg(target_os="macos")] let status=unsafe{libc::renamex_np(aw.as_ptr(),bw.as_ptr(),libc::RENAME_EXCL)};
+        #[cfg(target_os="linux")] let status=unsafe{libc::renameat2(libc::AT_FDCWD,aw.as_ptr(),libc::AT_FDCWD,bw.as_ptr(),libc::RENAME_NOREPLACE)} as i32;
+        #[cfg(not(any(target_os="macos",target_os="linux")))] let status:i32={return Err("Mutation adapter is not available on this platform".into());};
+        if status!=0{
+            let error=std::io::Error::last_os_error();
+            return Err(if error.kind()==std::io::ErrorKind::AlreadyExists{"Destination already exists; no file was overwritten".into()}else{format!("Move {} to {} failed: {}",a.display(),b.display(),error)});
+        }
+    }
+    #[cfg(not(any(windows,unix)))] {return Err("Mutation adapter is not available on this platform".into());}
+    Ok(())
 }
 pub fn safe_name(s:&str)->String {
     let mut n:String=s.chars().map(|c|if c.is_control()||"<>:\"/\\|?*".contains(c){'_'}else{c}).collect();n=n.trim().trim_end_matches(['.',' ']).chars().take(110).collect();if n.is_empty(){n="Untitled".into();}
