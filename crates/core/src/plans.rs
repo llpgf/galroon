@@ -19,8 +19,12 @@ pub fn hash(p:&Path)->R<(u64,String)>{
     Ok((bytes,hex::encode(h.finalize())))
 }
 pub fn validate_chain(path:&Path)->R<()> {
-    for p in path.ancestors(){if p.exists(){let m=fs::symlink_metadata(p).map_err(|e|e.to_string())?;if scan::link(&m){return Err("Linked paths cannot be mutated".into());}}}Ok(())
+    for p in path.ancestors(){if p.exists(){let m=fs::symlink_metadata(p).map_err(|e|e.to_string())?;if scan::link(&m)&&!system_link(p,&m){return Err("Linked paths cannot be mutated".into());}}}Ok(())
 }
+// macOS publishes /var, /tmp and /etc as root-owned links into /private. A link that only root could
+// have placed (root-owned, in a root-owned directory nobody else can write) is OS layout, not a redirect.
+#[cfg(unix)] fn system_link(p:&Path,m:&fs::Metadata)->bool{use std::os::unix::fs::MetadataExt;m.uid()==0&&p.parent().and_then(|d|fs::metadata(d).ok()).is_some_and(|d|d.uid()==0&&d.mode()&0o022==0)}
+#[cfg(not(unix))] fn system_link(_:&Path,_:&fs::Metadata)->bool{false}
 fn existing_parent(p:&Path)->R<PathBuf>{let mut p=p.to_path_buf();while !p.exists(){if !p.pop(){return Err("Destination has no accessible parent".into());}}scan::canonical(&p)}
 fn same_volume(a:&Path,b:&Path)->R<bool>{
     #[cfg(windows)] {
@@ -58,7 +62,17 @@ pub fn no_replace_move(a:&Path,b:&Path)->R<()> {
             std::thread::sleep(std::time::Duration::from_millis(100*(attempt+1)));
         }
     }
-    #[cfg(not(windows))] {return Err("Mutation adapter has only been enabled for Windows in this build".into());}
+    // The kernel refuses to replace an existing target, so a racing writer can never be overwritten.
+    #[cfg(any(target_os="macos",target_os="linux"))] {
+        use std::os::unix::ffi::OsStrExt;
+        let ac=std::ffi::CString::new(a.as_os_str().as_bytes()).map_err(|e|e.to_string())?;
+        let bc=std::ffi::CString::new(b.as_os_str().as_bytes()).map_err(|e|e.to_string())?;
+        validate_chain(a)?;validate_chain(b)?;
+        #[cfg(target_os="macos")] let rc=unsafe{libc::renamex_np(ac.as_ptr(),bc.as_ptr(),libc::RENAME_EXCL)};
+        #[cfg(target_os="linux")] let rc=unsafe{libc::renameat2(libc::AT_FDCWD,ac.as_ptr(),libc::AT_FDCWD,bc.as_ptr(),libc::RENAME_NOREPLACE)};
+        if rc!=0{let error=std::io::Error::last_os_error();if error.kind()==std::io::ErrorKind::AlreadyExists{return Err("Destination already exists; no file was overwritten".into());}return Err(format!("Move {} to {} failed: {}",a.display(),b.display(),error));}
+    }
+    #[cfg(not(any(windows,target_os="macos",target_os="linux")))] {return Err("Mutation adapter is not available on this platform".into());}
     #[allow(unreachable_code)] Ok(())
 }
 pub fn safe_name(s:&str)->String {
@@ -158,6 +172,7 @@ pub fn restore(db:&Db,qid:&str)->R<Value>{
 
 #[cfg(test)] mod tests{
     use super::*;
+    #[cfg(unix)]#[test]fn chain_allows_os_links_but_rejects_user_links(){let t=tempfile::tempdir().unwrap();let real=t.path().join("real");fs::create_dir(&real).unwrap();validate_chain(&real.join("item")).unwrap();let link=t.path().join("link");std::os::unix::fs::symlink(&real,&link).unwrap();assert!(validate_chain(&link.join("item")).is_err());}
     #[test]fn nested_directory_can_be_published(){let t=tempfile::tempdir().unwrap();let a=t.path().join("a");let b=t.path().join("b");let c=t.path().join("c");fs::create_dir(&a).unwrap();fs::create_dir(&b).unwrap();fs::write(a.join("hello.txt"),b"hello").unwrap();no_replace_move(&a,&b.join("nested")).unwrap();no_replace_move(&b,&c).unwrap();assert_eq!(fs::read(c.join("nested/hello.txt")).unwrap(),b"hello");}
     #[test]fn active_scan_and_file_execution_cannot_overlap(){let(t,db,a,b)=fixture();let q=t.path().join("quarantine");fs::create_dir(&q).unwrap();let p=isolate(&db,&a,&b,q.to_str().unwrap()).unwrap();let pid=p["id"].as_str().unwrap();approve(&db,pid,p["digest"].as_str().unwrap()).unwrap();let spec=scan::ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]};let j=scan::create(&db,spec.clone()).unwrap();assert!(execute(&db,pid).is_err());assert!(t.path().join("source/a.zip").exists());db.lock().unwrap().execute("UPDATE jobs SET state='cancelled' WHERE id=?1",[j]).unwrap();db.lock().unwrap().execute("UPDATE plans SET state='executing' WHERE id=?1",[pid]).unwrap();assert!(scan::create(&db,spec).is_err());}
     #[test]fn recovered_batch_rechecks_previously_completed_targets(){let(t,db,a,b)=fixture();let q=t.path().join("quarantine");fs::create_dir(&q).unwrap();let p=isolate(&db,&a,&b,q.to_str().unwrap()).unwrap();let pid=p["id"].as_str().unwrap();approve(&db,pid,p["digest"].as_str().unwrap()).unwrap();execute(&db,pid).unwrap();let target=p["items"][0]["target"].as_str().unwrap();fs::write(target,b"externally changed").unwrap();db.lock().unwrap().execute("UPDATE plans SET state='partial' WHERE id=?1",[pid]).unwrap();assert_eq!(execute(&db,pid).unwrap()["failed"],1);assert_eq!(fs::read(target).unwrap(),b"externally changed");assert_eq!(fs::read(t.path().join("source/b.zip")).unwrap(),b"identical content");}
