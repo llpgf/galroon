@@ -1,10 +1,12 @@
 //! Generated-only HTTP acceptance for the exact relationship editor.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};use std::{fs,path::PathBuf,time::Duration};
 fn client()->reqwest::Client{reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(20)).build().unwrap()}
 async fn call(s:&Session,path:&str,body:Option<Value>)->Value{let req=if let Some(body)=body{client().post(format!("{}/api{path}",s.url)).json(&body)}else{client().get(format!("{}/api{path}",s.url))};let response=req.bearer_auth(&s.token).send().await.unwrap();let status=response.status();let text=response.text().await.unwrap();assert!(status.is_success(),"{path}: {status}: {text}");serde_json::from_str(&text).unwrap()}
 async fn save(s:&Session,edit:&Value)->Value{let p=call(s,"/vns/v1/relationship-corrections/preview",Some(json!({"edit":edit,"spoilers":true}))).await;let body=json!({"edit":edit,"spoilers":true,"preview_digest":p["preview_digest"]});call(s,"/vns/v1/relationship-corrections",Some(body.clone())).await;body}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let raw=json!({"vn":{"id":"v1","title":"Generated exact editor work","developers":[],"staff":[{"id":"s1","aid":1,"role":"scenario","name":"First source alias"},{"id":"s1","aid":2,"role":"scenario","name":"Second source alias"},{"id":"s1","aid":1,"role":"music","name":"Other source role"}],"va":[],"relations":[]},"characters":[],"more":false,"fetched_at":galroon_core::db::now()});
  {let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();galroon_core::access::setup(&db,"Generated-editor-acceptance-729!",false).unwrap();let c=db.lock().unwrap();c.execute("INSERT INTO settings(key,value) VALUES('exploration.v4.work.v1.1',?1)",[raw.to_string()]).unwrap();
@@ -50,3 +52,7 @@ async fn save(s:&Session,edit:&Value)->Value{let p=call(s,"/vns/v1/relationship-
  }).await;
  let _=local_core::request(&state,&exe,"stop").await;let _=local_core::request(&output.join("restored"),&exe,"stop").await;let mut report=result.expect("Validation failed; stop attempted");report["core_sha256"]=json!(galroon_core::plans::hash(&exe).unwrap().1);fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

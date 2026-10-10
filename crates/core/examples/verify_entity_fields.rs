@@ -1,3 +1,5 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};
 use std::{fs,path::PathBuf,time::Duration};
@@ -6,7 +8,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  let req=if let Some(body)=body{client.post(url).json(&body)}else{client.get(url)};
  let response=req.bearer_auth(&s.token).send().await.unwrap();assert!(response.status().is_success(),"{path}: {}",response.status());response.json().await.unwrap()
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let raw=json!({"fetched_at":galroon_core::db::now(),"vn":{"id":"v1","title":"Fixture","developers":[{"id":"p1","name":"Source company"}],"staff":[{"id":"s1","aid":7,"name":"Actual credit","role":"scenario"}],"va":[],"relations":[]},"characters":[{"id":"c1","name":"Source character","vns":[{"id":"v1","spoiler":0}]}],"more":false});
  let mut caches=vec![("exploration.v4.work.v1.1".to_string(),raw.clone())];
@@ -35,3 +37,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  }).await;
  let stopped=local_core::request(&state,&exe,"stop").await;let report=result.expect("Validation failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

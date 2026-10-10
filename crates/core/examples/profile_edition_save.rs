@@ -1,8 +1,10 @@
 //! Same-engine generated-only SQL stage profiling; never opens the source database for writes.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use std::{fs,path::PathBuf,time::Instant};
 use rusqlite::{Connection,OpenFlags,params};
 use serde_json::json;
-fn main(){
+pub fn main(){
  let args=std::env::args().collect::<Vec<_>>();let source=PathBuf::from(&args[1]).canonicalize().unwrap();let out=PathBuf::from(&args[2]);assert!(!out.exists());fs::create_dir_all(&out).unwrap();let auto:i64=args[3].parse().unwrap();assert!([0,1000].contains(&auto));let mut origin=Connection::open_with_flags(&source,OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();origin.backup(rusqlite::MAIN_DB,out.join("profile.sqlite"),None).unwrap();drop(origin);
  let c=Connection::open(out.join("profile.sqlite")).unwrap();c.execute_batch("PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;PRAGMA synchronous=FULL;").unwrap();c.pragma_update(None,"wal_autocheckpoint",auto).unwrap();let synchronous:i64=c.pragma_query_value(None,"synchronous",|r|r.get(0)).unwrap();assert_eq!(synchronous,2);
  let works:i64=c.query_row("SELECT count(*) FROM works",[],|r|r.get(0)).unwrap();assert_eq!(works,100000);let edition:String=c.query_row("SELECT id FROM releases LIMIT 1",[],|r|r.get(0)).unwrap();let mut stages=vec![];
@@ -11,3 +13,7 @@ fn main(){
  let start=Instant::now();c.execute_batch("COMMIT").unwrap();let commit=json!({"stage":"commit","ms":start.elapsed().as_secs_f64()*1000.0});println!("{commit}");stages.push(commit);
  let wal_bytes=fs::metadata(out.join("profile.sqlite-wal")).unwrap().len();let start=Instant::now();let checkpoint:(i64,i64,i64)=c.query_row("PRAGMA wal_checkpoint(PASSIVE)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();stages.push(json!({"stage":"explicit_checkpoint","ms":start.elapsed().as_secs_f64()*1000.0,"result":checkpoint}));let report=json!({"finished":true,"sqlite_version":rusqlite::version(),"works":works,"automatic_checkpoint_pages":auto,"synchronous":synchronous,"source_read_only":source,"wal_bytes":wal_bytes,"stages":stages});fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

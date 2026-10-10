@@ -1,4 +1,6 @@
 //! Installed-Core HTTP execution of generated queued-job path and journal faults.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{acquire,db,local_core::{self,Session},plans,scan};
 use serde_json::{json,Value};
 use std::{collections::BTreeMap,fs,path::{Path,PathBuf},time::Duration};
@@ -73,9 +75,13 @@ async fn case(out:PathBuf,exe:PathBuf,kind:&'static str)->Value{
  let stopped=local_core::request(&cleanup_state,&cleanup_exe,"stop").await;save(&out,"cleanup.json",&json!({"identity_stop_acknowledged":stopped.is_ok()}));
  let report=result.expect("Case failed; scoped Core stop attempted");assert!(stopped.is_ok());save(&out,"report.json",&report);report
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(&args[1]);assert!(!out.exists());fs::create_dir_all(&out).unwrap();
  let canonical=out.canonicalize().unwrap();let raw=canonical.to_string_lossy();let out=PathBuf::from(raw.strip_prefix("\\\\?\\").unwrap_or(&raw));let exe=PathBuf::from(&args[2]).canonicalize().unwrap();
  let mut cases=vec![];for kind in ["source-junction","destination-junction","journal-directory"]{cases.push(case(out.join(kind),exe.clone(),kind).await);}
  let report=json!({"core_sha256":plans::hash(&exe).unwrap().1,"schema":db::SCHEMA_VERSION,"cases":cases,"initial_job_preparation":"Core library scan/create; paused generated job","execution":"Separate installed Core via HTTP resume and real filesystem faults","native_ui":false,"disk_full":false,"unrelated_native_editor_left_running":true});save(&out,"report.json",&report);println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

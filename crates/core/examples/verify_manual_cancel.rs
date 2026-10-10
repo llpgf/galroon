@@ -1,8 +1,10 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core;
 use std::{fs,path::PathBuf,time::{Instant,Duration}};
 use serde_json::{json,Value};
 fn events(path:&std::path::Path,code:&str)->usize{fs::read_to_string(path).unwrap_or_default().lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).filter(|v|v["code"]==code).count()}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh fixture directory"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  {let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();let mut c=db.lock().unwrap();let tx=c.transaction().unwrap();for n in 0..100000{let id=format!("w{n:06}");tx.execute("INSERT INTO works(id,title,original_title) VALUES(?1,?1,?1)",[id]).unwrap();}
  let definition=json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"status","mode":"any","values":["backlog"]}}});
@@ -27,3 +29,7 @@ fn events(path:&std::path::Path,code:&str)->usize{fs::read_to_string(path).unwra
  }).await;
  let stopped=local_core::request(&state,&exe,"stop").await;let report=outcome.expect("Manual cancellation failed; cleanup attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

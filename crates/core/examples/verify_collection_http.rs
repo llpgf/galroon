@@ -1,4 +1,6 @@
 //! Full generated collection traversal against a separate Windows Core executable.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{db,local_core::{self,Session},plans};
 use serde_json::{json,Value};
 use std::{collections::BTreeSet,fs,path::{Path,PathBuf},time::{Duration,Instant}};
@@ -51,7 +53,7 @@ async fn run(client:&reqwest::Client,s:&Session,state:&Path,count:usize)->R<Valu
     if count>10000{let response=client.post(format!("{}/api/collection/selection",s.url)).bearer_auth(&s.token).json(&json!({"query":{},"view_token":first["view_token"],"ids":null})).send().await.map_err(|e|e.to_string())?;if response.status()!=reqwest::StatusCode::BAD_REQUEST{return Err("Oversized selection was not rejected".into());}}
     Ok(json!({"works":count,"physical_source_files":0,"populated_resource_file_edition_rows":count,"pages":pages,"unique_works":ids.len(),"startup_root_observation_ms":root_observation_ms,"cold_query_after_root_observation_ms":cold_ms,"warm_page_p95_ms":p95,"warm_page_max_ms":times.last(),"max_page_bytes":max_bytes,"natural_sort_ms":sort_ms,"concurrent_dashboard_ms":concurrent_ms,"concurrent_read_observed_during_evaluation":overlapped,"cross_page_selection_ms":selection_ms,"baseline_memory":baseline,"after_queries_memory":memory(s.pid),"native_ui":false}))
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
     let args=std::env::args().collect::<Vec<_>>();let out=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();let count:usize=args.get(3).map(|x|x.parse().unwrap()).unwrap_or(100000);assert!((61..=100000).contains(&count));assert!(!out.exists());fs::create_dir_all(out.join("state")).unwrap();let out=out.canonicalize().unwrap();let state=out.join("state");let root=out.join("generated-source");fs::create_dir(&root).unwrap();
     {let db=db::open(&state.join("library.sqlite")).unwrap();let mut c=db.lock().unwrap();let tx=c.transaction().unwrap();
         tx.execute("INSERT INTO roots(id,path,label) VALUES('generated',?1,'Generated metadata source')",[root.to_string_lossy().to_string()]).unwrap();tx.execute_batch("INSERT INTO releases(id,label,languages) VALUES('shared','Generated shared edition','[\"ja\",\"en\"]'); INSERT INTO custom_tags(id,name,name_key) VALUES('personal','Generated personal tag','generated personal tag');").unwrap();
@@ -69,3 +71,7 @@ async fn run(client:&reqwest::Client,s:&Session,state:&Path,count:usize)->R<Valu
     if report.get("error").is_none(){report["passed"]=json!(stopped.is_ok());}
     fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");assert_eq!(report["passed"],true);
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

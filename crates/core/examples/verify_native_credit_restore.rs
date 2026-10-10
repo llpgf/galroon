@@ -1,4 +1,6 @@
 //! Restore an already native-saved generated credit without repeating editor writes.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{backup, local_core::{self, Session}, plans};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::{Path, PathBuf}, time::Duration};
@@ -32,7 +34,7 @@ async fn stop(state: &Path, exe: &Path) {
     }
 }
 #[tokio::main]
-async fn main() {
+pub async fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     let state = PathBuf::from(&args[1]).canonicalize().unwrap();
     let exe = PathBuf::from(&args[2]).canonicalize().unwrap();
@@ -79,3 +81,7 @@ async fn main() {
     }
     println!("{}", outcome.expect("Restore verification failed; cleanup attempted"));
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,8 +1,10 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};
 use std::{fs,path::PathBuf,time::Duration};
 async fn api(s:&Session,path:&str,body:Option<Value>)->Value{let client=reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap();let url=format!("{}/api{path}",s.url);let req=if let Some(body)=body{client.post(url).json(&body)}else{client.get(url)};let response=req.bearer_auth(&s.token).send().await.unwrap();assert!(response.status().is_success(),"API failed at {path}: {}",response.status());response.json().await.unwrap()}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  use sha2::{Digest,Sha256};
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh fixture output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let client=reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap();let source:Value=client.post("https://api.vndb.org/kana/vn").json(&json!({"filters":["id","=","v1"],"fields":"title,developers.id,developers.name","results":1})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();let work=source["results"][0].clone();assert_eq!(work["id"],"v1");let developers=work["developers"].as_array().unwrap();assert!(!developers.is_empty());let studio=developers[0]["name"].as_str().unwrap().to_owned();let hidden=developers.iter().map(|v|v["id"].clone()).collect::<Vec<_>>();
@@ -21,3 +23,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{let client=reqwest:
  }).await;
  let stopped=local_core::request(&state,&exe,"stop").await;let report=outcome.expect("Search verification failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,4 +1,6 @@
 //! Combined generated catalog, actual separate installed Core, isolated restore.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{backup,db,local_core::{self,Session},plans};
 use serde_json::{json,Value};
 use std::{collections::BTreeMap,fs,path::{Path,PathBuf},time::Duration};
@@ -24,7 +26,7 @@ fn catalog(path:&Path)->BTreeMap<String,Vec<String>> {
     }out
 }
 async fn list_edit(s:&Session,rev:i64,action:Value)->Value {api(s,"/lists/manual",Some(json!({"revision":rev,"request_id":format!("manual-{rev}"),"edit":action}))).await}
-#[tokio::main] async fn main() {
+#[tokio::main] pub async fn main() {
     let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();
     assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");let restored=output.join("restored");let backups=output.join("backups");fs::create_dir(&backups).unwrap();
     {let d=db::open(&state.join("library.sqlite")).unwrap();let c=d.lock().unwrap();
@@ -102,3 +104,7 @@ async fn list_edit(s:&Session,rev:i64,action:Value)->Value {api(s,"/lists/manual
     fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
 
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

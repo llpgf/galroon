@@ -1,8 +1,10 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core;
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{fs,path::PathBuf,time::{Duration,Instant}};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let client=reqwest::Client::builder().timeout(Duration::from_secs(55)).build().unwrap();
  let source:Value=client.post("https://api.vndb.org/kana/vn").json(&json!({"filters":["id","=","v1"],"fields":"image.url,image.sexual,image.violence","results":1})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
@@ -20,3 +22,7 @@ use std::{fs,path::PathBuf,time::{Duration,Instant}};
  let stopped=local_core::request(&state,&exe,"stop").await;let report=outcome.expect("Validation failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
 
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

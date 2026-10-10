@@ -1,6 +1,8 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{local_core,artwork_cache::Cache};use serde_json::{json,Value};
 use std::{fs,path::PathBuf,sync::{Arc,atomic::{AtomicUsize,Ordering}},time::Duration};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  use tokio::io::{AsyncReadExt,AsyncWriteExt};
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();let prior=PathBuf::from(args.get(3).expect("Prior artwork-native evidence"));assert!(!output.exists());
  let source:Value=serde_json::from_str(&fs::read_to_string(prior.join("public-source.json")).unwrap()).unwrap();let image=source["results"][0]["image"]["url"].as_str().unwrap().to_owned();let bytes=Cache::open(&prior.join("state")).unwrap().get(&image).unwrap().unwrap().bytes;
@@ -19,3 +21,7 @@ use std::{fs,path::PathBuf,sync::{Arc,atomic::{AtomicUsize,Ordering}},time::Dura
  }).await;let stopped=local_core::request(&state,&exe,"stop").await;proxy.abort();let report=outcome.expect("Verification failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
 
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

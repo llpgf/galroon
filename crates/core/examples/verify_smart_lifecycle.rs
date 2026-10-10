@@ -1,3 +1,5 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};
 use std::{path::PathBuf,time::Duration,fs};
@@ -6,7 +8,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  let url=format!("{}/api{path}",s.url);let request=if let Some(v)=body{client.post(url).json(&v)}else{client.get(url)};
  let response=request.bearer_auth(&s.token).send().await.unwrap();assert!(response.status().is_success(),"API {path}: {}",response.status());response.json().await.unwrap()
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh fixture output required"));
  let exe=PathBuf::from(args.get(2).expect("Core executable required")).canonicalize().unwrap();
  let count:usize=args.get(3).map(|v|v.parse().expect("Work count")).unwrap_or(55);assert!((55..=100000).contains(&count));
@@ -76,3 +78,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  let report=outcome.expect("Verification failed; Core stop attempted");stopped.expect("Final Core stop failed");
  fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

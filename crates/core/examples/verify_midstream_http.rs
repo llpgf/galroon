@@ -1,6 +1,8 @@
 //! Real Windows byte-range write failure and restart/retry through installed Core HTTP.
 //! Generated fixture only. The queued job is prepared through the Core library;
 //! both executions and retry are performed by the separately launched executable.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{acquire, db, local_core::{self,Session}, plans,scan};
 use serde_json::{json,Value};
 use std::{fs,path::{Path,PathBuf},time::Duration,os::windows::io::AsRawHandle};
@@ -24,7 +26,7 @@ async fn terminal(s:&Session,job:&str)->Value {
 }
 fn save(out:&Path,name:&str,value:&Value){fs::write(out.join(name),serde_json::to_vec_pretty(value).unwrap()).unwrap();}
 
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(&args[1]);
  let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!out.exists(),"Use a new fixture directory");
  fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();
@@ -74,3 +76,7 @@ fn save(out:&Path,name:&str,value:&Value){fs::write(out.join(name),serde_json::t
  save(&out,"cleanup.json",&json!({"identity_stop_acknowledged":stopped.is_ok(),"unrelated_native_editor_core_left_running":true}));
  let report=result.expect("Acceptance failed; scoped Core stop attempted");assert!(stopped.is_ok());save(&out,"report.json",&report);println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,5 +1,7 @@
 //! Windows long-path lifecycle driven through an actual separate Core executable.
 //! All files are generated under a new output directory; no provider calls.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{backup, db, local_core::{self, Session}, plans};
 use serde_json::{json, Value};
 use std::{fs, path::{Path, PathBuf}, time::Duration};
@@ -38,7 +40,7 @@ fn files_under(dir:&Path,files:&mut Vec<PathBuf>) {
         if m.is_dir() {files_under(&p,files)} else {assert!(m.is_file());files.push(p);}
     }
 }
-#[tokio::main] async fn main() {
+#[tokio::main] pub async fn main() {
     assert!(cfg!(windows));
     let args:Vec<_>=std::env::args().collect();
     let out=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();
@@ -114,3 +116,7 @@ fn files_under(dir:&Path,files:&mut Vec<PathBuf>) {
     let report=result.expect("Acceptance failed; fixture Core shutdown attempted");
     fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

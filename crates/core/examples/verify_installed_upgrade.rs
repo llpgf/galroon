@@ -1,3 +1,5 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core;
 use serde_json::{json, Value};
 use std::os::windows::process::CommandExt;
@@ -26,7 +28,7 @@ fn read(path: &Path) -> rusqlite::Connection {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
 }
 #[tokio::main]
-async fn main() {
+pub async fn main() {
     let args: Vec<_> = std::env::args().collect();
     let output = PathBuf::from(&args[1]);
     assert!(!output.exists());
@@ -109,3 +111,7 @@ async fn main() {
     .unwrap();
     println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

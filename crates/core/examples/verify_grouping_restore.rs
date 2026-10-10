@@ -1,4 +1,6 @@
 //! Installed HTTP merge/split private-data preservation; generated metadata only.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{backup,db,local_core::{self,Session},plans};
 use serde_json::{json,Value};
 use std::{fs,path::PathBuf,time::Duration};
@@ -14,7 +16,7 @@ fn choices(preview:&Value,follow:&str)->Value {
     let choices=|key:&str|{let ids:std::collections::BTreeSet<_>=preview[key].as_array().unwrap().iter().map(|v|v["id"].as_str().unwrap()).collect();ids.into_iter().map(|id|json!({"id":id,"follow":follow})).collect::<Vec<_>>()};
     json!({"digest":preview["digest"],"tags":choices("tags"),"entries":choices("entries")})
 }
-#[tokio::main] async fn main() {
+#[tokio::main] pub async fn main() {
     let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!out.exists());fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();let mut cases=vec![];
     for follow in ["original","new","both"] {
         let folder=out.join(follow);fs::create_dir(&folder).unwrap();let state=folder.join("state");let restored=folder.join("restored");let generated=folder.join("generated-empty-source");fs::create_dir(&generated).unwrap();
@@ -58,3 +60,7 @@ fn choices(preview:&Value,follow:&str)->Value {
     }
     let report=json!({"schema":db::SCHEMA_VERSION,"core_sha256":plans::hash(&exe).unwrap().1,"separate_installed_core_http":true,"cases":cases,"native_ui":false,"full_mvp":false});fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

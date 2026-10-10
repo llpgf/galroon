@@ -1,11 +1,13 @@
 //! Generated task-history acceptance. Never prints credentials or job specs.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{access,db,local_core::{self,Session},plans};
 use reqwest::{Client,header};
 use serde_json::{json,Value};
 use std::{fs,path::PathBuf,time::Instant};
 
 #[tokio::main]
-async fn main(){
+pub async fn main(){
  let args:Vec<_>=std::env::args().collect();
  let state=PathBuf::from(&args[1]);
  assert!(state.to_string_lossy().contains("task-history"),"Generated task fixture only");
@@ -38,3 +40,7 @@ async fn main(){
  let report=json!({"core_sha256":plans::hash(&exe).unwrap().1,"tasks":205,"page_sizes":sizes,"order_and_exact_once":true,"legacy_array_equal":true,"spec_excluded":true,"invalid_cursor_status":400,"anonymous_status":401,"web_resume_status":403,"first_page_ms":first_ms,"scope":"Generated installed Core HTTP, not native UI or scale threshold"});
  fs::write(output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{}",report);
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

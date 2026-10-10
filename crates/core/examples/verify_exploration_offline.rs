@@ -1,5 +1,7 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core;use serde_json::{json,Value};use std::{fs,path::PathBuf,sync::{Arc,atomic::{AtomicUsize,Ordering}},time::Duration};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  use tokio::io::{AsyncReadExt,AsyncWriteExt};
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let mut expected=vec![];{let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();let c=db.lock().unwrap();
@@ -18,3 +20,7 @@ use galroon_core::local_core;use serde_json::{json,Value};use std::{fs,path::Pat
  assert_eq!(failures.load(Ordering::SeqCst),4);json!({"separate_core":true,"partial_profile_failures":3,"work_refresh_failure":1,"stale_pages_keep_exact_previous_data":true,"cached_pages_unchanged":4,"outbound_proxy_failures":4,"source_files":0,"schema":galroon_core::db::SCHEMA_VERSION})
  }).await;let stopped=local_core::request(&state,&exe,"stop").await;proxy.abort();let report=outcome.expect("Verification failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

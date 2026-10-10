@@ -1,4 +1,6 @@
 //! Windows native notification and independent Core restart acceptance; generated files only.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{local_core::{self,Session},db};
 use serde_json::{Value,json};
 use std::{fs,path::PathBuf,time::Duration};
@@ -7,7 +9,7 @@ async fn wait_watch(s:&Session,rid:&str,key:&str,value:Value){let deadline=tokio
 async fn idle(s:&Session){let deadline=tokio::time::Instant::now()+Duration::from_secs(30);loop{let jobs=api(s,"/jobs",None).await;if !jobs.as_array().unwrap().iter().any(|j|["queued","running","pausing","cancelling"].contains(&j["state"].as_str().unwrap())){return;}assert!(tokio::time::Instant::now()<deadline);tokio::time::sleep(Duration::from_millis(100)).await;}}
 fn count(path:&std::path::Path,suffix:&str,state:&str)->i64{let c=rusqlite::Connection::open(path).unwrap();c.query_row("SELECT count(*) FROM files WHERE relative_path LIKE ?1 AND availability=?2",rusqlite::params![format!("%{suffix}"),state],|r|r.get(0)).unwrap()}
 async fn indexed(path:&std::path::Path,suffix:&str,state:&str){let deadline=tokio::time::Instant::now()+Duration::from_secs(30);loop{if count(path,suffix,state)==1{return;}assert!(tokio::time::Instant::now()<deadline,"File not indexed: {suffix} {state}");tokio::time::sleep(Duration::from_millis(100)).await;}}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(args.get(1).expect("Fresh output directory"));assert!(!out.exists());fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();let state=out.join("state");let database=state.join("library.sqlite");let source=out.join("source");fs::create_dir_all(source.join("Existing")).unwrap();fs::create_dir_all(source.join("Excluded")).unwrap();fs::write(source.join("Existing/keep.bin"),b"unchanged original").unwrap();
  let first=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();let root=api(&first,"/roots",Some(json!({"path":source,"label":"Native watch fixture"}))).await;let rid=root["id"].as_str().unwrap();wait_watch(&first,rid,"status",json!("watching")).await;
  let watch=api(&first,&format!("/roots/{rid}/watch"),None).await;api(&first,&format!("/roots/{rid}/watch"),Some(json!({"revision":watch["revision"],"enabled":true,"exclude":["Excluded"]}))).await;wait_watch(&first,rid,"status",json!("watching")).await;
@@ -22,3 +24,7 @@ async fn indexed(path:&std::path::Path,suffix:&str,state:&str){let deadline=toki
  let w=api(&second,&format!("/roots/{rid}/watch"),None).await;api(&second,&format!("/roots/{rid}/watch"),Some(json!({"revision":w["revision"],"enabled":false,"exclude":["Excluded"]}))).await;wait_watch(&second,rid,"status",json!("disabled")).await;fs::write(source.join("Existing/disabled.bin"),b"not auto indexed").unwrap();tokio::time::sleep(Duration::from_secs(4)).await;assert_eq!(count(&database,"disabled.bin","present"),0);idle(&second).await;local_core::request(&state,&exe,"stop").await.unwrap();
  assert_eq!(fs::read(source.join("Existing/keep.bin")).unwrap(),b"unchanged original");let report=json!({"schema":db::SCHEMA_VERSION,"native_create":true,"directory_delete_marks_missing":true,"excluded_file_not_indexed":true,"unrelated_subtree_not_scanned":true,"pending_changes_survive_core_restart":true,"restart_gap_visible":true,"offline_preserves_catalog":true,"reattach_after_reconnect":true,"disabled_watch_stays_idle":true,"original_unchanged":true});fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}
