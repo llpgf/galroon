@@ -1,6 +1,8 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{local_core,artwork_cache::Cache};use serde_json::json;
 use std::{fs,path::PathBuf,time::{Duration,Instant}};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();let count=100000;
  let start=Instant::now();{let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();let mut c=db.lock().unwrap();let tx=c.transaction().unwrap();{let mut insert=tx.prepare("INSERT INTO settings(key,value) VALUES(?1,?2)").unwrap();for i in 0..count{insert.execute(rusqlite::params![format!("exploration.fixture.{i}"),json!({"image":{"url":format!("https://t.vndb.org/cv/00/{i}.jpg")}}).to_string()]).unwrap();}}tx.commit().unwrap();assert_eq!(c.query_row("SELECT count(*) FROM artwork_references",[],|r|r.get::<_,i64>(0)).unwrap(),count);}
  let seed_ms=start.elapsed().as_millis();let image="https://t.vndb.org/cv/00/99999.jpg";let unknown="https://t.vndb.org/cv/00/100001.jpg";for url in [image,unknown]{Cache::open(&state).unwrap().put(url,b"\xff\xd8\xfffixture").unwrap();}
@@ -14,3 +16,7 @@ use std::{fs,path::PathBuf,time::{Duration,Instant}};
  json!({"separate_core":true,"generated_reference_rows":count,"seed_ms":seed_ms,"warm_http_samples":40,"warm_p95_us":timings[37],"warm_max_us":timings[39],"unknown_cached_image_denied":true,"removed_reference_denied_after_restart":true,"cached_bytes_retained":true,"provider_requests":0,"source_files":0,"schema":galroon_core::db::SCHEMA_VERSION})
  }).await;let stopped=local_core::request(&state,&exe,"stop").await;let report=outcome.expect("Verification failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

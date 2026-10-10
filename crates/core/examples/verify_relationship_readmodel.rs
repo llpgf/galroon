@@ -1,10 +1,12 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use sha2::{Digest,Sha256};
 use galroon_core::{local_core::{self,Session},relation_corrections::{Correction,Key,Link},relation_correction_store::{self,Edit}};
 use serde_json::{json,Value};use std::{fs,path::PathBuf,time::Duration};
 async fn get(s:&Session,path:&str)->Value{let response=reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(20)).build().unwrap().get(format!("{}/api{path}",s.url)).bearer_auth(&s.token).send().await.unwrap();let status=response.status();let body=response.text().await.unwrap();assert!(status.is_success(),"{path}: {status}: {body}");serde_json::from_str(&body).unwrap()}
 
 fn links(spoiler:u8)->Vec<Correction>{vec![Key::Staff{id:"s1".into(),aid:Some(8),role:"scenario".into(),note:"".into()},Key::Character{id:"c1".into()},Key::Company{id:"p1".into()}].into_iter().enumerate().map(|(i,key)|Correction{id:format!("add-{i}"),replaces:None,link:Some(Link{key,name:if spoiler==0{"Generated local credit".into()}else{"Generated secret credit".into()},character_name:None,spoiler})}).collect()}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let raw=json!({"id":"v1","title":"Generated provider work","staff":[{"id":"s1","aid":1,"name":"First alias","role":"scenario"},{"id":"s1","aid":2,"name":"Second alias","role":"scenario"}],"va":[],"developers":[{"id":"p1","name":"Studio"}]});
  let mut snapshots=vec![];let edit=Edit{revision:0,request_id:"rebind".into(),corrections:vec![Correction{id:"alias".into(),replaces:Some(Key::Staff{id:"s1".into(),aid:Some(1),role:"scenario".into(),note:"".into()}),link:Some(Link{key:Key::Staff{id:"s1".into(),aid:Some(3),role:"scenario".into(),note:"".into()},name:"Rebound alias".into(),character_name:None,spoiler:0})}]};
@@ -60,3 +62,7 @@ fn links(spoiler:u8)->Vec<Correction>{vec![Key::Staff{id:"s1".into(),aid:Some(8)
  }).await;
  let stopped=local_core::request(&state,&exe,"stop").await;let mut report=result.expect("Validation failed; stop attempted");stopped.unwrap();report["core_sha256"]=json!(galroon_core::plans::hash(&exe).unwrap().1);fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

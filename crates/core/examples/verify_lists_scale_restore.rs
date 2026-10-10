@@ -1,4 +1,6 @@
 //! Verify generated tag membership, receipts and undo through installed Core backup/restore.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{backup,local_core::{self,Session},plans};
 use serde_json::{Value,json};
 use std::{path::{Path,PathBuf},fs,collections::BTreeMap,time::Duration};
@@ -9,7 +11,7 @@ fn snapshot(path:&Path)->BTreeMap<String,Vec<String>>{
 }
 async fn api(s:&Session,path:&str,body:Option<Value>)->Value{let client=reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(30)).build().unwrap();let url=format!("{}/api{path}",s.url);let r=if let Some(body)=body{client.post(url).json(&body)}else{client.get(url)}.bearer_auth(&s.token).send().await.unwrap();assert!(r.status().is_success(),"API {path}: {}",r.status());r.json().await.unwrap()}
 async fn stop(state:&Path,exe:&Path){local_core::request(state,exe,"stop").await.unwrap();let f=fs::OpenOptions::new().read(true).write(true).open(state.join("core.lock")).unwrap();let end=tokio::time::Instant::now()+Duration::from_secs(15);while fs2::FileExt::try_lock_exclusive(&f).is_err(){assert!(tokio::time::Instant::now()<end);tokio::time::sleep(Duration::from_millis(50)).await;}}
-#[tokio::main]async fn main(){let args=std::env::args().collect::<Vec<_>>();let runtime_kind=args.get(4).map(String::as_str).unwrap_or("standalone-release");assert!(["installed","standalone-release"].contains(&runtime_kind));let state=PathBuf::from(&args[1]).canonicalize().unwrap();let exe=PathBuf::from(&args[2]).canonicalize().unwrap();let out=PathBuf::from(&args[3]);assert!(!out.exists());fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();let restored=out.join("restored");let backups=out.join("backups");fs::create_dir(&backups).unwrap();
+#[tokio::main]pub async fn main(){let args=std::env::args().collect::<Vec<_>>();let runtime_kind=args.get(4).map(String::as_str).unwrap_or("standalone-release");assert!(["installed","standalone-release"].contains(&runtime_kind));let state=PathBuf::from(&args[1]).canonicalize().unwrap();let exe=PathBuf::from(&args[2]).canonicalize().unwrap();let out=PathBuf::from(&args[3]);assert!(!out.exists());fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();let restored=out.join("restored");let backups=out.join("backups");fs::create_dir(&backups).unwrap();
  let first=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();let original_pid=first.pid;
  let before=snapshot(&state.join("library.sqlite"));assert_eq!(before["list_entries"].len(),100125);assert_eq!(before["list_entry_variants"].len(),100001);assert_eq!(before["works"].len(),125);
  let list_before=api(&first,"/lists/generated-list",None).await;
@@ -27,3 +29,7 @@ async fn stop(state:&Path,exe:&Path){local_core::request(state,exe,"stop").await
  for(name,hash)in &source_hashes{assert_eq!(&plans::hash(&source_root.join(name)).unwrap().1,hash);}
  let report=json!({"passed":true,"installed_core":runtime_kind=="installed","runtime_kind":runtime_kind,"executable":exe,"standalone_debug":false,"standalone_release":runtime_kind=="standalone-release","native_ui_restore":false,"resource_page_restore_equal":true,"generated_works":125,"exact_tables":before.keys().collect::<Vec<_>>(),"backup_sha256":manifest.sha256,"http_export":true,"isolated_restore":true,"restored_core_started":true,"original_pid":original_pid,"restored_pid":restored_pid,"core_sha256":plans::hash(&exe).unwrap().1,"source_hashes":source_hashes,"watchers_disabled":true,"both_cores_identity_stopped":true});fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,10 +1,12 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};
 use std::{path::PathBuf,time::Duration,fs};
 async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  let client=reqwest::Client::new();let url=format!("{}/api{path}",s.url);let request=if let Some(v)=body{client.post(url).json(&v)}else{client.get(url)};let r=request.bearer_auth(&s.token).send().await.unwrap();assert!(r.status().is_success(),"API {path}: {}",r.status());r.json().await.unwrap()
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh generated-fixture output directory required"));let exe=PathBuf::from(args.get(2).expect("Core executable required")).canonicalize().unwrap();assert!(!output.exists(),"Use a fresh fixture");fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");let source=output.join("source");fs::create_dir(&source).unwrap();for i in 0..1200{fs::write(source.join(format!("fixture-{i}.bin")),[i as u8;32]).unwrap();}
  let first=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();assert_ne!(first.pid,std::process::id());
  let second=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();assert_eq!(first.instance_id,second.instance_id);assert_eq!(first.pid,second.pid);
@@ -22,3 +24,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{
  let unexpected:Vec<_>=fs::read_dir(&state).unwrap().filter_map(Result::ok).map(|e|e.file_name().to_string_lossy().into_owned()).filter(|n|!matches!(n.as_str(),"library.sqlite"|"library.sqlite-wal"|"library.sqlite-shm"|"core.lock"|"device.json"|"device.lock"|"logs")).collect();assert!(unexpected.is_empty(),"Unexpected credential/state file: {unexpected:?}");
  let report=json!({"separate_process":true,"reconnect_same_instance":true,"wrong_executable_refused":true,"second_writer_refused":true,"active_stop_refused":true,"scan_completed":1200,"restart_keeps_catalog":true,"credential_file_written":false});fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

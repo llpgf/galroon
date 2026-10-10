@@ -1,8 +1,10 @@
 //! Start/stop a generated UI fixture through the production Core identity channel.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{local_core,plans};
 use serde_json::json;
 use std::{fs,path::PathBuf,time::{Duration,Instant}};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
     let args=std::env::args().collect::<Vec<_>>();let state=PathBuf::from(&args[2]).canonicalize().unwrap();let exe=PathBuf::from(&args[3]).canonicalize().unwrap();
     assert!(state.join("library.sqlite").is_file());
     match args[1].as_str(){
@@ -11,3 +13,7 @@ use std::{fs,path::PathBuf,time::{Duration,Instant}};
         _=>panic!("Use start or stop"),
     }
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

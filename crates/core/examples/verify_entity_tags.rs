@@ -1,8 +1,10 @@
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self,Session};
 use serde_json::{json,Value};
 use std::{fs,path::PathBuf,time::Duration};
 async fn api(s:&Session,path:&str,body:Option<Value>)->Value{let client=reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap();let url=format!("{}/api{path}",s.url);let req=if let Some(body)=body{client.post(url).json(&body)}else{client.get(url)};let response=req.bearer_auth(&s.token).send().await.unwrap();assert!(response.status().is_success(),"API failed at {path}: {}",response.status());response.json().await.unwrap()}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh fixture output"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");fs::create_dir(&state).unwrap();
  let password=format!("Generated-{}",uuid::Uuid::new_v4());
  {let db=galroon_core::db::open(&state.join("library.sqlite")).unwrap();galroon_core::access::setup(&db,&password,false).unwrap();let c=db.lock().unwrap();c.execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('w','Fixture','Fixture','v1')",[]).unwrap();let cached=json!({"fetched_at":galroon_core::db::now(),"vn":{"developers":[],"staff":[{"id":"s1","name":"Person","role":"scenario"}],"va":[]},"characters":[],"more":false});c.execute("INSERT INTO settings(key,value) VALUES('exploration.v4.work.v1.1',?1)",[cached.to_string()]).unwrap();c.execute("INSERT INTO settings(key,value) VALUES('exploration.v4.work.v99.1',?1)",[cached.to_string()]).unwrap();}
@@ -28,3 +30,7 @@ async fn api(s:&Session,path:&str,body:Option<Value>)->Value{let client=reqwest:
  }).await;
  let stopped=local_core::request(&state,&exe,"stop").await;let report=outcome.expect("Entity tag validation failed; stop attempted");stopped.unwrap();fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,5 +1,7 @@
 //! Installed-Core contract check. Uses only the generated web acceptance fixture.
 //! Session credentials stay inside this process and are never included in reports.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{local_core::{self,Session},plans};
 use reqwest::{Client,Method,header};
 use serde_json::{json,Value};
@@ -14,7 +16,7 @@ async fn catalog(client:&Client,session:&Session)->Value{
  Value::Object(result)
 }
 
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let state=PathBuf::from(&args[1]).canonicalize().unwrap();let exe=PathBuf::from(&args[2]).canonicalize().unwrap();let output=PathBuf::from(&args[3]);
  assert!(state.to_string_lossy().contains("web-installed-002-r1"),"Only the known generated fixture is allowed");
  let session:Session=serde_json::from_value(local_core::request(&state,&exe,"session").await.unwrap()).unwrap();
@@ -45,3 +47,7 @@ async fn catalog(client:&Client,session:&Session)->Value{
  fs::write(&output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
  println!("{}",json!({"health":report["health"],"routes":report["declared_routes"],"denied":report["denied_requests"],"catalog_unchanged":true}));
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

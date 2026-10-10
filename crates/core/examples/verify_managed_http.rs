@@ -1,4 +1,6 @@
 //! Generated files only: separate Core organization, smart facts, undo and restore.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{db,scan,plans,backup,local_core::{self,Session}};
 use serde_json::{json,Value};
 use std::{fs,path::{Path,PathBuf},time::Duration};
@@ -12,7 +14,7 @@ fn definition(state:&str)->Value{json!({"schema_version":1,"scope":"collection",
 async fn expect(s:&Session,state:&str,total:u64){let p=api(s,"/smart-lists/preview",Some(definition(state))).await;assert_eq!(p["total"],total,"{state}: {p}");assert_eq!(p["unknown_count"],0);}
 async fn approve(s:&Session,p:&Value){api(s,&format!("/plans/{}/approve",p["id"].as_str().unwrap()),Some(json!({"digest":p["digest"]}))).await;}
 async fn execute(s:&Session,p:&Value){assert_eq!(api(s,&format!("/plans/{}/execute",p["id"].as_str().unwrap()),Some(json!({}))).await["state"],"completed");}
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
     let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!out.exists());fs::create_dir_all(&out).unwrap();let out=out.canonicalize().unwrap();
     let state=out.join("state");let source=out.join("source");let payload=source.join("Game/日本語-payload.bin");fs::create_dir_all(payload.parent().unwrap()).unwrap();fs::write(&payload,b"Generated-only native organization acceptance").unwrap();let original=plans::hash(&payload).unwrap();
     let managed=out.join("managed");let alternate=out.join("alternate");let downloads=out.join("downloads");let backups=out.join("backups");for p in [&managed,&alternate,&downloads,&backups]{fs::create_dir(p).unwrap();}
@@ -47,3 +49,7 @@ async fn execute(s:&Session,p:&Value){assert_eq!(api(s,&format!("/plans/{}/execu
     let _=local_core::request(&state,&exe,"stop").await;let _=local_core::request(&out.join("restored"),&exe,"stop").await;
     let mut report=result.expect("Acceptance failed; stop attempted");report["core_sha256"]=json!(plans::hash(&exe).unwrap().1);fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

@@ -1,8 +1,10 @@
 //! Generated readonly-Web fixture; prints URL only, never an owner bearer token.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::{access,db,local_core,plans};
 use serde_json::json;
 use std::{fs,path::PathBuf};
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let out=PathBuf::from(&args[1]);let exe=PathBuf::from(&args[2]).canonicalize().unwrap();assert!(!out.exists());fs::create_dir_all(out.join("state")).unwrap();let out=out.canonicalize().unwrap();let state=out.join("state");
  let d=db::open(&state.join("library.sqlite")).unwrap();access::setup(&d,"Generated-Web-Acceptance-002!",false).unwrap();
  {let c=d.lock().unwrap();
@@ -15,3 +17,7 @@ use std::{fs,path::PathBuf};
  }drop(d);
  let session=local_core::connect_or_start(state,exe.clone()).await.unwrap();let report=json!({"url":session.url,"pid":session.pid,"core_sha256":plans::hash(&exe).unwrap().1,"schema":db::SCHEMA_VERSION,"fixture_only":true,"source_files":0,"installed_web_root":exe.parent().unwrap().join("web"),"ui_acceptance_passed":false});fs::write(out.join("fixture.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}

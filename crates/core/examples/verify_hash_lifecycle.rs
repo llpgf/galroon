@@ -1,4 +1,6 @@
 //! Real-process API acceptance using generated files only; never prints sessions.
+// Needs the Windows-only local Core; elsewhere only a stub is built so `cargo build --examples` works.
+#[cfg(windows)] mod windows_only {
 use galroon_core::local_core::{self, Session};
 use serde_json::{json, Value};
 use std::{fs, path::{Path,PathBuf}, time::Duration};
@@ -19,7 +21,7 @@ fn saved(state:&Path,id:&str)->Vec<(String,i64)> {
  let c=rusqlite::Connection::open_with_flags(state.join("library.sqlite"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();c.busy_timeout(Duration::from_secs(5)).unwrap();
  let mut s=c.prepare("SELECT file_id,attempts FROM hash_entries WHERE job_id=?1 AND state='completed'").unwrap();s.query_map([id],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
 }
-#[tokio::main]async fn main(){
+#[tokio::main]pub async fn main(){
  let args:Vec<_>=std::env::args().collect();let output=PathBuf::from(args.get(1).expect("Fresh fixture path"));let exe=PathBuf::from(args.get(2).expect("Core executable")).canonicalize().unwrap();assert!(!output.exists());fs::create_dir_all(&output).unwrap();let output=output.canonicalize().unwrap();let state=output.join("state");
  let content=vec![37u8;4*1024*1024];let mut sources=Vec::new();for part in 0..2 {let source=output.join(format!("source-{part}"));fs::create_dir(&source).unwrap();for i in 0..48 {fs::write(source.join(format!("copy-{i:02}.bin")),&content).unwrap();}sources.push(source);}
  let first=local_core::connect_or_start(state.clone(),exe.clone()).await.unwrap();let mut roots=Vec::new();
@@ -34,3 +36,7 @@ fn saved(state:&Path,id:&str)->Vec<(String,i64)> {
  stopped(&state,&exe).await;for source in &sources {for i in 0..48 {assert_eq!(fs::read(source.join(format!("copy-{i:02}.bin"))).unwrap(),content);}}
  let report=json!({"schema":4,"sources":2,"files":96,"bytes":content.len()*96,"paused_processed":paused["processed"],"restarted_different_core":true,"cancel_then_resume":true,"completed_hashes_reused":completed.len(),"verified":result["verified"],"groups":1,"original_bytes_unchanged":true});fs::write(output.join("report.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();println!("{report}");
 }
+
+}
+#[cfg(windows)] use windows_only::main;
+#[cfg(not(windows))] fn main(){eprintln!("This example needs the Windows local Core.");}
