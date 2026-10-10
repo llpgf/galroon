@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=3;
+pub const ALGORITHM_VERSION:i64=4;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -127,9 +127,10 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
         let mut names: Vec<(String, bool)> = ["title", "alttitle"].iter().filter_map(|k| candidate[k].as_str().map(|s| (s.into(), false))).collect();
         if let Some(titles) = candidate["titles"].as_array() { for title in titles { for key in ["title", "latin"] { if let Some(s) = title[key].as_str() { names.push((s.into(), false)); } } } }
         if let Some(aliases) = candidate["aliases"].as_array() { for s in aliases.iter().filter_map(Value::as_str) { names.push((s.into(), true)); } }
-        let mut best = 0.0_f64; let mut reason = "provider_result"; let mut matched = String::new(); let mut conflict = false;
+        let mut best = 0.0_f64; let mut reason = "provider_result"; let mut matched = String::new(); let mut conflict = false; let mut extends = false;
         for query in &input.titles { let nq = normalized(query); for (name, alias) in &names {
             let nn = normalized(name); if nn.is_empty() { continue; }
+            extends |= nq != nn && nq.contains(&nn);
             let brand_exact=branded(query).is_some_and(|(brand,tail)|normalized(&tail)==nn&&candidate["developers"].as_array().is_some_and(|ds|ds.iter().any(|d|d["name"].as_str().is_some_and(|name|normalized(name)==normalized(&brand)))));
             let exact = nq == nn || brand_exact;
             let mut score = if exact { if *alias { 98.0 } else { 100.0 } } else { 85.0 * similarity(&nq, &nn) };
@@ -139,10 +140,14 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
             if mismatch { score = score.min(42.0); why = "number_conflict"; }
             if score > best { best = score; reason = why; matched = name.clone(); conflict = mismatch; }
         } }
+        // A release can name an append, fandisk or episode that VNDB files under the base
+        // work. If the work's own titles lack the subtitle the source names, keep it for review.
+        let partial = extends && best < 98.0;
         if let Some(releases) = candidate["release_matches"].as_array() {
             for release in releases { if let Some(title) = release["title"].as_str() {
                 if input.titles.iter().any(|q| normalized(q)==normalized(&clean_name(title))) && best < 99.0 {
-                    best=99.0; reason="exact_release"; matched=title.into(); conflict=false;
+                    if partial { best=best.max(90.0); reason="release_subtitle"; } else { best=99.0; reason="exact_release"; }
+                    matched=title.into(); conflict=false;
                 }
             } }
         }
@@ -285,6 +290,25 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let p=prepare("アンラベル・トリガー -Prelude to War-", &[]).unwrap();let r=rank(&p,vec![candidate("v1","アンラベル・トリガー")]);assert_eq!(r[0]["match"]["strength"],"review");assert_eq!(r[0]["match"]["reason"],"different_subtitle");
         let p=prepare("Same title", &[]).unwrap();let r=rank(&p,vec![candidate("v1","Same title"),candidate("v2","Same title"),candidate("v1","Same title")]);assert_eq!(r.len(),2);assert_eq!(r[0]["match"]["ambiguous"],true);assert_eq!(r[0]["match"]["strength"],"review");
         let p=prepare("AIR", &[]).unwrap();assert_eq!(rank(&p,vec![candidate("v36","Air")])[0]["match"]["strength"],"review");
+    }
+    #[tokio::test] async fn subtitled_append_release_does_not_strongly_match_the_base_work() {
+        // VNDB files the append "-Prelude to War-" only as release r133215 of v47547.
+        use axum::{routing::post,Json,Router};
+        let base=json!({"id":"v47547","title":"Unravel trigger","alttitle":"アンラベル・トリガー","titles":[{"title":"アンラベル・トリガー"}],"aliases":["アントリ","Antori"]});
+        let cold=json!({"id":"v55273","title":"Unravel trigger -Cold War-","alttitle":"アンラベル・トリガー -Cold War-","titles":[{"title":"アンラベル・トリガー -Cold War-"}]});
+        let works=json!({"results":[base,cold],"more":false});
+        let app=Router::new().route("/vn",post(move||{let works=works.clone();async move{Json(works)}}))
+            .route("/release",post(||async{Json(json!({"results":[{"id":"r133215","title":"Unravel trigger -Prelude to War-","alttitle":"アンラベル・トリガー -Prelude to War-","vns":[{"id":"v47547"}]}],"more":false}))}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/vn",listener.local_addr().unwrap());let task=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let search=|folder:&str,file:&str|prepare(folder,&[folder.into(),format!("{folder}/{file}")]).unwrap();
+        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
+        let result=retrieve(&search("1261651","[240329][1261651][Archive] アンラベル・トリガー DL版 (files).rar"),&mut provider,&url,Duration::ZERO).await.unwrap();
+        assert_eq!(result["results"][0]["id"],"v47547");assert_eq!(result["results"][0]["match"]["strength"],"strong");
+        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
+        let result=retrieve(&search("1327332","[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar"),&mut provider,&url,Duration::ZERO).await.unwrap();
+        let top=&result["results"][0];assert_eq!(top["id"],"v47547");assert_eq!(top["release_matches"][0]["id"],"r133215");
+        assert_eq!(top["match"]["reason"],"release_subtitle");assert_eq!(top["match"]["strength"],"review");
+        assert!(result["results"].as_array().unwrap().iter().all(|c|c["match"]["strength"]!="strong"));task.abort();
     }
     #[tokio::test] async fn release_identity_is_followed_and_compilations_stay_ambiguous() {
         use axum::{routing::post,Json,Router};
