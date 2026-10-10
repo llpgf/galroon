@@ -129,11 +129,39 @@ pub fn definitions() -> Vec<Value> {
             "work_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 60},
         }), &["list_id", "revision", "work_ids"]),
         tool("list_plans", "List file plans", "Organize/quarantine plans and their states.", true, json!({}), &[]),
-        tool("preview_organize", "Preview organize", "Draft a plan that would move a matched resource into a managed folder as <Work [id]>/<Edition>. Files are hashed but NOT moved: the user must review, approve and execute the plan in Galroon.", false, json!({
+        tool("preview_organize", "Preview organize", "Draft a plan that would move a matched resource into a managed folder as <Work [id]>/<Edition>. Files are hashed but NOT moved: the user must review, approve and execute the plan in Galroon. Hashing large resources can take minutes. Calling it again for the same resource and destination returns the existing ready plan instead of creating a duplicate.", false, json!({
             "resource_id": {"type": "string"},
             "destination": {"type": "string", "description": "Existing managed folder path"},
         }), &["resource_id", "destination"]),
     ]
+}
+
+/// A retried preview (for example after a client timeout while Core kept hashing) must not leave a
+/// second plan: reuse a ready organize plan that covers exactly this resource's files under `destination`.
+async fn ready_plan(core: &Core, resource: &str, destination: &str) -> R<Option<Value>> {
+    let plans = core.get("/plans", &[]).await?;
+    let candidates: Vec<&Value> = plans.as_array().map(|a| a.iter().filter(|p| p["kind"] == "organize" && p["state"] == "ready").collect()).unwrap_or_default();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let mut files = std::collections::BTreeSet::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..100 {
+        let query: Vec<(&str, String)> = cursor.iter().map(|c| ("before", c.clone())).collect();
+        let page = core.get(&format!("/resources/{resource}/members/page"), &query).await?;
+        files.extend(page["items"].as_array().into_iter().flatten().filter_map(|f| f["id"].as_str().map(str::to_owned)));
+        match page["next"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    let root = std::path::Path::new(destination);
+    Ok(candidates.into_iter().find(|plan| {
+        let items = plan["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+        !items.is_empty()
+            && items.len() == files.len()
+            && items.iter().all(|i| i["file_id"].as_str().is_some_and(|id| files.contains(id)) && i["target"].as_str().is_some_and(|t| std::path::Path::new(t).starts_with(root)))
+    }).cloned())
 }
 
 pub fn exists(name: &str) -> bool {
@@ -415,8 +443,11 @@ async fn dispatch(core: &Core, name: &str, args: &Value) -> R<Value> {
             Ok(json!({"plans": plans.as_array().map(|a| a.iter().take(30).map(|p| pick(p, &["id", "kind", "state", "created"])).collect::<Vec<_>>()).unwrap_or_default()}))
         }
         "preview_organize" => {
-            let body = json!({"resource_id": segment(need(args, "resource_id")?)?, "destination": need(args, "destination")?});
-            let plan = core.post("/plans/organize", &body).await?;
+            let (resource, destination) = (segment(need(args, "resource_id")?)?, need(args, "destination")?);
+            let plan = match ready_plan(core, resource, destination).await? {
+                Some(plan) => plan,
+                None => core.post_long("/plans/organize", &json!({"resource_id": resource, "destination": destination})).await?,
+            };
             let moves = items(&plan["items"], |i| pick(i, &["source", "target", "size"]));
             Ok(json!({
                 "plan": {"id": plan["id"], "kind": plan["kind"], "state": plan["state"], "file_count": plan["items"].as_array().map_or(0, Vec::len), "moves": bounded(&moves)},
