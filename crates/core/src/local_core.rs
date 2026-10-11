@@ -42,9 +42,16 @@ pub async fn connect_or_start_with_device(dir:PathBuf,exe:PathBuf,device_dir:Pat
  if let Ok(v)=request(&dir,&exe,"session").await{return serde_json::from_value(v).map_err(|e|e.to_string());}
  // Core itself holds the data-directory lock; racing launchers cannot create two writers.
  use std::os::windows::process::CommandExt;
+ let started=crate::db::now();
  let mut child=std::process::Command::new(&exe).arg("--data-dir").arg(&dir).arg("--device-dir").arg(&device_dir).creation_flags(0x08000000|0x00000200).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e|e.to_string())?;
- let mut failure=String::new();for _ in 0..3{match request(&dir,&exe,"session").await{Ok(v)=>return serde_json::from_value(v).map_err(|e|e.to_string()),Err(e)=>{eprintln!("Core connection attempt failed: {e}");failure=e}}if let Some(status)=child.try_wait().map_err(|e|e.to_string())?{return Err(format!("Core startup exited ({status}): {failure}"));}}
+ let mut failure=String::new();for _ in 0..3{match request(&dir,&exe,"session").await{Ok(v)=>return serde_json::from_value(v).map_err(|e|e.to_string()),Err(e)=>{eprintln!("Core connection attempt failed: {e}");failure=e}}if let Some(status)=child.try_wait().map_err(|e|e.to_string())?{return Err(fatal_since(&dir,started).unwrap_or_else(||format!("Core startup exited ({status}): {failure}")));}}
  Err(format!("Could not connect to local Core: {failure}"))
+}
+/// The reason Core gave for stopping at startup (its own `core.fatal` diagnostic), rather than the
+/// launcher's "control channel not found" that follows from it.
+pub fn fatal_since(dir:&Path,started:i64)->Option<String>{
+ let text=std::fs::read_to_string(dir.join("logs").join("core.jsonl")).ok()?;
+ text.lines().rev().filter_map(|l|serde_json::from_str::<serde_json::Value>(l).ok()).take_while(|v|v["time"].as_i64().unwrap_or(0)>=started).find(|v|v["code"]=="core.fatal").and_then(|v|v["message"].as_str().map(str::to_owned))
 }
 pub async fn run(dir:PathBuf)->R<()>{let device_dir=dir.clone();run_with_device(dir,device_dir).await}
 pub async fn run_with_device(dir:PathBuf,device_dir:PathBuf)->R<()>{

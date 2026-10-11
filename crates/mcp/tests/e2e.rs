@@ -223,7 +223,8 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(!second.to_string().contains("Paging fixture 00"), "{second}");
 
     let jobs = server.ok("list_jobs", json!({})).await;
-    assert_eq!(jobs["jobs"][0]["kind"], "scan");
+    // Automatic matching is on by default, so a match task may be listed before the scan.
+    assert!(jobs["jobs"].as_array().unwrap().iter().any(|j| j["kind"] == "scan"), "{jobs}");
     server.ok("list_plans", json!({})).await;
 
     // Organizing outside a managed folder is refused by Core; nothing on disk changes either way.

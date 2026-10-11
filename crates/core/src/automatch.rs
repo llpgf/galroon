@@ -69,6 +69,8 @@ struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if primary.is_some()||!editions::bindings(c,rid)?.is_empty(){return Ok(None);}
+    // Catalogs scanned before system entries were skipped can still hold macOS metadata such as ._DAV.
+    if std::path::Path::new(&path).components().any(|p|crate::scan::system_entry(&p.as_os_str().to_string_lossy())){return Ok(None);}
     let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
     // A bundle member (scan split "Bundle/child") is named by the child, never by the collection folder.
     let parent=std::path::Path::new(&path).parent().map(|p|p.to_string_lossy().to_string()).filter(|p|!p.is_empty());
@@ -91,7 +93,7 @@ pub fn review_reason(response:&Value)->Option<String>{
     if response.get("results").is_none(){return Some("Not checked against VNDB yet.".into());}
     let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{"No usable work title in this resource."}else{"No VNDB candidate found."}.into());};
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
-    if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
+    if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
     let known=matching::candidate_names(candidate);let mut names=known.clone();names.extend(titles.first().and_then(Value::as_str));
     for (index,title) in titles.iter().filter_map(Value::as_str).enumerate(){
