@@ -9,7 +9,7 @@ pub struct ScanSpec { pub root_id:String, #[serde(default)] pub scope:String, #[
 /// NAS, OS and Galroon housekeeping entries: never part of a game resource.
 /// `._*` covers macOS AppleDouble files and the `._DAV` WebDAV cache some NAS servers create.
 pub fn system_entry(name:&str)->bool{
-    name.starts_with("._")||name.starts_with(".galroon-")||["@eaDir","#recycle","#snapshot",".snapshot",".galroon","@Recycle",".@__thumb",".DS_Store",".AppleDouble",".Spotlight-V100",".Trashes",".fseventsd",".TemporaryItems","$RECYCLE.BIN","System Volume Information"].contains(&name)
+    name.starts_with("._")||name.starts_with(".galroon-")||["@eaDir","#recycle","#snapshot",".snapshot",".galroon","@Recycle",".@__thumb",".DS_Store",".AppleDouble",".Spotlight-V100",".Trashes",".fseventsd",".TemporaryItems",".AppleDB",".AppleDesktop","Network Trash Folder","Temporary Items","$RECYCLE.BIN","System Volume Information"].contains(&name)
     ||["thumbs.db","desktop.ini"].contains(&name.to_ascii_lowercase().as_str())
 }
 pub fn canonical(path:&Path) -> Result<PathBuf,String> { path.canonicalize().map_err(|e|e.to_string()) }
@@ -152,12 +152,14 @@ pub fn bundle(folder:&str,children:&[String])->bool {
     static LABEL:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
     let label=LABEL.get_or_init(||regex::Regex::new(r"^(?:\([^)]*\)\s*)?\[\d{6,8}\]").unwrap());
     if label.is_match(folder){return false;}
-    let mut works:Vec<String>=Vec::new();
+    let mut works:Vec<(String,String)>=Vec::new();
     for child in children.iter().filter(|c|label.is_match(c)) {
         let key=crate::matching::normalized(&crate::matching::clean_name(child));
         if key.chars().count()<2{continue;}
-        let same=|a:&str,b:&str|{let common=a.chars().zip(b.chars()).take_while(|(x,y)|x==y).count();common>=6.min(a.chars().count()).min(b.chars().count())};
-        if !works.iter().any(|w|same(w,&key)){works.push(key);}
+        // Children of one work share their leading title word (桜花裁き 修正パッチ / 桜花裁き 初回限定特装版 Disk-1).
+        let first=crate::matching::clean_name(child).split_whitespace().next().map(crate::matching::normalized).unwrap_or_default();
+        let same=|w:&(String,String)|{let common=w.0.chars().zip(key.chars()).take_while(|(x,y)|x==y).count();common>=6.min(w.0.chars().count()).min(key.chars().count())||(!first.is_empty()&&w.1==first)};
+        if !works.iter().any(same){works.push((key,first));}
     }
     works.len()>=2
 }
@@ -170,10 +172,18 @@ pub fn clean_title(s:&str)->String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn mac_and_nas_housekeeping_is_never_a_resource(){
+        for n in ["._DAV","._game.rar",".DS_Store","@eaDir","#recycle",".Spotlight-V100"]{assert!(system_entry(n),"{n}");}
+        for n in ["game.rar","[251219] ママ×カノEX",".hidden-game"]{assert!(!system_entry(n),"{n}");}
+    }
     #[test]fn only_folders_of_several_works_releases_are_bundles(){
         let v=|xs:&[&str]|xs.iter().map(|x|x.to_string()).collect::<Vec<_>>();
         assert!(bundle("WaffleTokuten",&v(&["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar","[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 オフィシャル通販特典 「原法子との邂逅」 (files).rar","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar"])));
         assert!(!bundle("1326550",&v(&["OTOCHIKA.mdf","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 Crack.rar","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 修正パッチVer1.01 (files).rar","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 豪華版特典「オリジナルサウンドトラック」 (mdf+mds).rar","metadata.json"])));
+        // Short titles: one work with patch, discs and extras is not a bundle.
+        assert!(!bundle("桜花裁き 初回限定特装版 + 予約特典",&v(&["(18禁ゲーム) [170224] [IRODORI] 桜花裁き イラスト & 4コマ.rar","(18禁ゲーム) [170224] [IRODORI] 桜花裁き 修正パッチ Ver1.02.rar","(18禁ゲーム) [170224] [IRODORI] 桜花裁き 初回限定特装版 Disk-1 (iso+mds+rr3).rar"])));
+        assert!(!bundle("コイカツ！ + 特典 + DLC",&v(&["(18禁ゲーム) [180427] [ILLUSION] コイカツ！ DISC-1 (iso+rr3).rar","(18禁ゲーム) [180427] [ILLUSION] コイカツ！ VRパッチ.rar","(18禁ゲーム) [180427] [ILLUSION] コイカツ！ 予約特典 魔法少女衣装データ.rar"])));
+        assert!(bundle("夜のひつじ",&v(&["[110626][夜のひつじ][CHS]孤独に効く百合","[110819][夜のひつじ]親友が美少女になって帰ってきた"])));
         assert!(!bundle("1327332",&v(&["[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar","[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- 豪華限定版特典 設定資料集 (pdf).rar"])));
         // A folder that is itself a release is never split, even with differently named extras.
         assert!(!bundle("[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update",&v(&["(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3).rar","[260101][x][y] Something Else.rar"])));
