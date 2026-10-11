@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=4;
+pub const ALGORITHM_VERSION:i64=5;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -25,11 +25,34 @@ fn useful(text: &str) -> bool {
 fn technical_directory(text:&str)->bool{
     ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
 }
+/// One " + …" part of a release name that lists bundled extras ("Drama CD", "OST", "Update 1.01", "Tokuten x6", "予約特典").
+fn extras_segment(part: &str) -> bool {
+    static WORDS: OnceLock<Regex> = OnceLock::new();
+    let words = WORDS.get_or_init(|| Regex::new(r"(?i)\b(?:op|ed|opening|ending|theme|songs?|voice|vocals?|drama|audio|cd|dvd|disks?|discs?|soundtracks?|ost|original|sound|album|collection|maxi|single|mini|character|special|contents?|bonus|manual|wallpapers?|tokuten|update|patch(?:es)?|fix|crack(?:ed)?|omake|extra|cover|visual|fan|book|artbook|label|transparent|clothes|custom|invisible|harem|amazon|sofmap|getchu|gamers|toranoana|melonbooks|and|ver)\b|特典|予約|初回|同梱|店舗|修正|パッチ|マニュアル|オリジサントラ|サントラ|サウンドトラック|ハーレム|ドラマ|ボイス|壁紙|レーベル|解放|期間限定|DLC|ソフマップ|ボーカル|ヴォーカル|アルバム|主題歌|音声|設定資料|原画集|画集|ビジュアル|ファンブック|マキシ|シングル|おまけ").unwrap());
+    let rest = words.replace_all(part, "");
+    words.is_match(part) && rest.chars().all(|c| !c.is_alphanumeric() || c.is_ascii_digit() || c == 'x' || c == 'X' || c == 'v')
+}
+/// Drop a trailing run of " + extras" parts; a " + " joining two real titles stays.
+fn strip_plus_extras(s: &str) -> String {
+    let sep = Regex::new(r"\s+\+\s*").unwrap();
+    let cuts: Vec<(usize, usize)> = sep.find_iter(s).map(|m| (m.start(), m.end())).collect();
+    for (i, &(start, _)) in cuts.iter().enumerate() {
+        let tail_ok = cuts[i..].iter().enumerate().all(|(j, &(_, end))| {
+            let stop = cuts.get(i + j + 1).map_or(s.len(), |c| c.0);
+            let part = &s[end..stop];
+            part.trim().is_empty() || extras_segment(part)
+        });
+        if tail_ok && start > 0 { return s[..start].to_string(); }
+    }
+    s.to_string()
+}
 /// Strip distribution labels, not arbitrary title brackets or sequel subtitles.
 pub fn clean_name(input: &str) -> String {
     let mut s: String = input.nfkc().collect();
     s = replace(&s, r"(?i)(?:\.part\d+)?\.(?:rar|zip|7z|iso|mdf|mds|bin|cue)(?:\.\d+)?$", "");
-    s = replace(&s, r"(?i)^(?:\((?:18禁ゲーム|18禁|一般ゲーム|一般コミック|同人ゲーム)\)\s*)+", "");
+    s = replace(&s, r"(?i)^(?:\((?:18禁ゲーム|18禁|一般ゲーム|一般コミック|同人ゲーム|FN輸入)\)\s*)+", "");
+    // Uploader tags such as "『girlcelly』" or "│2D.G.F.│"; a Japanese 『title』 survives.
+    s = replace(&s, r"^\s*(?:『[\x20-\x7e]+』|│[^│]+│)\s*", "");
     // A run of distribution brackets is metadata. A single meaningful [title] survives.
     let prefix = Regex::new(r"^((?:\[[^\]]+\]\s*)+)").unwrap();
     if let Some(caps) = prefix.captures(&s) {
@@ -37,8 +60,8 @@ pub fn clean_name(input: &str) -> String {
         let numeric = Regex::new(r"^\[(?:\d{6,8}|(?i:rj|vj)\d+)\]").unwrap().is_match(&caps[1]);
         if labels >= 2 || numeric { s = s[caps[0].len()..].to_string(); }
     }
-    s = replace(&s, r"(?i)\s+\+\s*(?:theme song|voice(?: drama| tokuten)?|vocal cd|soundtrack|update|tokuten|wallpaper)\b.*$", "");
-    s = replace(&s, r"(?i)\s+(?:(?:豪華|予約|初回|特典付き|通常|限定|パッケージ|ダウンロード|DL)+版|(?:FANZA|Sofmap|ソフマップ|予約|初回|限定)?特典|追加コンテンツ|壁紙セット|Crack(?:\s|$)).*$", "");
+    s = strip_plus_extras(&s);
+    s = replace(&s, r"(?i)\s+(?:(?:豪華|予約|初回|特典付き|特装|通常|限定|パッケージ|ダウンロード|DL|多国語)+版|(?:FANZA|Sofmap|ソフマップ|予約|初回|限定)?特典|追加コンテンツ|壁紙セット|Crack(?:\s|$)).*$", "");
     s = replace(&s, r"(?i)\s*\((?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+)(?:\+(?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+))*\)\s*$", "");
     s = replace(&s, r"(?i)[\s_]+(?:修正パッチ|修正ファイル|アップデート|patch|update)(?:[\s_]|ver|v?\d|$).*$", "");
     s = replace(&s, r"[\s_]+(?:特典(?:ボイスドラマ|ASMR|音声)|限定版音声特典|主題歌(?:マキシ)?音源|パッケージ\s*&\s*リーフレット).*$", "");
@@ -441,6 +464,28 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             ("[250530][VJ01004242][Clover GAME] メイドちゃんは迷途ちゅう DL版&特典 (files).rar", "メイドちゃんは迷途ちゅう"),
             ("[250725][1321849][エスクード] 廃村少女［弐］ ～陰り誘う秘姫の匣～ FANZA特典 (wav).rar", "廃村少女[弐] ~陰り誘う秘姫の匣~"),
             ("[Title]", "[Title]"), ("(Actual Title) After Story", "(Actual Title) After Story"), ("CHAOS;HEAD NOAH", "CHAOS;HEAD NOAH")
+        ] { assert_eq!(clean_name(raw),want,"{raw}"); }
+    }
+    #[test] fn bundled_extras_after_plus_signs_are_dropped_but_joined_titles_stay() {
+        for (raw,want) in [
+            ("[150227] [ゆずソフト] サノバウィッチ ‐SABBAT OF THE WITCH‐ + Drama CD + Character Songs + Bonus + Manual + Update 1.1", "サノバウィッチ ‐SABBAT OF THE WITCH‐"),
+            ("[160729] [ゆずソフト] 千恋＊万花 + Character Songs + Drama CD + Bonus + Manual + Wallpaper + Update 1.1", "千恋*万花"),
+            ("[181130] [sprite] 蒼の彼方のフォーリズム Perfect Edition + Manual", "蒼の彼方のフォーリズム Perfect Edition"),
+            ("[201127] [ALICESOFT] ドーナドーナ いっしょにわるいことをしよう + Sound Album", "ドーナドーナ いっしょにわるいことをしよう"),
+            ("[171124] [あかべぇそふとすりぃ] まほ×ろば + Clothes Transparent Patch + Drama CD + Manual", "まほ×ろば"),
+            ("[210226][1114110][アストロノーツ・シリウス] 極限痴漢特異点2 痴漢の証明 + オリジサントラ + ハーレムパッチ", "極限痴漢特異点2 痴漢の証明"),
+            ("[260925] [ASa Project] 王様恋愛 豪華限定版 + OST + Voice Drama + Tokuten x6 + Manual + Wallpaper", "王様恋愛"),
+            ("桜花裁き 初回限定特装版 + 予約特典 + 初回特典 + Sofmap特典 + レーベル", "桜花裁き"),
+            ("ゆらめく心に満ちた世界で、君の夢と欲望は叶うか + OST + 解放パッチ", "ゆらめく心に満ちた世界で、君の夢と欲望は叶うか"),
+            ("『girlcelly』 [260101] [ぱんみみそふと] おにいちゃんコンティニュー！　ゆうりとぷらすめいくらぶ♥", "おにいちゃんコンティニュー! ゆうりとぷらすめいくらぶ♥"),
+            ("│2D.G.F.│[251226][1338954][枕] サクラノ詩 〜櫻の森の上を舞う〜 10th Anniversary Edition DL版 [8690MB]", "サクラノ詩 〜櫻の森の上を舞う〜 10th Anniversary Edition"),
+            ("(FN輸入) (18禁ゲーム) [200424] [あざらしそふと] アマカノ2", "アマカノ2"),
+            ("[231215][1132424][WAFFLE] 奴隷姫騎士と奴隷侍女とのスローライフ 多国語版 Chinese-English DL版 (files).rar", "奴隷姫騎士と奴隷侍女とのスローライフ"),
+            // A " + " that joins real titles or adds story content is identity, not an extra.
+            ("(同人ゲーム) [2021-12-24][RJ351325][ディーゼルマイン] SUMMER-田舎の性活- +おでかけ", "SUMMER-田舎の性活- +おでかけ"),
+            ("Fate/stay night + hollow ataraxia", "Fate/stay night + hollow ataraxia"),
+            ("[211029] [ま～まれぇど] PRIMAL×HEARTS 1＋2パック", "PRIMAL×HEARTS 1+2パック"),
+            ("『虜ノ誓』追加パッチ「男だらけの運動会パッチ」", "『虜ノ誓』追加パッチ「男だらけの運動会パッチ」"),
         ] { assert_eq!(clean_name(raw),want,"{raw}"); }
     }
     #[test] fn paths_and_numeric_containers_use_members_without_guessing_store_ids() {
