@@ -1,6 +1,6 @@
 //! Windows acceptance (US-4.1): reads the installed desktop's Core through its control channel and
 //! prints matching state and folder → VNDB identities. Never prints the bearer credential.
-//! Usage: acceptance_probe <GALROON_DATA dir> <installed galroon-core.exe> [add <folder> | remap-preview <root id> <folder> | remap <root id> <folder> <digest> | summary]
+//! Usage: acceptance_probe <GALROON_DATA dir> <installed galroon-core.exe> [add <folder> | remap-preview <root id> <folder> | remap <root id> <folder> <digest> | scan <root id> | resume <job id> | summary]
 //! `add` does only what the Sources form's Save does; scanning and matching must then happen by themselves.
 use galroon_core::local_core::{self,Session};
 use serde_json::{Value,json};
@@ -13,6 +13,8 @@ use serde_json::{Value,json};
  let post=|path:String,body:Value|{let request=client.post(format!("{}/api{path}",session.url)).bearer_auth(&session.token).json(&body);async move{let r=request.send().await.unwrap();let status=r.status();let v=r.json::<Value>().await.unwrap_or(Value::Null);json!({"status":status.as_u16(),"body":v})}};
  match args.get(3).map(String::as_str){
   Some("remap-preview")=>{println!("{}",post(format!("/roots/{}/remap/preview",args[4]),json!({"path":args[5]})).await);return;}
+  Some("scan")=>{println!("{}",post("/scans".into(),json!({"root_id":args[4],"scope":"","exclude":[]})).await);return;}
+  Some("resume")=>{println!("{}",post(format!("/jobs/{}/resume",args[4]),json!({})).await);return;}
   Some("remap")=>{println!("{}",post(format!("/roots/{}/remap",args[4]),json!({"path":args[5],"digest":args[6]})).await);return;}
   _=>{}
  }

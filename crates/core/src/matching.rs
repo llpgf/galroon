@@ -101,10 +101,17 @@ pub fn release_card(work: &Value, release: &Value) -> Value {
 pub fn main_title(name: &str) -> &str { Regex::new(r"\s*[～~〜]|\s+[-－]").unwrap().split(name).next().unwrap_or(name).trim() }
 /// A brand or release date from the local names agrees with this candidate.
 fn corroborated(input: &Input, candidate: &Value) -> bool {
-    let developers: Vec<String> = candidate["developers"].as_array().map(|ds| ds.iter().flat_map(|d| [d["name"].as_str(), d["original"].as_str()]).flatten().map(normalized).collect()).unwrap_or_default();
-    input.brands.iter().any(|b| { let b = normalized(b); !b.is_empty() && developers.contains(&b) })
-        || candidate["released"].as_str().is_some_and(|r| input.dates.iter().any(|d| d == r))
+    let names = |list: &Value| -> Vec<String> { list.as_array().map(|ds| ds.iter().flat_map(|d| [d["name"].as_str(), d["original"].as_str()]).flatten().map(normalized).collect()).unwrap_or_default() };
+    let mut makers = names(&candidate["developers"]);
+    let mut dates: Vec<&str> = candidate["released"].as_str().into_iter().collect();
+    // A release found by title (remake, port, DL edition) carries its own producers and date.
+    for release in candidate["release_matches"].as_array().into_iter().flatten() { makers.extend(names(&release["producers"])); dates.extend(release["released"].as_str()); }
+    input.brands.iter().any(|b| { let b = normalized(b); !b.is_empty() && makers.contains(&b) })
+        || dates.iter().any(|r| input.dates.iter().any(|d| d == r))
 }
+/// The folder names both a brand and a release date, and neither belongs to this candidate:
+/// a same-named work from another maker (コイカツ！ by ILLUSION is not コイ☆カツ！ by Silhouette).
+fn contradicted(input: &Input, candidate: &Value) -> bool { !input.brands.is_empty() && !input.dates.is_empty() && !corroborated(input, candidate) }
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
@@ -215,6 +222,8 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
             if input.titles.iter().any(|q|normalized(q)==normalized(title))&&best<105.0 {best=105.0;reason="confirmed_title";matched=title.into();conflict=false;}
         }}
         if input.direct_id.as_deref() == Some(&id) { best = 110.0; reason = "direct_id"; }
+        // A person's own confirmation or an explicit VNDB id outweighs folder labels.
+        if best >= 90.0 && !matches!(reason, "confirmed_title" | "direct_id") && contradicted(input, &candidate) { best = 90.0; reason = "release_conflict"; }
         candidate["match"] = json!({"score":best.round(),"reason":reason,"matched_title":matched,"number_conflict":conflict,"strength":"review"});
         ranked.push(candidate);
     }
@@ -355,6 +364,14 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         // Short titles stay review cases even when the brand agrees (same rule as "[Key] AIR").
         let with_brand = prepare("善悪 フルHDリマスター版 Webアンケート特典 (files)", &["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar".into()]).unwrap();
         assert_eq!(rank(&with_brand, vec![zenaku])[0]["match"]["strength"], "review");
+    }
+    #[test] fn same_name_from_another_maker_and_year_is_not_admitted() {
+        let silhouette = json!({"id":"v6366","title":"Koi☆Katsu!","alttitle":"コイ☆カツ！","released":"2011-02-25","developers":[{"name":"Silhouette"}]});
+        let input = prepare("コイカツ！ 予約特典 魔法少女衣装データ", &["(18禁ゲーム) [180427] [ILLUSION] コイカツ！ 予約特典 魔法少女衣装データ.rar".into()]).unwrap();
+        let r = rank(&input, vec![silhouette.clone()]); assert_eq!(r[0]["match"]["reason"], "release_conflict"); assert_ne!(r[0]["match"]["strength"], "strong");
+        // Either the brand or the date agreeing keeps an exact title admissible.
+        let same_brand = prepare("x", &["[180427] [Silhouette] コイ☆カツ！".into()]).unwrap(); let mut b = same_brand.clone(); b.titles = vec!["コイ☆カツ！".into()];
+        assert_eq!(rank(&b, vec![silhouette])[0]["match"]["strength"], "strong");
     }
     #[test] fn remakes_found_through_a_release_get_that_release() {
         let input = prepare("下級生リメイク 豪華版", &["[251219] [FG REMAKE] 下級生リメイク 豪華版 + Voice Drama + Tokuten".into()]).unwrap();

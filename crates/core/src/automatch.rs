@@ -90,7 +90,7 @@ pub fn review_reason(response:&Value)->Option<String>{
     if response.get("results").is_none(){return Some("Not checked against VNDB yet.".into());}
     let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{"No usable work title in this resource."}else{"No VNDB candidate found."}.into());};
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
-    if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
+    if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
     for title in titles.iter().filter_map(Value::as_str){
         let Ok(mut input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};
