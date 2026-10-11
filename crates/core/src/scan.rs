@@ -81,7 +81,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             // Even unreadable or excluded children were seen. Never infer their absence.
             present_children.insert(entry.file_name());
             if crate::backup::protected_path(&path){skipped(db,jid,&path)?;continue;}
-            if name.starts_with(".galroon-")||["@eaDir","#recycle",".snapshot",".galroon"].contains(&name.as_str()) {skipped(db,jid,&path)?;continue;}
+            if system_entry(&name) {skipped(db,jid,&path)?;continue;}
             let rel=path.strip_prefix(&root).map_err(|e|e.to_string())?.to_string_lossy().to_string();
             if spec.exclude.iter().any(|ex|Path::new(&rel).starts_with(Path::new(ex))) {skipped(db,jid,&path)?;continue;}
             let meta=match fs::symlink_metadata(&path){Ok(m)=>m,Err(e)=>{complete=false;error(db,jid,&path.to_string_lossy(),&format!("{}: {e}",path.display()));continue}};
@@ -130,7 +130,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
         if complete {
             let mut stmt=c.prepare("SELECT id,path FROM files WHERE root_id=?1 AND seen_job!=?2 AND availability IN ('present','unverified')").map_err(|e|e.to_string())?;
             let rows=stmt.query_map(params![spec.root_id,jid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
-            let mut missing=Vec::new();for row in rows {let (fid,p)=row.map_err(|e|e.to_string())?;let relative=Path::new(&p).strip_prefix(&root).map_err(|e|e.to_string())?;let excluded=crate::backup::protected_path(Path::new(&p))||spec.exclude.iter().any(|ex|relative.starts_with(Path::new(ex)))||relative.components().any(|part|["@eaDir","#recycle",".snapshot",".galroon"].iter().any(|name|part.as_os_str()==std::ffi::OsStr::new(name)));
+            let mut missing=Vec::new();for row in rows {let (fid,p)=row.map_err(|e|e.to_string())?;let relative=Path::new(&p).strip_prefix(&root).map_err(|e|e.to_string())?;let excluded=crate::backup::protected_path(Path::new(&p))||spec.exclude.iter().any(|ex|relative.starts_with(Path::new(ex)))||relative.components().any(|part|system_entry(&part.as_os_str().to_string_lossy()));
                 let child=Path::new(&p).strip_prefix(dp).ok().and_then(|p|p.components().next()).map(|c|c.as_os_str());if !excluded&&child.is_some_and(|child|!present_children.contains(child)){missing.push(fid);}}
             drop(stmt);for fid in missing {c.execute("UPDATE files SET availability='missing' WHERE id=?1",[fid]).map_err(|e|e.to_string())?;}
         }
@@ -157,6 +157,11 @@ pub fn bundle(folder:&str,children:&[String])->bool {
     }
     works.len()>=2
 }
+/// NAS and system housekeeping entries, never game files: Synology/QNAP folders, Galroon's own,
+/// and macOS metadata (AppleDouble "._*", .DS_Store, Spotlight, Trash) left on shares by Mac clients.
+pub fn system_entry(name:&str)->bool{
+    name.starts_with(".galroon-")||name.starts_with("._")||["@eaDir","#recycle",".snapshot",".galroon",".DS_Store",".AppleDouble",".AppleDB",".AppleDesktop",".Spotlight-V100",".Trashes",".fseventsd",".TemporaryItems","Network Trash Folder","Temporary Items"].contains(&name)
+}
 pub fn clean_title(s:&str)->String {
     let mut text=regex::Regex::new(r"(?i)\.(rar|zip|7z|iso)(\.\d+)?$").unwrap().replace(s,"").to_string();
     text=regex::Regex::new(r"\[[^\]]*\]").unwrap().replace_all(&text,"").to_string();
@@ -166,6 +171,10 @@ pub fn clean_title(s:&str)->String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn mac_and_nas_housekeeping_is_never_a_resource(){
+        for n in ["._DAV","._game.rar",".DS_Store","@eaDir","#recycle",".Spotlight-V100"]{assert!(system_entry(n),"{n}");}
+        for n in ["game.rar","[251219] ママ×カノEX",".hidden-game"]{assert!(!system_entry(n),"{n}");}
+    }
     #[test]fn only_folders_of_several_works_releases_are_bundles(){
         let v=|xs:&[&str]|xs.iter().map(|x|x.to_string()).collect::<Vec<_>>();
         assert!(bundle("WaffleTokuten",&v(&["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar","[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 オフィシャル通販特典 「原法子との邂逅」 (files).rar","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar"])));

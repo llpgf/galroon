@@ -69,6 +69,8 @@ struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if primary.is_some()||!editions::bindings(c,rid)?.is_empty(){return Ok(None);}
+    // Catalogs scanned before system entries were skipped can still hold macOS metadata such as ._DAV.
+    if std::path::Path::new(&path).components().any(|p|crate::scan::system_entry(&p.as_os_str().to_string_lossy())){return Ok(None);}
     let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
     // A bundle member (scan split "Bundle/child") is named by the child, never by the collection folder.
     let parent=std::path::Path::new(&path).parent().map(|p|p.to_string_lossy().to_string()).filter(|p|!p.is_empty());
