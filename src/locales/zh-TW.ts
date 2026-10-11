@@ -800,7 +800,7 @@ noEditionResources:'先為此作品配對資源，再選擇它的版本與用途
 resourceRole:'資源用途',
 role_main:'遊戲本體',
 role_patch:'修正檔',
-role_extra:'特典',
+role_extra:'特典',bonusOnly:'只有特典',sameWorkCards:'同一作品的其他卡',sameWorkHint:'例如原版與重製版：VNDB 視為同一部作品，你的收藏中分成不同的卡。',remakeCard:'重製版',refreshConflicts:'VNDB 資料與你的修改不同',refreshConflictsHint:'重新整理保留了你修改過的欄位。請逐項選擇要保留哪一個。',conflictMine:'你的值',conflictProvider:'VNDB 的值',keepMine:'保留我的',useProvider:'改用 VNDB',hideBonusOnly:'隱藏只有特典的作品',
 role_unknown:'未分類',
 resourceReferences:'資源參照',
 referencesHint:'選擇使用此資源的作品與版本。共用的參照會指向同一批檔案。',

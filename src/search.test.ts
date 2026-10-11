@@ -4,6 +4,7 @@ describe('collection search and dates',()=>{
  it('finds title punctuation, width variants, word order and small typos',()=>{
   for(const query of ['steinsgate','ＳＴＥＩＮＳ gate','stiens gate','gate steins'])expect(fuzzyIncludes('STEINS;GATE NITRO PLUS',query)).toBe(true);
   expect(fuzzyIncludes('マガルミナ Purple software','マガル')).toBe(true);
+  expect(fuzzyIncludes('マガルミナ Purple software','まがるみな')).toBe(true);expect(fuzzyIncludes('やりなおしクランクイン','ヤリナオシ')).toBe(true);
   expect(fuzzyIncludes('Café Stella','cafe')).toBe(true);
  });
  it('requires every query term and avoids fuzzy matching tiny terms',()=>{

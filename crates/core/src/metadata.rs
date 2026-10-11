@@ -20,9 +20,30 @@ pub fn apply(db:&Db,id:&str,revision:i64,patch:&Value,reset:&[String],source:Opt
     for f in FIELDS{if let Some(v)=overrides.get(f).or_else(||baseline.get(f)){validate(f,v)?;let value=if v.is_array(){v.to_string()}else{v.as_str().unwrap().into()};tx.execute(&format!("UPDATE works SET {f}=?2 WHERE id=?1"),params![id,value]).map_err(|e|e.to_string())?;}}
     tx.execute("UPDATE works SET source_json=?2,overrides=?3,revision=revision+1 WHERE id=?1",params![id,baseline.to_string(),overrides.to_string()]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;Ok(old+1)
 }
-pub async fn fetch(id:&str)->R<Value>{
+/// Provider metadata for a work. A remake card (`release`) keeps its own release title, date, producers and art.
+/// Fields where a manual value now differs from the freshly fetched provider value. Refresh keeps the manual value;
+/// the person decides per field whether to keep it or reset it to the provider value.
+pub fn conflicts(db:&Db,id:&str)->R<Vec<Value>>{
+    let snap=snapshot(db,id)?;let mut out=Vec::new();
+    for f in FIELDS{if let (Some(mine),Some(source))=(snap["overrides"].get(f),snap["source"].get(f)){if mine!=source{out.push(json!({"field":f,"mine":mine,"provider":source}));}}}
+    Ok(out)
+}
+pub async fn fetch(id:&str,release:Option<&str>)->R<Value>{
+    let mut work=fetch_work(id).await?;
+    if let Some(release)=release{
+        if !release.strip_prefix('r').is_some_and(|s|!s.is_empty()&&s.chars().all(|c|c.is_ascii_digit())){return Err("Invalid VNDB release identifier".into());}
+        let response=reqwest::Client::new().post(format!("{}/release",crate::matching::vndb_api())).timeout(std::time::Duration::from_secs(25)).json(&json!({"filters":["id","=",release],"fields":"title,alttitle,released,producers.name,images.url,images.type","results":1})).send().await.map_err(|e|e.to_string())?;
+        if !response.status().is_success(){return Err(format!("VNDB returned {}; try again later",response.status()));}
+        let response:Value=response.json().await.map_err(|e|e.to_string())?;let mut r=response["results"].as_array().and_then(|v|v.first()).cloned().ok_or("VNDB release not found")?;
+        r["release_title"]=r["title"].clone();
+        let card=crate::matching::release_card(&json!({"image":{"url":work["cover"]}}),&r);
+        for k in ["title","original_title","released","developer","cover"]{work[k]=card[k].clone();}
+    }
+    Ok(work)
+}
+async fn fetch_work(id:&str)->R<Value>{
     if !id.strip_prefix('v').is_some_and(|s|!s.is_empty()&&s.chars().all(|c|c.is_ascii_digit())){return Err("Invalid VNDB work identifier".into());}
-    let response=reqwest::Client::new().post("https://api.vndb.org/kana/vn").timeout(std::time::Duration::from_secs(25)).json(&json!({"filters":["id","=",id],"fields":"title,alttitle,aliases,description,image.url,released,developers.name,tags.name","results":1})).send().await.map_err(|e|e.to_string())?;
+    let response=reqwest::Client::new().post(format!("{}/vn",crate::matching::vndb_api())).timeout(std::time::Duration::from_secs(25)).json(&json!({"filters":["id","=",id],"fields":"title,alttitle,aliases,description,image.url,released,developers.name,tags.name","results":1})).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success(){return Err(format!("VNDB returned {}; try again later",response.status()));}
     let response:Value=response.json().await.map_err(|e|e.to_string())?;let v=response["results"].as_array().and_then(|v|v.first()).ok_or("VNDB work not found")?;
     let title=v["title"].as_str().ok_or("VNDB response has no title")?;
@@ -30,5 +51,8 @@ pub async fn fetch(id:&str)->R<Value>{
 }
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]fn conflicts_list_only_manual_values_that_differ_from_the_provider(){let t=tempfile::tempdir().unwrap();let db=crate::db::open(&t.path().join("db")).unwrap();db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,source_json) VALUES('w','First','First',?1)",[json!({"title":"First","original_title":"First","released":"2020"}).to_string()]).unwrap();
+  apply(&db,"w",1,&json!({"title":"My title","released":"2021"}),&[],None).unwrap();apply(&db,"w",2,&json!({}),&[],Some(json!({"title":"Updated","original_title":"First","released":"2021"}))).unwrap();
+  let c=conflicts(&db,"w").unwrap();assert_eq!(c,vec![json!({"field":"title","mine":"My title","provider":"Updated"})]);}
  #[test]fn refresh_preserves_override_and_reset_uses_latest_source(){let t=tempfile::tempdir().unwrap();let db=crate::db::open(&t.path().join("db")).unwrap();db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,source_json) VALUES('w','First','First',?1)",[json!({"title":"First","original_title":"First"}).to_string()]).unwrap();assert_eq!(apply(&db,"w",1,&json!({"title":"My title"}),&[],None).unwrap(),2);apply(&db,"w",2,&json!({}),&[],Some(json!({"title":"Updated source"}))).unwrap();let title=||db.lock().unwrap().query_row("SELECT title FROM works WHERE id='w'",[],|r|r.get::<_,String>(0)).unwrap();assert_eq!(title(),"My title");apply(&db,"w",3,&json!({}),&["title".into()],None).unwrap();assert_eq!(title(),"Updated source");assert!(apply(&db,"w",3,&json!({"title":"Stale edit"}),&[],None).is_err());assert_eq!(title(),"Updated source");assert!(apply(&db,"w",4,&json!({"title":""}),&[],None).is_err());assert_eq!(snapshot(&db,"w").unwrap()["revision"],4);}
 }

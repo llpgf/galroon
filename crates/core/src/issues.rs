@@ -15,9 +15,10 @@ pub fn migrate(c:&Connection)->rusqlite::Result<()>{
  c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS issue_job ON issues(job_id,category); CREATE INDEX IF NOT EXISTS issue_state ON issues(state,seq);")
 }
 // Reconcile inside the caller's transaction. Repeated observations preserve deferrals.
+// Resources still queued in an unfinished matching task are not issues yet; their task reports progress.
 pub fn reconcile(c:&Connection)->std::result::Result<(),String>{
  let run=||->rusqlite::Result<()>{
-  let mut q=c.prepare("SELECT r.id,r.revision,m.state,m.evidence FROM resources r LEFT JOIN match_items m ON m.rowid=(SELECT max(rowid) FROM match_items WHERE resource_id=r.id AND evidence!='{}') WHERE r.work_id IS NULL AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.resource_id=r.id) AND EXISTS(SELECT 1 FROM resource_files f WHERE f.resource_id=r.id)")?;
+  let mut q=c.prepare("SELECT r.id,r.revision,m.state,m.evidence FROM resources r LEFT JOIN match_items m ON m.rowid=(SELECT max(rowid) FROM match_items WHERE resource_id=r.id AND evidence!='{}') WHERE r.work_id IS NULL AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.resource_id=r.id) AND EXISTS(SELECT 1 FROM resource_files f WHERE f.resource_id=r.id) AND NOT EXISTS(SELECT 1 FROM match_items p JOIN jobs j ON j.id=p.job_id WHERE p.resource_id=r.id AND p.state='pending' AND p.evidence='{}' AND j.state IN ('queued','running','pausing','paused','interrupted'))")?;
   let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
   for(id,revision,state,raw)in rows{let e:Value=raw.as_deref().and_then(|s|serde_json::from_str(s).ok()).unwrap_or_default();let(kind,reason)=if let Some(error)=e["error"].as_str(){("query_failed",error.to_string())}else if state.as_deref()==Some("skipped"){("skipped",e["reason"].as_str().unwrap_or("Source changed during matching").into())}else{("unmatched",crate::automatch::review_reason(&e).unwrap_or_else(||"No confirmed work".into()))};
    let key=json!([revision,kind,reason,e["algorithm_version"],e["results"]]).to_string();

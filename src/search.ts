@@ -1,4 +1,5 @@
-const fold=(s:string)=>s.normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+// Katakana folds to hiragana so 「まがるみな」 finds 「マガルミナ」. Keep parity with collection_query::fold.
+const fold=(s:string)=>s.normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[\u30a1-\u30f6]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60)).replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 function closeWord(a:string,b:string){
  const limit=a.length>=8?2:1;if(a.length<4||Math.abs(a.length-b.length)>limit)return false;
  const rows:number[][]=[Array.from({length:b.length+1},(_,i)=>i)];

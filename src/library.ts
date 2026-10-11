@@ -1,7 +1,7 @@
 import type {Work,Resource,Root,Edition} from './api';
 import {fuzzyIncludes} from './search';
 export type Availability='available'|'missing'|'unverified'|'offline'|'unknown'|'no_resources';
-export type Filters={studio:string;year:string;language:string;tag:string;availability:string;tags?:string[];excludedTags?:string[];favorites?:boolean};
+export type Filters={studio:string;year:string;language:string;tag:string;availability:string;tags?:string[];excludedTags?:string[];favorites?:boolean;hideBonusOnly?:boolean};
 export const emptyFilters:Filters={studio:'',year:'',language:'',tag:'',availability:''};
 export type Entry={work:Work;studio:string;year:string;languages:string[];tags:string[];customTags?:string[];states:Set<Availability>;search:string};
 export const normalized=(s:string)=>s.normalize('NFKC').trim().toLowerCase();

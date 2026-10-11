@@ -66,6 +66,8 @@ fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Resu
         }
     }
     for e in &mut entries { if e.states.is_empty() { e.states.insert("no_resources".into()); } }
+    let mut statement=c.prepare("SELECT work_id FROM resource_bindings GROUP BY work_id HAVING min(role='extra')=1")?;
+    for id in statement.query_map([],|r|r.get::<_,String>(0))? { check(cancelled)?;if let Some(i)=index.get(&id?) { entries[*i].bonus_only=true; } }
     let mut statement=c.prepare("WITH RECURSIVE members(tag,id) AS (SELECT tw.tag_id,tw.work_id FROM custom_tag_works tw JOIN custom_tags t ON t.id=tw.tag_id WHERE t.deleted=0 UNION SELECT m.tag,w.merged_into FROM members m JOIN works w ON w.id=m.id WHERE w.merged_into IS NOT NULL) SELECT DISTINCT m.tag,w.id FROM members m JOIN works w ON w.id=m.id WHERE w.merged_into IS NULL")?;
     for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? { check(cancelled)?;let (tag,id)=row?;if let Some(i)=index.get(&id) { entries[*i].custom_tags.insert(format!("custom:{tag}")); } }
     Ok(entries)

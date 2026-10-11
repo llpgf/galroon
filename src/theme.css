@@ -416,6 +416,8 @@ main{margin-left:var(--sidebar-w);min-width:0;flex:1;position:relative}
 .book-open:focus-visible .cover{box-shadow:0 0 0 3px var(--accent),0 28px 44px -20px var(--shadow-color)}
 .cover-status{position:absolute;top:10px;left:10px;z-index:2;display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:99px;background:#00000066;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);color:#fff;font-size:11px;font-weight:600}
 .cover-status::before{content:'';width:6px;height:6px;border-radius:50%;background:#aeaeb2}
+/* A work whose only local files are bonus material. */
+.cover-badge{position:absolute;bottom:10px;left:10px;z-index:2;padding:3px 8px;border-radius:99px;background:#00000066;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);color:#fff;font-size:11px;font-weight:600}
 .cover-status.status-playing::before{background:#0a84ff}.cover-status.status-completed::before{background:#30d158}.cover-status.status-on_hold::before{background:#ff9f0a}
 .cover-peek{position:absolute;left:8px;right:8px;bottom:8px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:10px;border-radius:10px;background:#1c1c1eb3;-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);color:#fff;font-size:11.5px;line-height:1.35;opacity:0;transform:translateY(8px);transition:opacity .3s,transform .4s var(--ease);pointer-events:none}
 .cover-peek strong{font-weight:600}
