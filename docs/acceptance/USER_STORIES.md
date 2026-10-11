@@ -264,7 +264,9 @@ npx playwright test
 
 ## 驗收狀態（2026-10-11）
 
-Mac 層（ui_core + 真實 sandbox_data + 真實 VNDB）：31 個端到端測試全部通過；sandbox_data 對照答案卷 37/37 正確、錯配 0。Windows 層 US-4.1 尚未執行。
+Mac 層（ui_core + 真實 sandbox_data + 真實 VNDB）：31 個端到端測試全部通過；sandbox_data 對照答案卷 37/37 正確、錯配 0。
+
+Windows 層 US-4.1（2026-10-11，測試筆電，NSIS 安裝檔，`GALROON_DATA=D:\galroon-e2e\data`）：通過。安裝 → 開啟 → 加入 `D:\galroon-mcp-sandbox\source`（以 `acceptance_probe add` 代替表單的「儲存」）→ 自動掃描與配對：10 個資源 8 個配上且有封面，善悪 2 個依規則留待手動，錯配 0；放入新資料夾後原生檔案監視自動配到 v61834。建置時發現 Windows 乾淨 checkout 無法產生授權聲明（CRLF 轉換與 supplemental 雜湊不一致），已修正。
 
 測試過程中發現並修正的問題：
 
@@ -279,4 +281,4 @@ Mac 層（ui_core + 真實 sandbox_data + 真實 VNDB）：31 個端到端測試
 
 ## 下一步
 
-1. 在 Windows 筆電走 US-4.1（安裝 → 首次開啟 → 加來源 → 出卡 → 原生檔案監視）。
+本批驗收完成。之後新增故事時，同樣先補答案卷與測試，再實作。
