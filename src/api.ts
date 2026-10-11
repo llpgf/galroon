@@ -104,7 +104,10 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
 }
 export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};
-export interface Work{added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number}
+export interface Work{added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number;
+ /** Set on a remake card: the VNDB release it was identified by. */vndb_release?:string|null;
+ /** Every local file bound to this work is bonus material. */bonus_only?:boolean;
+ /** Other local cards for the same VNDB work, such as an original and its remake. */same_work?:{id:string;title:string;original_title:string;released:string;vndb_release:string|null}[]}
 export interface Binding{work_id:string;release_id:string|null;role:'main'|'patch'|'extra'|'unknown'}
 export interface Edition{platforms?:string[];origin?:string;notes?:string;id:string;label:string;languages:string[];edition_type:string;released_date:string;vndb_id:string|null;work_ids:string[];revision:number}
 export interface Resource{primary_work_title?:string|null;unknown?:number;auto_match_reason?:string|null;root_id:string;missing:number;unverified:number;revision:number;bindings:Binding[];id:string;title:string;path:string;kind:string;work_id:string|null;release:string;files:number;bytes:number;root_path:string}

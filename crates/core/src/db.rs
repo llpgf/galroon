@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use std::{path::Path, sync::{Arc, Mutex}};
 pub type Db = Arc<Mutex<Connection>>;
-pub const SCHEMA_VERSION:i64=43;
+pub const SCHEMA_VERSION:i64=44;
 pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     if path.parent().is_some_and(|p|p.join("restore-incomplete").exists()) {return Err("This restore is incomplete. Restore the backup again to a new collection.".into());}
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
@@ -31,7 +31,6 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY,root_id TEXT NOT NULL REFERENCES roots(id),relative_path TEXT NOT NULL,title TEXT NOT NULL,kind TEXT NOT NULL,work_id TEXT,release_label TEXT NOT NULL DEFAULT 'Unclassified edition',UNIQUE(root_id,relative_path));
     CREATE TABLE IF NOT EXISTS resource_files(resource_id TEXT NOT NULL REFERENCES resources(id),file_id TEXT NOT NULL REFERENCES files(id),PRIMARY KEY(resource_id,file_id));
     CREATE TABLE IF NOT EXISTS works(id TEXT PRIMARY KEY,title TEXT NOT NULL,original_title TEXT NOT NULL,vndb_id TEXT,description TEXT NOT NULL DEFAULT '',cover TEXT NOT NULL DEFAULT '',developer TEXT NOT NULL DEFAULT '',released TEXT NOT NULL DEFAULT '',tags TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'backlog',favorite INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',source_json TEXT NOT NULL DEFAULT '{}',overrides TEXT NOT NULL DEFAULT '{}',revision INTEGER NOT NULL DEFAULT 1);
-    CREATE UNIQUE INDEX IF NOT EXISTS work_vndb ON works(vndb_id) WHERE vndb_id IS NOT NULL AND vndb_id != '';
     CREATE INDEX IF NOT EXISTS files_root ON files(root_id);
     CREATE INDEX IF NOT EXISTS files_size ON files(size);
     CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL,items TEXT NOT NULL,digest TEXT NOT NULL,created INTEGER NOT NULL,approved INTEGER);
@@ -45,6 +44,11 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     if !has_aliases {tx.execute("ALTER TABLE works ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'",[])?;}
     let has_merge:bool=tx.prepare("PRAGMA table_info(works)")?.query_map([],|r|r.get::<_,String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|n|n=="merged_into");
     if !has_merge {tx.execute("ALTER TABLE works ADD COLUMN merged_into TEXT REFERENCES works(id)",[])?;}
+    // Schema 44: a remake that VNDB files as a release of the original work gets its own card,
+    // identified by the VNDB work plus that release. One card per (vndb_id, vndb_release).
+    let has_release:bool=tx.prepare("PRAGMA table_info(works)")?.query_map([],|r|r.get::<_,String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|n|n=="vndb_release");
+    if !has_release {tx.execute("ALTER TABLE works ADD COLUMN vndb_release TEXT",[])?;}
+    tx.execute_batch("DROP INDEX IF EXISTS work_vndb; CREATE UNIQUE INDEX IF NOT EXISTS work_vndb_release ON works(vndb_id,coalesce(vndb_release,'')) WHERE vndb_id IS NOT NULL AND vndb_id != '';")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS grouping_history(id TEXT PRIMARY KEY,kind TEXT NOT NULL,source TEXT NOT NULL,target TEXT NOT NULL,resources TEXT NOT NULL,created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS root_history(id TEXT PRIMARY KEY,root_id TEXT NOT NULL,old_path TEXT NOT NULL,new_path TEXT NOT NULL,created INTEGER NOT NULL);")?;
     crate::editions::migrate(&tx,version)?;

@@ -14,8 +14,12 @@ const exact:Record<string,string>={
  'Scan complete':'coreText_scanComplete',
  'Scan completed with errors. Some folders could not be read.':'coreText_scanErrors',
  'Matching complete. Uncertain resources remain Unmatched.':'coreText_matchComplete',
+ 'Not checked against VNDB yet.':'coreText_notChecked',
+ 'VNDB could not be reached within 8 seconds. Try again later.':'coreText_vndbUnreachable',
+ 'Collection or filters changed. Reload before continuing.':'coreText_collectionChanged',
+ 'Collection or filters changed. Reload before selecting works.':'coreText_collectionChanged',
 };
-const prefixed:[string,string][]=[['A different source name needs review: ','coreText_otherSourceName']];
+const prefixed:[string,string][]=[['A different source name needs review: ','coreText_otherSourceName'],['VNDB returned ','coreText_vndbStatus']];
 export function coreText(t:TFunction,message:string|null|undefined):string{
  if(!message)return '';
  const key=exact[message];if(key)return t(key,{defaultValue:message});

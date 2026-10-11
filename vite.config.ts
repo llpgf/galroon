@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
@@ -21,4 +22,4 @@ function devSessionBridge(): Plugin {
   };
 }
 
-export default defineConfig({plugins:[react(),devSessionBridge()],server:{port:1420,strictPort:true,watch:{ignored:['**/test-output/**','**/target/**','**/tools/**','**/.galroon/**','**/output/**']},proxy:{'/api':'http://127.0.0.1:14800'}},build:{outDir:'dist'}});
+export default defineConfig({plugins:[react(),devSessionBridge()],server:{port:1420,strictPort:true,watch:{ignored:['**/test-output/**','**/target/**','**/tools/**','**/.galroon/**','**/output/**']},proxy:{'/api':'http://127.0.0.1:14800'}},build:{outDir:'dist'},test:{exclude:['**/node_modules/**','tests/e2e/**']}});

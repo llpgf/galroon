@@ -1,0 +1,164 @@
+{
+ "_doc": "Expected outcome per top-level sandbox_data folder. 'work' = VNDB id; any other id is a false match (hard failure). remake_release = separate card built from that release. split = folder must be split per member, each bound as listed. manual = correct answer, but automatic matching must leave it for review (too short to match safely); binding it by hand is expected.",
+ "folders": {
+  "(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3)": {
+   "work": "v59911",
+   "title": "ママ×カノEX",
+   "same_edition_as": "[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update"
+  },
+  "1261651": {
+   "work": "v47547",
+   "title": "アンラベル・トリガー"
+  },
+  "1309737": {
+   "work": "v51465",
+   "title": "聖奴隷学園3"
+  },
+  "1321849": {
+   "work": "v53486",
+   "title": "廃村少女［弐］ ～陰り誘う秘姫の匣～"
+  },
+  "1326550": {
+   "work": "v55281",
+   "title": "宿りし乙女の誓いと魔法"
+  },
+  "1327292": {
+   "work": "v32797",
+   "title": "DeepOne-領界侵犯-"
+  },
+  "1327332": {
+   "work": "v47547",
+   "title": "アンラベル・トリガー"
+  },
+  "1327481": {
+   "work": "v55256",
+   "title": "ホめられて伸びるＳＲ少女たち"
+  },
+  "1330947": {
+   "work": "v55797",
+   "title": "ギャルズフィクション"
+  },
+  "1334584": {
+   "work": "v2346",
+   "remake_release": "r135528",
+   "card_title": "野々村病院の人々 リメイク",
+   "card_released": "2025-09-26"
+  },
+  "1337460": {
+   "work": "v50076",
+   "title": "顔のない月-待宵の双椿-"
+  },
+  "1337463": {
+   "work": "v57252",
+   "title": "何度目かのはじめまして"
+  },
+  "1337466": {
+   "work": "v57625",
+   "title": "きみは全部、私に任せてればいいの♪ ～娼館で出会った年上のお姉さん～"
+  },
+  "1337486": {
+   "work": "v57286",
+   "title": "ママラブ！～僕の彼女は僕のママ☆おっとり巨乳愛奈ママ～"
+  },
+  "1340685": {
+   "work": "v57740",
+   "title": "CRACK≡TRICK!"
+  },
+  "1366993": {
+   "work": "v63827",
+   "title": "ネモフィリア-We pass each other-"
+  },
+  "1369164": {
+   "work": "v63828",
+   "title": "王様恋愛"
+  },
+  "VJ01004242": {
+   "work": "v55899",
+   "title": "メイドちゃんは迷途ちゅう"
+  },
+  "WaffleTokuten": {
+   "split": {
+    "[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar": {
+     "work": "v20672",
+     "bonus_only": true,
+     "manual": true
+    },
+    "[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 オフィシャル通販特典 「原法子との邂逅」 (files).rar": {
+     "work": "v20672",
+     "bonus_only": true,
+     "manual": true
+    },
+    "[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar": {
+     "work": "v51928",
+     "bonus_only": true
+    },
+    "[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 エッチな音声データ (ogg).rar": {
+     "work": "v51928",
+     "bonus_only": true
+    },
+    "[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 オフィシャル通販特典 (files).rar": {
+     "work": "v51928",
+     "bonus_only": true
+    },
+    "[241025][1305021][WAFFLE] 奴隷姫騎士と奴隷侍女とのスローライフ アニメ追加版 オフィシャル通販特典 「奴隷たちとの畑づくり」 (files).rar": {
+     "work": "v30998",
+     "bonus_only": true
+    },
+    "[241025][1305022][WAFFLE] 人間不信の錬金術師と元兵士のホムンクルス アニメ追加版 オフィシャル通販特典 「錬金術師の過去」 (files).rar": {
+     "work": "v36749",
+     "bonus_only": true
+    }
+   }
+  },
+  "[141219][Bishop] 牝教師4 ～穢された教壇～": {
+   "work": "v16104",
+   "title": "牝教師4 ～穢された教壇～"
+  },
+  "[251031] [CloverGAME] やりなおしクランクイン やりなおしクランクイン + Theme Song + Voice Drama": {
+   "work": "v59027",
+   "title": "やりなおしクランクイン"
+  },
+  "[251031] [kelp] レイブン・ブラック・ラック・ライフ ～廃宿の主になってワケアリ姫とシスターと過ごす宿屋ライフ～": {
+   "work": "v59044",
+   "title": "レイブン・ブラック・ラック・ライフ ～廃宿の主になってワケアリ姫とシスターと過ごす宿屋ライフ～"
+  },
+  "[251128] [Whirlpool] 猫忍えくすはーとSPIN！ 2 通常版": {
+   "work": "v58009",
+   "title": "猫忍えくすはーとSPIN! 2"
+  },
+  "[251219] [FG REMAKE] 下級生リメイク 豪華版 + Voice Drama + Tokuten": {
+   "work": "v2341",
+   "remake_release": "r140695",
+   "card_title": "下級生リメイク",
+   "card_released": "2025-12-19"
+  },
+  "[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update": {
+   "work": "v59911",
+   "title": "ママ×カノEX"
+  },
+  "[260130] [CloverGAME] ダウニャーさんと飼い主くん + Theme Song + Voice Drama": {
+   "work": "v60462",
+   "title": "ダウニャーさんと飼い主くん"
+  },
+  "[260424] [CRYSTALiA] ディメンション凸ラバース！！ 豪華版 + Voice Tokuten + Wallpaper": {
+   "work": "v60663",
+   "title": "ディメンション凸ラバース！！"
+  },
+  "[260424] [あざらしそふと＋1] 絡恋インヴィテーション + Voice Drama": {
+   "work": "v61212",
+   "title": "絡恋インヴィテーション"
+  },
+  "[260501] [CloverGAME] 飛べない蝶のバレンタイン 特典付き限定版 + Voice Drama + Theme Song": {
+   "work": "v62758",
+   "title": "飛べない蝶のバレンタイン"
+  },
+  "[260529] [Whirlpool] Relirium -レリリウム- 遺跡と出逢いと冒険と 通常版": {
+   "work": "v61834",
+   "title": "Relirium -レリリウム- 遺跡と出逢いと冒険と"
+  },
+  "[260626] [パープルソフトウェア] マガルミナ 豪華版 + Soundtrack + Update": {
+   "work": "v62721",
+   "title": "マガルミナ"
+  }
+ }
+}

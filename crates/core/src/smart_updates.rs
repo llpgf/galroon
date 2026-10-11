@@ -15,7 +15,25 @@ pub fn migrate(c:&Connection)->rusqlite::Result<()>{
  for action in ["INSERT","UPDATE"]{c.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS smart_dirty_cache_{action} AFTER {action} ON settings WHEN NEW.key LIKE 'exploration.%' BEGIN UPDATE smart_catalog_state SET revision=revision+1 WHERE singleton=1; END;"))?;}
  for action in ["INSERT","UPDATE","DELETE"] {let row=if action=="DELETE"{"OLD"}else{"NEW"};c.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS smart_dirty_managed_{action} AFTER {action} ON settings WHEN {row}.key='organization.managed_root' BEGIN UPDATE smart_catalog_state SET revision=revision+1 WHERE singleton=1; END;"))?;}
  c.execute_batch("CREATE INDEX IF NOT EXISTS smart_plan_resource ON plan_locations(resource_id,plan_id);")?;
- c.execute_batch("CREATE TRIGGER IF NOT EXISTS smart_dirty_cache_DELETE AFTER DELETE ON settings WHEN OLD.key LIKE 'exploration.%' BEGIN UPDATE smart_catalog_state SET revision=revision+1 WHERE singleton=1; END;")?;Ok(())
+ c.execute_batch("CREATE TRIGGER IF NOT EXISTS smart_dirty_cache_DELETE AFTER DELETE ON settings WHEN OLD.key LIKE 'exploration.%' BEGIN UPDATE smart_catalog_state SET revision=revision+1 WHERE singleton=1; END;")?;
+ // Collection pages and selections only depend on these tables. Exploration caches, lists and plans
+ // change the smart-list revision but must not invalidate someone paging through Collection.
+ let has:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('smart_catalog_state') WHERE name='collection_revision')",[],|r|r.get(0))?;
+ if !has{c.execute_batch("ALTER TABLE smart_catalog_state ADD COLUMN collection_revision INTEGER NOT NULL DEFAULT 1;")?;}
+ // Scans touch every file (seen_job) and bump work/resource revisions; only changes that can alter
+ // which works match or how they sort count. Definitions are replaced on open so they stay current.
+ let bump="BEGIN UPDATE smart_catalog_state SET collection_revision=collection_revision+1 WHERE singleton=1; END;";
+ let only=|cols:&[&str]|format!("WHEN {}",cols.iter().map(|c|format!("OLD.{c} IS NOT NEW.{c}")).collect::<Vec<_>>().join(" OR "));
+ let rules:Vec<(&str,&str,String)>=vec![
+  ("works","UPDATE",only(&["title","original_title","developer","released","tags","status","favorite","aliases","merged_into"])),
+  ("files","UPDATE",only(&["availability","root_id"])),
+  ("resource_files","UPDATE",String::new()),("resources","UPDATE",only(&["root_id"])),
+ ];
+ for table in ["works","custom_tags","custom_tag_works","releases","work_releases","resource_bindings","resources","resource_files","files","roots"]{for action in ["INSERT","UPDATE","DELETE"]{
+  let when=rules.iter().find(|(t,a,_)|*t==table&&*a==action).map(|r|r.2.clone()).unwrap_or_default();
+  c.execute_batch(&format!("DROP TRIGGER IF EXISTS collection_dirty_{table}_{action}; CREATE TRIGGER collection_dirty_{table}_{action} AFTER {action} ON {table} {when} {bump}"))?;
+ }}
+ Ok(())
 }
 pub fn tick(c:&mut Connection,online:&BTreeMap<String,bool>,stopped:&AtomicBool)->R<bool>{tick_at(c,online,stopped,crate::db::now())}
 fn tick_at(c:&mut Connection,online:&BTreeMap<String,bool>,stopped:&AtomicBool,now:i64)->R<bool>{
@@ -28,7 +46,7 @@ fn tick_at(c:&mut Connection,online:&BTreeMap<String,bool>,stopped:&AtomicBool,n
 }
 pub(crate) fn observe_roots(c:&Connection,online:&BTreeMap<String,bool>)->R<()> {
  let digest=serde_json::to_string(online).map_err(|e|e.to_string())?;
- c.execute("UPDATE smart_catalog_state SET revision=revision+1,root_digest=?1 WHERE singleton=1 AND root_digest<>?1",[digest]).map_err(|e|e.to_string())?;Ok(())
+ c.execute("UPDATE smart_catalog_state SET revision=revision+1,collection_revision=collection_revision+1,root_digest=?1 WHERE singleton=1 AND root_digest<>?1",[digest]).map_err(|e|e.to_string())?;Ok(())
 }
 fn plan(c:&mut Connection,online:&BTreeMap<String,bool>,stopped:&AtomicBool,now:i64)->R<Option<(String,i64,i64)>>{
  if stopped.load(Ordering::SeqCst){return Ok(None);}

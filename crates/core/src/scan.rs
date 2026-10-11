@@ -62,6 +62,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
         let root:String=c.query_row("SELECT path FROM roots WHERE id=?1",[&spec.root_id],|r|r.get(0)).map_err(|e|e.to_string())?;
         c.execute("UPDATE jobs SET state='running',updated=?2 WHERE id=?1 AND state='queued'",params![jid,now()]).map_err(|e|e.to_string())?;
         (spec,canonical(Path::new(&root))?,recursive)};
+    let mut bundles:std::collections::HashMap<String,bool>=std::collections::HashMap::new();
     loop {
         if stop(db,jid){return Ok(());}
         let next:Option<String>={let c=db.lock().map_err(|e|e.to_string())?;c.query_row("SELECT path FROM frontier WHERE job_id=?1 AND state IN ('pending','running') ORDER BY path LIMIT 1",[jid],|r|r.get(0)).optional().map_err(|e|e.to_string())?};
@@ -98,12 +99,20 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             let added=tx.execute("INSERT OR IGNORE INTO observations(job_id,file_id) VALUES(?1,?2)",params![jid,fid]).map_err(|e|e.to_string())?;
             if added>0 {tx.execute("UPDATE jobs SET processed=processed+1,discovered=discovered+1,bytes=bytes+?2,updated=?3 WHERE id=?1",params![jid,size,now()]).map_err(|e|e.to_string())?;}
             // Keep previously confirmed resource membership when scanning an organized tree.
-            let existing:Option<String>=tx.query_row("SELECT resource_id FROM resource_files WHERE file_id=?1 ORDER BY resource_id LIMIT 1",[&fid],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            let parts:Vec<_>=Path::new(&rel).components().collect();
+            let top=parts[0].as_os_str().to_string_lossy().to_string();
+            let split=parts.len()>1&&*bundles.entry(top.clone()).or_insert_with(||fs::read_dir(root.join(&top)).map(|e|bundle(&top,&e.filter_map(|e|e.ok()).map(|e|e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())).unwrap_or(false));
+            let mut existing:Option<String>=tx.query_row("SELECT resource_id FROM resource_files WHERE file_id=?1 ORDER BY resource_id LIMIT 1",[&fid],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            // An earlier scan grouped a bundle folder as one resource. Release its files while nobody has bound or regrouped it.
+            if let Some(old)=existing.clone().filter(|_|split){
+                let unclaimed:bool=tx.query_row("SELECT relative_path=?2 AND manual_group=0 AND work_id IS NULL AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.resource_id=r.id) FROM resources r WHERE id=?1",params![old,top],|r|r.get(0)).map_err(|e|e.to_string())?;
+                if unclaimed{tx.execute("DELETE FROM resource_files WHERE resource_id=?1 AND file_id=?2",params![old,fid]).map_err(|e|e.to_string())?;tx.execute("UPDATE resources SET revision=revision+1 WHERE id=?1",[&old]).map_err(|e|e.to_string())?;existing=None;}
+            }
             if existing.is_none(){
-                let parts:Vec<_>=Path::new(&rel).components().collect();let volume=if parts.len()==1{crate::multipart::part(&rel)}else{None};
-                let resource_path=if parts.len()>1 {parts[0].as_os_str().to_string_lossy().to_string()}else if let Some(p)=&volume{p.entry.clone()}else{rel.clone()};
-                let resource_kind=if parts.len()>1 {"directory"}else if volume.as_ref().is_some_and(|p|p.numbered){"multipart"}else if ["rar","zip","7z","001"].contains(&ext.as_str()){"archive"}else if ["iso","mds","mdf","cue","bin"].contains(&ext.as_str()){"disc"}else{"file"};
-                let new_resource=tx.execute("INSERT OR IGNORE INTO resources(id,root_id,relative_path,title,kind) VALUES(?1,?2,?3,?4,?5)",params![id(),spec.root_id,resource_path,clean_title(&resource_path),resource_kind]).map_err(|e|e.to_string())?;
+                let volume=if parts.len()==1||(split&&parts.len()==2){crate::multipart::part(&rel)}else{None};
+                let resource_path=if let Some(p)=volume.as_ref().filter(|_|split&&parts.len()==2){p.entry.clone()}else if split {Path::new(&top).join(parts[1].as_os_str()).to_string_lossy().to_string()}else if parts.len()>1 {top.clone()}else if let Some(p)=&volume{p.entry.clone()}else{rel.clone()};
+                let resource_kind=if parts.len()>2||(parts.len()>1&&!split) {"directory"}else if volume.as_ref().is_some_and(|p|p.numbered){"multipart"}else if ["rar","zip","7z","001"].contains(&ext.as_str()){"archive"}else if ["iso","mds","mdf","cue","bin"].contains(&ext.as_str()){"disc"}else{"file"};
+                let new_resource=tx.execute("INSERT OR IGNORE INTO resources(id,root_id,relative_path,title,kind) VALUES(?1,?2,?3,?4,?5)",params![id(),spec.root_id,resource_path,clean_title(&Path::new(&resource_path).file_name().map(|n|n.to_string_lossy().to_string()).unwrap_or_else(||resource_path.clone())),resource_kind]).map_err(|e|e.to_string())?;
                 let rid:String=tx.query_row("SELECT id FROM resources WHERE root_id=?1 AND relative_path=?2 AND manual_group=0",params![spec.root_id,resource_path],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if new_resource>0 {crate::job_summary::record(&tx,jid,"new_resources",&rid,"yes").map_err(|e|e.to_string())?;event(&tx,jid,"resource.discovered",&json!({"resource_id":rid,"root_id":spec.root_id})).map_err(|e|e.to_string())?;}
                 tx.execute("INSERT OR IGNORE INTO resource_files(resource_id,file_id) VALUES(?1,?2)",params![rid,fid]).map_err(|e|e.to_string())?;
@@ -129,6 +138,23 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
     }
     let c=db.lock().map_err(|e|e.to_string())?;c.execute("UPDATE jobs SET state='completed',current_path='',message=CASE WHEN errors>0 THEN 'Scan completed with errors. Some folders could not be read.' ELSE 'Scan complete' END,updated=?2 WHERE id=?1",params![jid,now()]).map_err(|e|e.to_string())?;event(&c,jid,"scan.completed",&json!({})).map_err(|e|e.to_string())?;Ok(())
 }
+/// A folder that collects several works' own releases — children such as
+/// `[240830][1297042][WAFFLE] 善悪 …特典.rar` and `[241025][1297034][WAFFLE] 恋愛弱者な… .rar` — is a bundle:
+/// each direct child becomes its own resource so each can be matched to its own work.
+/// A folder named as a release itself, or whose labelled children are all one work, is never a bundle.
+pub fn bundle(folder:&str,children:&[String])->bool {
+    static LABEL:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+    let label=LABEL.get_or_init(||regex::Regex::new(r"^(?:\([^)]*\)\s*)?\[\d{6,8}\]").unwrap());
+    if label.is_match(folder){return false;}
+    let mut works:Vec<String>=Vec::new();
+    for child in children.iter().filter(|c|label.is_match(c)) {
+        let key=crate::matching::normalized(&crate::matching::clean_name(child));
+        if key.chars().count()<2{continue;}
+        let same=|a:&str,b:&str|{let common=a.chars().zip(b.chars()).take_while(|(x,y)|x==y).count();common>=6.min(a.chars().count()).min(b.chars().count())};
+        if !works.iter().any(|w|same(w,&key)){works.push(key);}
+    }
+    works.len()>=2
+}
 pub fn clean_title(s:&str)->String {
     let mut text=regex::Regex::new(r"(?i)\.(rar|zip|7z|iso)(\.\d+)?$").unwrap().replace(s,"").to_string();
     text=regex::Regex::new(r"\[[^\]]*\]").unwrap().replace_all(&text,"").to_string();
@@ -138,6 +164,14 @@ pub fn clean_title(s:&str)->String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn only_folders_of_several_works_releases_are_bundles(){
+        let v=|xs:&[&str]|xs.iter().map(|x|x.to_string()).collect::<Vec<_>>();
+        assert!(bundle("WaffleTokuten",&v(&["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar","[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 オフィシャル通販特典 「原法子との邂逅」 (files).rar","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar"])));
+        assert!(!bundle("1326550",&v(&["OTOCHIKA.mdf","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 Crack.rar","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 修正パッチVer1.01 (files).rar","[250725][1326550][ensemble] 宿りし乙女の誓いと魔法 豪華版特典「オリジナルサウンドトラック」 (mdf+mds).rar","metadata.json"])));
+        assert!(!bundle("1327332",&v(&["[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar","[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- 豪華限定版特典 設定資料集 (pdf).rar"])));
+        // A folder that is itself a release is never split, even with differently named extras.
+        assert!(!bundle("[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update",&v(&["(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3).rar","[260101][x][y] Something Else.rar"])));
+    }
     #[test]fn removed_subtree_is_missing_but_excluded_scoped_and_offline_files_are_preserved(){
         let t=tempfile::tempdir().unwrap();let root=t.path().join("source");for path in ["A/gone/story.zip","A/excluded/extra.zip","B/outside.zip"]{let p=root.join(path);fs::create_dir_all(p.parent().unwrap()).unwrap();fs::write(p,b"fixture").unwrap();}
         let db=crate::db::open(&t.path().join("state/db.sqlite")).unwrap();db.lock().unwrap().execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'test')",[root.to_str().unwrap()]).unwrap();

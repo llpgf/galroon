@@ -9,6 +9,8 @@ pub struct Filters {
     pub studio: String, pub year: String, pub language: String, pub tag: String,
     pub availability: String, pub tags: Vec<String>, pub excluded_tags: Vec<String>,
     pub favorites: bool,
+    /// Hide works whose only local files are bonus material ("bonus only").
+    pub hide_bonus_only: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -35,6 +37,7 @@ pub struct Entry {
     pub year: String, pub tags: Vec<String>, pub custom_tags: BTreeSet<String>,
     pub languages: BTreeSet<String>, pub states: BTreeSet<String>,
     pub search: String, pub status: String, pub favorite: bool, pub added: i64,
+    pub bonus_only: bool,
 }
 impl Entry {
     pub fn title(&self, mode: &str) -> &str {
@@ -52,7 +55,8 @@ pub fn fold(s: &str) -> String {
     static MARKS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static OTHER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let decomposed=s.nfkd().collect::<String>();
-    let lower=MARKS.get_or_init(||regex::Regex::new(r"\p{M}").unwrap()).replace_all(&decomposed, "").to_lowercase();
+    // Katakana folds to hiragana so 「まがるみな」 finds 「マガルミナ」. Keep parity with src/search.ts.
+    let lower=MARKS.get_or_init(||regex::Regex::new(r"\p{M}").unwrap()).replace_all(&decomposed, "").to_lowercase().chars().map(|c|if ('\u{30a1}'..='\u{30f6}').contains(&c){char::from_u32(c as u32-0x60).unwrap()}else{c}).collect::<String>();
     OTHER.get_or_init(||regex::Regex::new(r"[^\p{L}\p{N}]+").unwrap()).replace_all(&lower," ").trim().to_owned()
 }
 fn close_word(a: &str, b: &str) -> bool {
@@ -84,7 +88,7 @@ fn value_matches<'a>(filter: &str, values: impl IntoIterator<Item=&'a str>) -> b
 }
 pub fn matches(e: &Entry, q: &Query, folded_query: &str) -> bool {
     let f=&q.filters;
-    if f.favorites&&!e.favorite || q.status!="all"&&if q.status=="favorite" {!e.favorite} else {e.status!=q.status} { return false; }
+    if f.hide_bonus_only&&e.bonus_only || f.favorites&&!e.favorite || q.status!="all"&&if q.status=="favorite" {!e.favorite} else {e.status!=q.status} { return false; }
     let tagged=|tag:&str| if tag.starts_with("custom:") { e.custom_tags.contains(tag) } else { value_matches(tag,e.tags.iter().map(String::as_str)) };
     let excluded=|tag:&String| f.excluded_tags.contains(tag);
     if f.tags.iter().filter(|tag|excluded(tag)).any(|tag|tagged(tag)) { return false; }
@@ -101,7 +105,7 @@ pub fn matches(e: &Entry, q: &Query, folded_query: &str) -> bool {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn fuzzy_search_preserves_accents_width_spacing_transposition_and_short_queries() {
-        for (text,q,yes) in [("Café Ｓｔｅｉｎｓ Gate","cafe steinsgate",true),("Steins Gate","stiens",true),("Umineko","uminako",true),("A title","tix",false),("日本語作品","日本 語",true),("星空","",true),("Moon","noon",true),("Moon","sun",false)] { assert_eq!(fuzzy_folded(&fold(text),&fold(q)),yes,"{text} / {q}"); }
+        for (text,q,yes) in [("Café Ｓｔｅｉｎｓ Gate","cafe steinsgate",true),("Steins Gate","stiens",true),("Umineko","uminako",true),("A title","tix",false),("日本語作品","日本 語",true),("星空","",true),("Moon","noon",true),("Moon","sun",false),("マガルミナ","まがるみな",true),("やりなおしクランクイン","ヤリナオシ",true)] { assert_eq!(fuzzy_folded(&fold(text),&fold(q)),yes,"{text} / {q}"); }
     }
     #[test] fn tags_union_exclusions_identity_unknown_and_status_intersect() {
         let e=Entry{tags:vec!["Drama".into()],custom_tags:BTreeSet::from(["custom:one".into()]),states:BTreeSet::from(["no_resources".into()]),status:"backlog".into(),..Default::default()};

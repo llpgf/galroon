@@ -69,25 +69,34 @@ struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if primary.is_some()||!editions::bindings(c,rid)?.is_empty(){return Ok(None);}
-    let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());let mut hints=vec![path];
+    let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
+    // A bundle member (scan split "Bundle/child") is named by the child, never by the collection folder.
+    let parent=std::path::Path::new(&path).parent().map(|p|p.to_string_lossy().to_string()).filter(|p|!p.is_empty());
+    let local=|p:&str|parent.as_deref().and_then(|top|std::path::Path::new(p).strip_prefix(top).ok()).map(|p|p.to_string_lossy().to_string()).unwrap_or_else(||p.to_string());
+    let mut hints=vec![local(&path)];
     let mut s=sql(c.prepare("SELECT f.id,f.relative_path,f.size,f.mtime FROM files f JOIN resource_files rf ON rf.file_id=f.id WHERE rf.resource_id=?1 ORDER BY length(f.relative_path) DESC,f.relative_path,f.id"))?;
     let mut rows=sql(s.query([rid]))?;let mut n=0;
-    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());if n<31{hints.push(path);}n+=1;}
-    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None}}else{matching::prepare(&title,&hints)?}}))
+    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());if n<31{hints.push(local(&path));}n+=1;}
+    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{
     if review_reason(response).is_some(){None}else{response["results"].as_array()?.first()}
 }
+fn strings(v:&Value)->Vec<String>{v.as_array().map(|a|a.iter().filter_map(|s|s.as_str().map(str::to_owned)).collect()).unwrap_or_default()}
 pub fn review_reason(response:&Value)->Option<String>{
     if response["incomplete"]==true{return Some("Search incomplete. Refresh when VNDB is available.".into());}
+    // No recorded search yet (queued, or matching paused before reaching it): never claim VNDB has no candidate.
+    if response.get("results").is_none(){return Some("Not checked against VNDB yet.".into());}
     let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{"No usable work title in this resource."}else{"No VNDB candidate found."}.into());};
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
     if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
     for title in titles.iter().filter_map(Value::as_str){
-        let Ok(input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};let row=matching::rank(&input,vec![candidate.clone()]);let reason=row[0]["match"]["reason"].as_str().unwrap_or("");
-        if !["exact_brand_title","exact_title","exact_alias","exact_release","direct_id","confirmed_title"].contains(&reason)&&!matching::corroborates_filename(title,candidate){return Some(format!("A different source name needs review: {title}"));}
+        let Ok(mut input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};
+        // Re-ranking one cleaned title keeps the resource's own brand/date corroboration.
+        input.brands=strings(&response["brands"]);input.dates=strings(&response["dates"]);let row=matching::rank(&input,vec![candidate.clone()]);let reason=row[0]["match"]["reason"].as_str().unwrap_or("");
+        if !["exact_brand_title","exact_title","exact_alias","exact_release","direct_id","confirmed_title","exact_main_title"].contains(&reason)&&!matching::corroborates_filename(title,candidate){return Some(format!("A different source name needs review: {title}"));}
     }None
 }
 fn brand(path:&str)->String{
@@ -110,12 +119,16 @@ fn with_confirmation(c:&Connection,rid:&str,input:&matching::Input,response:&Val
         let identities:std::collections::HashSet<_>=proofs.iter().map(|(_,_,_,id)|id).collect();
         if identities.len()==1 {for candidate in &mut candidates{let proof:Vec<_>=proofs.iter().filter(|(_,_,_,id)|candidate["id"]==id.as_str()).map(|(id,_,rev,_)|json!({"title":label,"resource_id":id,"revision":rev,"basis":"manual_binding_same_source_and_brand"})).collect();if !proof.is_empty(){candidate["confirmed_titles"]=json!(proof);}}}
     }
-    result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
+    result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
 }
 pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapshot(c,rid)?.ok_or("Resource already matched")?;with_confirmation(c,rid,&snap.input,response)}
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn unsearched_resources_are_not_reported_as_missing_from_vndb(){
+        assert_eq!(review_reason(&json!({})).as_deref(),Some("Not checked against VNDB yet."));
+        assert_eq!(review_reason(&json!({"results":[]})).as_deref(),Some("No VNDB candidate found."));
+    }
     fn fixture(names:&[&str])->(tempfile::TempDir,Db){
         let t=tempfile::tempdir().unwrap();let db=db::open(&t.path().join("library.sqlite")).unwrap();
         {let c=db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('root',?1,'Fixture')",[t.path().to_string_lossy()]).unwrap();
@@ -271,17 +284,23 @@ fn apply(db:&Db,job:&str,rid:&str,expected:&Snapshot,response:&Value)->R<()> {
     result["source"]=json!({"revision":expected.revision,"listing_fingerprint":expected.fingerprint,"queries":expected.input.queries});let response=&result;
     if let Some(candidate)=eligible(response){
         let external=candidate["id"].as_str().ok_or("Candidate has no VNDB ID")?;
-        let existing:Option<String>=sql(tx.query_row("SELECT id FROM works WHERE vndb_id=?1",[external],|r|r.get(0)).optional())?;
+        // A remake filed by VNDB as a release of the original work gets its own card for that release.
+        let remake=matching::remake_release(&expected.input,candidate);let release_key=remake.as_ref().and_then(|r|r["id"].as_str()).unwrap_or("").to_string();
+        let existing:Option<String>=sql(tx.query_row("SELECT id FROM works WHERE vndb_id=?1 AND coalesce(vndb_release,'')=?2",params![external,release_key],|r|r.get(0)).optional())?;
         let mut wid=existing.clone().unwrap_or_else(db::id);
         if existing.is_some(){let mut seen=std::collections::HashSet::new();loop{if !seen.insert(wid.clone()){return Err("Work merge history contains a cycle".into());}let merged:Option<String>=sql(tx.query_row("SELECT merged_into FROM works WHERE id=?1",[&wid],|r|r.get(0)))?;if let Some(next)=merged{wid=next;}else{break;}}}
         else{
             let title=candidate["title"].as_str().filter(|s|!s.is_empty()).ok_or("Candidate has no title")?;
             let source=json!({"title":title,"original_title":candidate["alttitle"].as_str().unwrap_or(title),"description":candidate["description"].as_str().unwrap_or(""),"cover":candidate["image"]["url"].as_str().unwrap_or(""),"developer":candidate["developers"].as_array().map(|a|a.iter().filter_map(|d|d["name"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),"released":candidate["released"].as_str().unwrap_or(""),"tags":candidate["tags"].as_array().map(|a|a.iter().filter_map(|d|d["name"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),"aliases":candidate["aliases"].as_array().cloned().unwrap_or_default()});
-            sql(tx.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,developer,released,tags,aliases,source_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![wid,source["title"].as_str(),source["original_title"].as_str(),external,source["description"].as_str(),source["cover"].as_str(),source["developer"].as_str(),source["released"].as_str(),source["tags"].to_string(),source["aliases"].to_string(),source.to_string()]))?;
+            let mut source=source;if let Some(release)=&remake{for (k,v) in matching::release_card(candidate,release).as_object().into_iter().flatten(){source[k]=v.clone();}}
+            sql(tx.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,developer,released,tags,aliases,source_json,vndb_release) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![wid,source["title"].as_str(),source["original_title"].as_str(),external,source["description"].as_str(),source["cover"].as_str(),source["developer"].as_str(),source["released"].as_str(),source["tags"].to_string(),source["aliases"].to_string(),source.to_string(),remake.as_ref().and_then(|r|r["id"].as_str())]))?;
         }
         if existing.is_none(){sql(crate::job_summary::record(&tx,job,"new_works",&wid,"yes"))?;}
         let release=editions::legacy_release(&tx,&wid,"Unclassified edition")?;
-        editions::set_bindings_in(&tx,rid,editions::EditBindings{revision:expected.revision,primary_work_id:Some(wid.clone()),bindings:vec![editions::Binding{work_id:wid.clone(),release_id:release,role:"unknown".into()}]})?;
+        // Bonus archives split out of a bundle folder are extras of their work, not the game itself.
+        let path:String=sql(tx.query_row("SELECT relative_path FROM resources WHERE id=?1",[rid],|r|r.get(0)))?;
+        let role=if path.contains(['/','\\'])&&matching::bonus_name(&path){"extra"}else{"unknown"};
+        editions::set_bindings_in(&tx,rid,editions::EditBindings{revision:expected.revision,primary_work_id:Some(wid.clone()),bindings:vec![editions::Binding{work_id:wid.clone(),release_id:release,role:role.into()}]})?;
         complete_item(&tx,job,rid,"matched",response,Some(&wid))?;
     }else{complete_item(&tx,job,rid,"review",response,None)?;}
     sql(tx.commit())?;Ok(())

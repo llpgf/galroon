@@ -12,7 +12,7 @@
 
 Galroon 是以 **Rust Core + React / TypeScript + Tauri 2** 開發的 Windows 桌面收藏管理工具。它將「作品、版本、資源包、實體檔案」分開管理：同一作品的不同版本集中在一張作品卡片下，共用資源也不需要複製多份檔案。
 
-目前版本為 **0.0.2**，API **1**，收藏資料庫 schema **43**。主要功能已實作；目前仍屬開發版本，完整發佈驗收尚未完成。
+目前版本為 **0.0.2**，API **1**，收藏資料庫 schema **44**。主要功能已實作；目前仍屬開發版本，完整發佈驗收尚未完成。
 
 ### 下載
 
@@ -113,7 +113,7 @@ GALROON_DEV_SESSION=/tmp/galroon-session.json npm run dev
 
 Galroon is a **Windows desktop catalog for visual novel collections**, built with a Rust Core, React / TypeScript and Tauri 2. It treats works, editions, resource packages and physical files as separate entities: multiple editions share one work card, and shared resources do not require duplicate files.
 
-Current version: **0.0.2**, API **1**, catalog schema **43**. Core features are implemented; full release acceptance is still in progress. This is a development build.
+Current version: **0.0.2**, API **1**, catalog schema **44**. Core features are implemented; full release acceptance is still in progress. This is a development build.
 
 ### Download
 

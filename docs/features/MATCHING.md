@@ -1,5 +1,16 @@
 # VNDB matching improvement — 2026-09-06
 
+## Algorithm v4 — acceptance stories (2026-10-11)
+
+Driven by docs/acceptance/USER_STORIES.md and the reviewed answer key tests/e2e/golden/sandbox_data.json (37/37 correct, zero false matches on sandbox_data).
+
+- **Main title + corroboration.** A local name equal to a candidate's title before its ～subtitle～/-subtitle- (`exact_main_title`, score 99) admits only when the folder's `[brand]` names that developer (name or original) or its `[YYMMDD]` date equals the release date. An exact title still outranks a sibling matched only by main title (アンラベル・トリガー vs. its -Prelude to War-).
+- **Bonus folders.** A top-level folder whose children are several works' own labelled releases (WaffleTokuten) is split by the scan into one resource per child. Bonus descriptors (Webアンケート特典, 音声データ, リマスター版, アニメ追加版) are cleaned from names; matched members bind with role `extra`, and works with only extras show "bonus only". Short titles (< 4 characters, e.g. 善悪) stay review cases even with a matching brand, as before.
+- **Remakes.** A remake found only through a VNDB release of the original work (下級生リメイク → r140695 under v2341) gets its own card from that release (title, date, producers, art). Schema 44 adds `works.vndb_release`; one card per (vndb_id, vndb_release). Metadata refresh keeps the release data.
+- **Update archives.** Compact filenames with a separated or 3+ digit version (mamakano_ex_2, mamakanoex101) corroborate the romanized title; sequel digits (haisonsyoujo2) do not get stripped.
+- **Honest review reasons.** A resource never searched is "Not checked against VNDB yet", never "No VNDB candidate found"; resources still queued in an unfinished matching task are not issues.
+- **Testing.** `GALROON_VNDB_API` overrides the VNDB base URL so acceptance tests can inject outages.
+
 ## Algorithm v2 — applied to Windows (2026-09-06)
 
 The nine remaining review cases were inspected individually. Eight already had exact VNDB candidates but ancillary audio/store/runtime/patch names vetoed admission. One abbreviated title, Mama x Kano EX, needed the user's existing manual confirmation for another resource of the same work.

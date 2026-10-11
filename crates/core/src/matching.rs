@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=3;
+pub const ALGORITHM_VERSION:i64=4;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -42,6 +42,9 @@ pub fn clean_name(input: &str) -> String {
     s = replace(&s, r"(?i)\s*\((?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+)(?:\+(?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+))*\)\s*$", "");
     s = replace(&s, r"(?i)[\s_]+(?:修正パッチ|修正ファイル|アップデート|patch|update)(?:[\s_]|ver|v?\d|$).*$", "");
     s = replace(&s, r"[\s_]+(?:特典(?:ボイスドラマ|ASMR|音声)|限定版音声特典|主題歌(?:マキシ)?音源|パッケージ\s*&\s*リーフレット).*$", "");
+    // Bonus and re-release descriptors: "Webアンケート特典", "エッチな音声データ", "フルHDリマスター版", "アニメ追加版".
+    s = replace(&s, r"\s+\S*(?:特典|アンケート|音声データ|ボイスデータ)(?:[\s「(]|$).*$", "");
+    s = replace(&s, r"\s+\S*(?:リマスター|リニューアル|アニメ追加|新装|廉価|普及)版(?:\s|$).*$", "");
     s = replace(&s, r"\s+", " ").trim().to_string();
     // Some release names accidentally repeat the whole title twice.
     for (i, _) in s.match_indices(' ') {
@@ -50,12 +53,63 @@ pub fn clean_name(input: &str) -> String {
     s
 }
 #[derive(Debug, Clone)]
-pub struct Input { pub titles: Vec<String>, pub queries: Vec<String>, pub direct_id: Option<String> }
+pub struct Input { pub titles: Vec<String>, pub queries: Vec<String>, pub direct_id: Option<String>,
+    /// Distribution brands and release dates read from [brackets] in the resource and member names.
+    /// They only corroborate a title; they never identify a work by themselves.
+    pub brands: Vec<String>, pub dates: Vec<String> }
+/// Brand and date labels such as `[251219] [しばそふと]`. Store codes and numeric IDs are ignored.
+fn labels(raw: &str, brands: &mut Vec<String>, dates: &mut Vec<String>) {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    static CODE: OnceLock<Regex> = OnceLock::new();
+    let code = CODE.get_or_init(|| Regex::new(r"(?i)^(?:rj|vj|dmm)\d+$").unwrap());
+    let s: String = raw.nfkc().collect();
+    for c in RE.get_or_init(|| Regex::new(r"\[([^\]/\\]+)\]").unwrap()).captures_iter(&s) {
+        let label = c[1].trim();
+        let date = |y: &str, m: &str, d: &str| format!("{y}-{m}-{d}");
+        let digits = label.chars().all(|c| c.is_ascii_digit());
+        if digits && label.len() == 6 { let v = date(&format!("20{}", &label[..2]), &label[2..4], &label[4..]); if !dates.contains(&v) { dates.push(v); } }
+        else if digits && label.len() == 8 { let v = date(&label[..4], &label[4..6], &label[6..]); if !dates.contains(&v) { dates.push(v); } }
+        else if !digits && !code.is_match(label) && normalized(label).chars().count() >= 2 && !brands.contains(&label.to_string()) { brands.push(label.to_string()); }
+    }
+}
+/// Bonus material such as store or survey extras, drama CDs, soundtracks and wallpapers.
+pub fn bonus_name(name: &str) -> bool { let s: String = name.nfkc().collect(); Regex::new(r"特典|アンケート|音声データ|ボイスデータ|ドラマCD|サウンドトラック|設定資料|壁紙").unwrap().is_match(&s) }
+/// A local remake ("下級生リメイク") identified through a VNDB release that VNDB files under the original work.
+/// Returns that release (lowest id among equally named ones) so the remake can have its own card.
+pub fn remake_release(input: &Input, candidate: &Value) -> Option<Value> {
+    if candidate["match"]["reason"] != "exact_release" { return None; }
+    let remake = |t: &str| { let n = normalized(t); n.contains("りめいく") || n.contains("remake") };
+    if !input.titles.iter().any(|t| remake(t)) { return None; }
+    let own = ["title", "alttitle"].iter().filter_map(|k| candidate[*k].as_str()).chain(candidate["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str)).any(remake);
+    if own { return None; }
+    let id = |r: &Value| r["id"].as_str().and_then(|s| s.trim_start_matches('r').parse::<u64>().ok()).unwrap_or(u64::MAX);
+    candidate["release_matches"].as_array()?.iter()
+        .filter(|r| r["title"].as_str().is_some_and(|t| remake(t) && input.titles.iter().any(|q| normalized(q) == normalized(&clean_name(t)))))
+        .min_by_key(|r| id(r)).cloned()
+}
+/// Card metadata for a remake release: its own title, date, producers and package art; the rest stays with the work.
+pub fn release_card(work: &Value, release: &Value) -> Value {
+    let original = release["alttitle"].as_str().or(release["title"].as_str()).map(clean_name).unwrap_or_default();
+    let title = release["release_title"].as_str().or(release["title"].as_str()).map(|t| main_title(t).to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| original.clone());
+    let image = release["images"].as_array().and_then(|a| ["pkgfront", "dig", "pkgback"].iter().find_map(|kind| a.iter().find(|i| i["type"] == *kind)).or(a.first())).and_then(|i| i["url"].as_str());
+    let producers: Vec<&str> = release["producers"].as_array().map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect()).unwrap_or_default();
+    json!({"title": title, "original_title": if original.is_empty() { title.clone() } else { original },
+        "released": release["released"].as_str().unwrap_or(""), "developer": producers.join(", "),
+        "cover": image.or(work["image"]["url"].as_str()).unwrap_or(""), "vndb_release": release["id"]})
+}
+/// The part of a provider title before its ～subtitle～ or -subtitle-.
+pub fn main_title(name: &str) -> &str { Regex::new(r"\s*[～~〜]|\s+[-－]").unwrap().split(name).next().unwrap_or(name).trim() }
+/// A brand or release date from the local names agrees with this candidate.
+fn corroborated(input: &Input, candidate: &Value) -> bool {
+    let developers: Vec<String> = candidate["developers"].as_array().map(|ds| ds.iter().flat_map(|d| [d["name"].as_str(), d["original"].as_str()]).flatten().map(normalized).collect()).unwrap_or_default();
+    input.brands.iter().any(|b| { let b = normalized(b); !b.is_empty() && developers.contains(&b) })
+        || candidate["released"].as_str().is_some_and(|r| input.dates.iter().any(|d| d == r))
+}
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
-    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()) }); }
-    let mut titles = Vec::new(); let mut seen = HashSet::new();
+    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()), brands: vec![], dates: vec![] }); }
+    let mut titles = Vec::new(); let mut seen = HashSet::new(); let (mut brands, mut dates) = (Vec::new(), Vec::new());
     for (index,raw) in std::iter::once(query).chain(hints.iter().take(32).map(String::as_str)).enumerate() {
         // Only a relative name is searched; the caller never supplies the source root.
         // A manually entered title can contain a slash (Fate/stay night).
@@ -68,6 +122,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
             parts[..end].iter().rev().take(4).copied().collect()
         };
         for part in parts {
+            labels(part, &mut brands, &mut dates);
             // Runtime files and media tracks are not competing work identities.
             if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
             let title = clean_name(part);
@@ -84,7 +139,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         if normalized(base).chars().count() >= 4 && !queries.iter().any(|q| normalized(q) == normalized(base)) { queries.push(base.into()); }
     }
     queries.truncate(3);
-    Ok(Input { titles, queries, direct_id: None })
+    Ok(Input { titles, queries, direct_id: None, brands, dates })
 }
 fn numbers(text: &str) -> Vec<String> {
     let s: String = text.nfkc().collect();
@@ -101,11 +156,16 @@ pub fn corroborates_filename(query:&str,candidate:&Value)->bool {
         let s=replace(s,r"(?i)\[Ni\]|\(Ni\)","2");
         normalized(&s).replace("syou","shou").replace("syo","sho").replace("syu","shu").replace("sya","sha").replace("tyou","chou").replace("tyo","cho").replace("tyu","chu").replace("tya","cha")
     }
-    let nq=roman(query);let mut names=vec![];
+    // An update archive such as "mamakano_ex_2" or "mamakanoex101" names the work plus a version.
+    // Sequel digits stay ("haisonsyoujo2"); only a separated or 3+ digit version is dropped.
+    let versionless=roman(&replace(query,r"(?i)(?:[_-](?:ver)?\d+|\d{3,})$",""));let nq=roman(query);let mut names=vec![];
     for key in ["title","alttitle"]{if let Some(s)=candidate[key].as_str(){names.push(s);}}
     if let Some(titles)=candidate["titles"].as_array(){for t in titles{if let Some(s)=t["latin"].as_str(){names.push(s);}}}
     names.into_iter().filter(|s|s.is_ascii()).any(|name|{
-        let base=Regex::new(r"\s+[~～〜-]").unwrap().split(name).next().unwrap().trim();nq==roman(name)||nq==roman(base)
+        let base=Regex::new(r"\s+[~～〜-]").unwrap().split(name).next().unwrap().trim();
+        // "Mama x Kano EX" is written "mamakano" in filenames: a standalone x is a separator.
+        let unseparated=|s:&str|roman(&replace(s,r"(?i)\s+x\s+"," "));
+        [&nq,&versionless].into_iter().any(|q|*q==roman(name)||*q==roman(base)||*q==unseparated(name)||*q==unseparated(base))
     })
 }
 fn similarity(a: &str, b: &str) -> f64 {
@@ -135,7 +195,12 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
             let mut score = if exact { if *alias { 98.0 } else { 100.0 } } else { 85.0 * similarity(&nq, &nn) };
             let mut why = if brand_exact { "exact_brand_title" } else if exact { if *alias { "exact_alias" } else { "exact_title" } } else { "similar_title" };
             if !exact && (nq.contains(&nn) || nn.contains(&nq)) { score = 45.0 + 23.0 * (nq.chars().count().min(nn.chars().count()) as f64 / nq.chars().count().max(nn.chars().count()) as f64); why = "different_subtitle"; }
-            let mismatch = !exact && numbers(query) != numbers(name);
+            // Local names often omit the provider's ～subtitle～. The main title alone is not enough:
+            // the folder's brand or release date must agree with this very candidate.
+            let base = main_title(name);
+            let main = !exact && base.len() < name.len() && nq.chars().count() >= 4 && normalized(base) == nq && corroborated(input, &candidate);
+            if main { score = 99.0; why = "exact_main_title"; }
+            let mismatch = !exact && numbers(query) != numbers(if main { base } else { name });
             if mismatch { score = score.min(42.0); why = "number_conflict"; }
             if score > best { best = score; reason = why; matched = name.clone(); conflict = mismatch; }
         } }
@@ -154,7 +219,9 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
         ranked.push(candidate);
     }
     ranked.sort_by(|a,b| b["match"]["score"].as_f64().unwrap().total_cmp(&a["match"]["score"].as_f64().unwrap()));
-    let runner_up = ranked.get(1).and_then(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
+    // An exact title outranks another work matched only through its main title (e.g. the sequel "X -Prelude to War-").
+    let exact_first = ranked.first().is_some_and(|c| c["match"]["reason"].as_str().is_some_and(|r| r.starts_with("exact") && r != "exact_main_title"));
+    let runner_up = ranked.iter().skip(1).filter(|c| !(exact_first && c["match"]["reason"] == "exact_main_title")).find_map(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
     if let Some(first) = ranked.first_mut() {
         let score = first["match"]["score"].as_f64().unwrap();
         let short = input.titles.iter().any(|t| normalized(&branded(t).map(|(_,tail)|tail).unwrap_or_else(||t.clone())).chars().count() < 4);
@@ -164,15 +231,17 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
     ranked.truncate(20); ranked
 }
 
+/// VNDB Kana base URL. GALROON_VNDB_API overrides it so acceptance tests can inject provider outages.
+pub fn vndb_api() -> String { std::env::var("GALROON_VNDB_API").ok().filter(|v|!v.is_empty()).unwrap_or_else(||"https://api.vndb.org/kana".into()).trim_end_matches('/').to_string() }
 struct Provider { client: reqwest::Client, cache: HashMap<String, (Instant,Value)>, last: Option<Instant> }
 static PROVIDER: OnceLock<tokio::sync::Mutex<Provider>> = OnceLock::new();
 pub(crate) async fn known_artwork(url:&str)->bool{let Some(provider)=PROVIDER.get()else{return false;};provider.lock().await.cache.values().any(|(_,data)|crate::artwork::referenced(data,url))}
 pub async fn search(input: Input) -> Result<Value,String> {
     let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new(), last:None }));
     let mut provider = shared.try_lock().map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
-    retrieve(&input, &mut provider, "https://api.vndb.org/kana/vn", Duration::from_millis(1600)).await
+    retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
 }
-const WORK_FIELDS: &str = "title,alttitle,titles.title,titles.latin,aliases,description,image.url,released,developers.name,tags.name";
+const WORK_FIELDS: &str = "title,alttitle,titles.title,titles.latin,aliases,description,image.url,released,developers.name,developers.original,tags.name";
 async fn request(provider: &mut Provider, endpoint: &str, body: Value, spacing: Duration) -> Result<Value,String> {
     let key=format!("{endpoint}:{body}");
     if let Some((_,data))=provider.cache.get(&key) { return Ok(data.clone()); }
@@ -206,7 +275,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         if rank(input,candidates.clone()).first().is_some_and(|c|c["match"]["strength"]=="strong") {break;}
         if index==0 && input.direct_id.is_none() {
             let release_url=format!("{}/release",endpoint.trim_end_matches("/vn"));
-            let body=json!({"filters":["search","=",query],"sort":"searchrank","fields":"title,alttitle,vns.id","results":15});
+            let body=json!({"filters":["search","=",query],"sort":"searchrank","fields":"title,alttitle,vns.id,released,producers.name,producers.original,producers.developer,producers.publisher,images.url,images.type","results":15});
             let releases=match request(provider,&release_url,body,spacing).await {
                 Ok(data)=>data,Err(message)=>{if candidates.is_empty(){return Err(message);}warning=Some(message);incomplete=true;break;}
             };
@@ -215,7 +284,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             for release in releases["results"].as_array().unwrap() {
                 let exact=["title","alttitle"].iter().filter_map(|k|release[k].as_str()).find(|title|input.titles.iter().any(|q|normalized(q)==normalized(&clean_name(title))));
                 if let Some(title)=exact { if let Some(vns)=release["vns"].as_array() { for vn in vns.iter().take(30) { if let Some(id)=vn["id"].as_str() {
-                    links.entry(id.into()).or_default().push(json!({"id":release["id"],"title":title}));
+                    links.entry(id.into()).or_default().push(json!({"id":release["id"],"title":title,"release_title":release["title"],"alttitle":release["alttitle"],"released":release["released"],"producers":release["producers"],"images":release["images"]}));
                 } } } }
             }
             // A compilation release can point to multiple works: keep the ambiguity visible.
@@ -252,6 +321,52 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         assert_ne!(rank(&prepare("haisonsyoujo2",&[]).unwrap(),vec![c])[0]["match"]["strength"],"strong");
     }
     fn candidate(id:&str,name:&str)->Value { json!({"id":id,"title":name}) }
+    #[test] fn main_title_needs_brand_or_date_corroboration() {
+        let mama = json!({"id":"v59911","title":"Mama x Kano EX ~Ryoushu~","alttitle":"ママ×カノEX ～領主貴族に嫁ぎたくない娘の為に～","released":"2025-12-19","developers":[{"name":"Shibasoft","original":"しばそふと"}]});
+        let input = prepare("ママ×カノEX 豪華限定版 + Vocal CD + Update", &["[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update".into()]).unwrap();
+        assert_eq!(input.brands, vec!["しばそふと"]); assert_eq!(input.dates, vec!["2025-12-19"]);
+        let r = rank(&input, vec![mama.clone()]); assert_eq!(r[0]["match"]["reason"], "exact_main_title"); assert_eq!(r[0]["match"]["strength"], "strong");
+        // Same name without brand or date evidence stays a review case.
+        let bare = prepare("ママ×カノEX", &[]).unwrap(); assert_eq!(rank(&bare, vec![mama.clone()])[0]["match"]["strength"], "review");
+        // A different brand and date do not corroborate.
+        let other = prepare("x", &["[240101] [Other] ママ×カノEX".into()]).unwrap(); let mut o = other.clone(); o.titles = vec!["ママ×カノEX".into()];
+        assert_eq!(rank(&o, vec![mama.clone()])[0]["match"]["strength"], "review");
+        // Two series entries sharing the main title and brand are ambiguous, never strong.
+        let twin = json!({"id":"v2","title":"ママ×カノEX ～別の話～","released":"2026-01-01","developers":[{"name":"Shibasoft","original":"しばそふと"}]});
+        let brand_only = prepare("x", &["[しばそふと] [x] ママ×カノEX".into()]).unwrap(); let mut b = brand_only.clone(); b.titles = vec!["ママ×カノEX".into()];
+        let r = rank(&b, vec![mama.clone(), twin]); assert_ne!(r[0]["match"]["strength"], "strong");
+        // Sequel numbers still conflict.
+        let sequel = json!({"id":"v3","title":"猫忍えくすはーとSPIN! 3 ～x～","released":"2025-11-28","developers":[{"name":"Whirlpool"}]});
+        let two = prepare("x", &["[251128] [Whirlpool] 猫忍えくすはーとSPIN! 2".into()]).unwrap(); let mut t = two.clone(); t.titles = vec!["猫忍えくすはーとSPIN! 2".into()];
+        assert_ne!(rank(&t, vec![sequel])[0]["match"]["strength"], "strong");
+        // An exact title beats a sibling that only shares the main title.
+        let unravel = prepare("x", &["[240329][1261651][Archive] アンラベル・トリガー DL版 (files).rar".into()]).unwrap(); let mut u = unravel.clone(); u.titles = vec!["アンラベル・トリガー".into()];
+        let r = rank(&u, vec![json!({"id":"v55273","title":"アンラベル・トリガー -Prelude to War-","released":"2025-07-25","developers":[{"name":"Archive"}]}), json!({"id":"v47547","title":"アンラベル・トリガー","released":"2024-03-29","developers":[{"name":"Archive"}]})]);
+        assert_eq!(r[0]["id"], "v47547"); assert_eq!(r[0]["match"]["strength"], "strong");
+        // Update archives corroborate the romanized title.
+        assert!(corroborates_filename("mamakano_ex_2", &mama)); assert!(corroborates_filename("mamakanoex101", &mama));
+    }
+    #[test] fn bonus_archives_reduce_to_their_work_and_short_titles_stay_review() {
+        assert_eq!(clean_name("[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar"), "善悪");
+        assert_eq!(clean_name("[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 エッチな音声データ (ogg).rar"), "恋愛弱者な幼馴染少女と恋愛強者な彼女");
+        assert_eq!(clean_name("[241025][1305021][WAFFLE] 奴隷姫騎士と奴隷侍女とのスローライフ アニメ追加版 オフィシャル通販特典 「奴隷たちとの畑づくり」 (files).rar"), "奴隷姫騎士と奴隷侍女とのスローライフ");
+        assert!(bonus_name("善悪 フルHDリマスター版 Webアンケート特典 (files)"));
+        let zenaku = json!({"id":"v20672","title":"Zen'aku","alttitle":"善悪","released":"2017-07-28","developers":[{"name":"Waffle"}]});
+        // Short titles stay review cases even when the brand agrees (same rule as "[Key] AIR").
+        let with_brand = prepare("善悪 フルHDリマスター版 Webアンケート特典 (files)", &["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar".into()]).unwrap();
+        assert_eq!(rank(&with_brand, vec![zenaku])[0]["match"]["strength"], "review");
+    }
+    #[test] fn remakes_found_through_a_release_get_that_release() {
+        let input = prepare("下級生リメイク 豪華版", &["[251219] [FG REMAKE] 下級生リメイク 豪華版 + Voice Drama + Tokuten".into()]).unwrap();
+        let release = |id: &str, alt: &str| json!({"id":id,"title":alt,"release_title":"Kakyuusei Remake - Package Edition","alttitle":alt,"released":"2025-12-19","producers":[{"name":"FG Remake"}],"images":[{"type":"dig","url":"https://t.vndb.org/cv/83/115383.jpg"}]});
+        let work = json!({"id":"v2341","title":"Kakyuusei","alttitle":"下級生","image":{"url":"old.jpg"},"release_matches":[release("r163685","下級生リメイク ダウンロード豪華版"),release("r140695","下級生リメイク パッケージ版")]});
+        let ranked = rank(&input, vec![work]); assert_eq!(ranked[0]["match"]["reason"], "exact_release");
+        let r = remake_release(&input, &ranked[0]).unwrap(); assert_eq!(r["id"], "r140695");
+        let card = release_card(&ranked[0], &r);
+        assert_eq!(card["original_title"], "下級生リメイク"); assert_eq!(card["title"], "Kakyuusei Remake"); assert_eq!(card["released"], "2025-12-19"); assert_eq!(card["developer"], "FG Remake"); assert_eq!(card["cover"], "https://t.vndb.org/cv/83/115383.jpg");
+        // The original title alone is not a remake.
+        assert!(remake_release(&prepare("下級生", &[]).unwrap(), &ranked[0]).is_none());
+    }
     #[test] fn real_distribution_names_keep_identity_and_remove_noise() {
         for (raw,want) in [
             ("(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3)","ママ×カノEX"),
