@@ -313,7 +313,8 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         if rank(input,candidates.clone()).first().is_some_and(|c|c["match"]["strength"]=="strong") {break;}
         if index==0 && input.direct_id.is_none() {
             let release_url=format!("{}/release",endpoint.trim_end_matches("/vn"));
-            let body=json!({"filters":["search","=",query],"sort":"searchrank","fields":"title,alttitle,vns.id,released,producers.name,producers.original,producers.developer,producers.publisher,images.url,images.type","results":15});
+            // A full page (VNDB's maximum): popular names have dozens of editions, and a partial page forces review.
+            let body=json!({"filters":["search","=",query],"sort":"searchrank","fields":"title,alttitle,vns.id,released,producers.name,producers.original,producers.developer,producers.publisher,images.url,images.type","results":100});
             let releases=match request(provider,&release_url,body,spacing).await {
                 Ok(data)=>data,Err(message)=>{if candidates.is_empty(){return Err(message);}warning=Some(message);incomplete=true;break;}
             };
