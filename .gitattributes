@@ -19,3 +19,6 @@
 *.crate binary
 *.tar.xz binary
 *.7z binary
+# Bundled license and notice files are hashed byte-for-byte (scripts/generate_notices.py);
+# never convert their line endings on checkout.
+third-party/** -text
