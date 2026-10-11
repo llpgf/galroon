@@ -1067,6 +1067,7 @@ dependencies = [
  "hex",
  "icu_collator",
  "icu_locale_core",
+ "libc",
  "notify",
  "regex",
  "reqwest 0.12.28",

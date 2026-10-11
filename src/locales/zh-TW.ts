@@ -1,5 +1,18 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
+coreText_searchIncomplete:'搜尋未完成。VNDB 恢復連線後請重新整理。',
+coreText_noTitle:'這個資源裡找不到可用的作品標題。',
+coreText_noCandidate:'VNDB 上找不到候選作品。',
+coreText_ambiguous:'有多部作品的證據一樣強，需要你選擇。',
+coreText_partialTitle:'只有部分標題相符，副標題或版本需要確認。',
+coreText_numberConflict:'標題與候選作品的續作編號不同。',
+coreText_weakEvidence:'名稱太短，或候選作品的證據不夠精確。',
+coreText_missingTitles:'缺少來源標題資料。',
+coreText_unreadableTitle:'無法解讀來源標題。',
+coreText_otherSourceName:'另一個來源名稱需要確認：{{name}}',
+coreText_scanComplete:'掃描完成',
+coreText_scanErrors:'掃描完成，但有部分資料夾無法讀取。',
+coreText_matchComplete:'配對完成。不確定的資源維持未配對。',
 home:'首頁',charRole_main:'主角',charRole_primary:'主要角色',charRole_side:'配角',charRole_appears:'登場',allStatuses:'全部',homeGreeting:'今天想玩哪一部？',homeFeatured:'精選',homeContinue:'繼續遊玩',homeRecent:'最近加入',homeViewWork:'查看作品',homePrevious:'上一個',homeNext:'下一個',homeSlide:'顯示 {{title}}',homePickTitle:'下一部玩什麼？',homePickCount_other:'從收藏裡挑，{{count}} 部符合',homePickShuffle:'幫我挑一部',homePickReady:'檔案可立即遊玩',homePickAll:'全部',homePickLead:'就玩這部',homePickNone:'沒有符合的作品。試著換個標籤，或關掉「檔案可立即遊玩」。',homePickSwap:'改選 {{title}}',homeOverview:'收藏一覽',homeShowAll:'全部顯示',homeNeedsMatching_other:'{{count}} 個資源待配對',homeTasksRunning_other:'{{count}} 個任務進行中',
 eyebrowMatch:'辨識作品',
 eyebrowScan:'唯讀掃描',

@@ -83,7 +83,7 @@ fn page(c:&Connection,id:&str,q:&Options)->Result<Value,ApiError>{
  }
  #[test]fn migration42_preserves_members_and_reopen(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=crate::db::open(&path).unwrap();{let c=db.lock().unwrap();seed(&c);for table in ["resources","resource_files","files"]{for action in ["INSERT","UPDATE","DELETE"]{c.execute_batch(&format!("DROP TRIGGER member_dirty_{table}_{action};")).unwrap();}}c.execute_batch("DROP TABLE member_catalog_state; PRAGMA user_version=41;").unwrap();}drop(db);
-  let db=crate::db::open(&path).unwrap();let first={let c=db.lock().unwrap();assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),42);assert_eq!(c.query_row("SELECT count(*) FROM resource_files",[],|r|r.get::<_,i64>(0)).unwrap(),125);page(&c,"a",&Options::default()).ok().unwrap()};drop(db);
+  let db=crate::db::open(&path).unwrap();let first={let c=db.lock().unwrap();assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),crate::db::SCHEMA_VERSION);assert_eq!(c.query_row("SELECT count(*) FROM resource_files",[],|r|r.get::<_,i64>(0)).unwrap(),125);page(&c,"a",&Options::default()).ok().unwrap()};drop(db);
   let db=crate::db::open(&path).unwrap();assert_eq!(page(&db.lock().unwrap(),"a",&Options::default()).ok().unwrap(),first);assert_eq!(std::fs::read_dir(t.path().join("migration-backups")).unwrap().count(),1);
  }
  #[tokio::test]async fn http_requires_auth_and_serves_readonly_snapshot(){

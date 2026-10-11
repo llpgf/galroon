@@ -153,6 +153,10 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert_eq!(unmatched["total"], 3);
     let game = unmatched["items"].as_array().unwrap().iter().find(|r| r["title"] == "Sakura Note").unwrap().clone();
     assert!(game.get("root_path").is_none());
+    let files = server.ok("list_resource_files", json!({"resource_id": game["id"]})).await;
+    let entries = files["items"].as_array().unwrap();
+    assert!(!entries.is_empty() && entries.iter().all(|e| e["relative"].is_string() && e["size"].is_number()), "{files}");
+    assert!(!files.to_string().contains(f.source.to_str().unwrap()), "absolute source paths must not leak: {files}");
 
     let issues = server.ok("list_issues", json!({})).await;
     assert!(issues["items"].as_array().unwrap().iter().any(|i| i["kind"] == "unmatched"));
@@ -233,7 +237,11 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(preview["plan"]["moves"][0]["target"].as_str().unwrap().contains("Download edition"));
     assert_eq!(walk(&f.source), files_before, "a preview must not move files");
     assert!(walk(&managed).is_empty());
+    // A retry (e.g. after a client-side timeout) reuses the ready plan instead of leaving a duplicate.
+    let again = server.ok("preview_organize", json!({"resource_id": game["id"], "destination": managed})).await;
+    assert_eq!(again["plan"]["id"], preview["plan"]["id"]);
     let plans = server.ok("list_plans", json!({})).await;
+    assert_eq!(plans["plans"].as_array().unwrap().len(), 1, "{plans}");
     assert_eq!(plans["plans"][0]["id"], preview["plan"]["id"]);
     assert_ne!(plans["plans"][0]["state"], "completed");
 

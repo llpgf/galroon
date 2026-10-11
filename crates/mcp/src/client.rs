@@ -49,7 +49,14 @@ impl Core {
     }
 
     pub async fn request(&self, method: Method, path: &str, query: &[(&str, String)], body: Option<&Value>) -> R<Value> {
+        self.request_within(method, path, query, body, None).await
+    }
+
+    async fn request_within(&self, method: Method, path: &str, query: &[(&str, String)], body: Option<&Value>, timeout: Option<Duration>) -> R<Value> {
         let mut request = self.http.request(method, format!("{}/api{}", self.base, path)).bearer_auth(&self.token).query(query);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         if let Some(id) = &self.library_id {
             request = request.header("x-galroon-library", id);
         }
@@ -59,6 +66,8 @@ impl Core {
         let response = request.send().await.map_err(|e| {
             if e.is_connect() {
                 format!("{UNREACHABLE} at {}. Is Galroon open?", self.base)
+            } else if e.is_timeout() {
+                "Galroon Core did not answer in time and may still be working on this request. Check list_plans or list_jobs before retrying.".into()
             } else {
                 format!("Request to Galroon Core failed: {e}")
             }
@@ -72,6 +81,11 @@ impl Core {
 
     pub async fn post(&self, path: &str, body: &Value) -> R<Value> {
         self.request(Method::POST, path, &[], Some(body)).await
+    }
+
+    /// For requests whose work grows with file size, such as hashing every file of an organize preview.
+    pub async fn post_long(&self, path: &str, body: &Value) -> R<Value> {
+        self.request_within(Method::POST, path, &[], Some(body), Some(Duration::from_secs(30 * 60))).await
     }
 
     /// The library identity Core reports for this credential.

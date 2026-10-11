@@ -48,6 +48,7 @@ import {applyTheme,storedTheme,type ThemeChoice} from './themeChoice';
 import {useTranslation} from 'react-i18next';
 import {House,Sun,Moon,Monitor,SunMoon,Languages,Inbox,BookOpen,LibraryBig,Folder,FolderOpen,Layers,Activity,Archive,Settings,Search,Plus,ArrowUpRight,ChevronRight,ChevronLeft,X,Heart,Pause,Play,Square,Check,ShieldCheck,HardDrive,RefreshCw,Globe,EyeOff} from 'lucide-react';
 import {requireCollectionPaging,ConnectionLostError,connectionSnapshot,subscribeConnection,AuthenticationError,signOut,type AccessIdentity,type CollectionContext,SessionChangedError,sessionChanging,isDesktop,stopCore,api,connect,folder,bytes,type Work,type Resource,type Root,type Job,type Plan,type Isolated} from './api';
+const ACTIVE_JOB_STATES=new Set(['queued','running','pausing','cancelling','executing']);
 type View='home'|'lists'|'library'|'organize'|'sources'|'tasks'|'quarantine'|'settings';
 type Candidate={id:string;title:string;alttitle?:string;description?:string;image?:{url:string};released?:string;developers?:{name:string}[];tags?:{name:string}[];match?:{reason:string;matched_title:string;strength:string;ambiguous?:boolean}};
 function App(){
@@ -86,7 +87,8 @@ function App(){
  useEffect(()=>{connect().then(ok=>{if(ok&&!isDesktop){refresh().then(()=>setReady(true)).catch(reportError);}}).catch(reportError);},[refresh]);
  useEffect(()=>{if(isDesktop&&coreConnection.phase==='connected'){void refresh().then(()=>setReady(true)).catch(reportError);}},[coreConnection,refresh]);
  useEffect(()=>{if(ready&&canWrite)void api('/matching/start',{}).catch(reportError);},[ready,canWrite]);
- useEffect(()=>{if(!ready)return;const id=setInterval(()=>{if(sessionChanging()||polling.current)return;polling.current=true;api<JobPage>('/jobs?paged=true').then(j=>{setJobPage(j);const signature=j.items.map(x=>x.id+':'+x.state+(x.kind==='match'?':'+x.processed:'')).join('|');if(signature!==jobSignature.current){jobSignature.current=signature;void refresh().catch(reportError);}}).catch(reportError).finally(()=>{polling.current=false;});},1300);return()=>clearInterval(id);},[ready,refresh]);
+ // Poll quickly while a task is active; otherwise only often enough to notice tasks started elsewhere.
+ useEffect(()=>{if(!ready)return;let live=true,active=true,timer:number|undefined;const schedule=()=>{if(live)timer=window.setTimeout(tick,document.hidden?15000:active?1300:4000);};const tick=()=>{if(sessionChanging()||polling.current){schedule();return;}polling.current=true;api<JobPage>('/jobs?paged=true').then(j=>{setJobPage(j);active=j.items.some(x=>ACTIVE_JOB_STATES.has(x.state));const signature=j.items.map(x=>x.id+':'+x.state+(x.kind==='match'?':'+x.processed:'')).join('|');if(signature!==jobSignature.current){jobSignature.current=signature;void refresh().catch(reportError);}}).catch(reportError).finally(()=>{polling.current=false;schedule();});};const wake=()=>{if(!document.hidden){window.clearTimeout(timer);schedule();}};schedule();document.addEventListener('visibilitychange',wake);return()=>{live=false;window.clearTimeout(timer);document.removeEventListener('visibilitychange',wake);};},[ready,refresh]);
  const collectionY=useRef(0);
  const [scrolled,setScrolled]=useState(false);
  // "More" menus are <details>; close them on outside clicks and Escape like a normal menu.
