@@ -158,8 +158,16 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(!entries.is_empty() && entries.iter().all(|e| e["relative"].is_string() && e["size"].is_number()), "{files}");
     assert!(!files.to_string().contains(f.source.to_str().unwrap()), "absolute source paths must not leak: {files}");
 
-    let issues = server.ok("list_issues", json!({})).await;
-    assert!(issues["items"].as_array().unwrap().iter().any(|i| i["kind"] == "unmatched"));
+    // Core files matching issues once the automatic follow-up scan settles, shortly after the fixture's scan.
+    let mut issues = Value::Null;
+    for _ in 0..100 {
+        issues = server.ok("list_issues", json!({})).await;
+        if issues["items"].as_array().unwrap().iter().any(|i| i["kind"] == "unmatched") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(issues["items"].as_array().unwrap().iter().any(|i| i["kind"] == "unmatched"), "{issues}");
 
     // Stale revisions are rejected by Core, then the current one succeeds.
     let (stale, is_error) = server.call("match_resource", json!({"resource_id": game["id"], "revision": 999, "work_id": sakura["id"]})).await;
