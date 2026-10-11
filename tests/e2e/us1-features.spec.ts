@@ -28,19 +28,20 @@ test('US-1.2 ママ×カノEX 兩份資源：一張卡、一個版本、兩個�
   for (const r of mama) await expect(page.getByText(r.path).first()).toBeVisible();
 });
 
-test('US-1.3 WaffleTokuten 拆成 7 個資源配到 4 部作品，卡片標「只有特典」且可篩掉', async ({ page }) => {
+test('US-1.3 WaffleTokuten 拆成 7 個資源，自動配到 3 部作品（善悪留待手動），卡片標「只有特典」且可篩掉', async ({ page }) => {
   const split = GOLDEN.folders['WaffleTokuten'].split!;
   const { resources, byId } = await catalog(core);
   const owned = new Set<string>();
   for (const [member, want] of Object.entries(split)) {
-    const r = resources.find(x => x.path === `WaffleTokuten/${member}`);
+    const r = resources.find(x => x.path.normalize('NFC') === `WaffleTokuten/${member}`.normalize('NFC'));
     expect(r, member).toBeTruthy();
     const w = r!.work_id ? byId.get(r!.work_id) : undefined;
+    if (want.manual) { expect(w, `${member} stays for manual review`).toBeUndefined(); continue; }
     expect(w?.vndb_id, member).toBe(want.work);
     expect(r!.bindings[0]?.role, `${member} is bound as a bonus`).toBe('extra');
     owned.add(w!.id);
   }
-  expect(owned.size).toBe(4);
+  expect(owned.size).toBe(3);
   expect(resources.filter(r => r.path === 'WaffleTokuten' && (r as any).files > 0), 'no whole-folder resource left').toHaveLength(0);
 
   await openApp(page, core);
@@ -51,7 +52,8 @@ test('US-1.3 WaffleTokuten 拆成 7 個資源配到 4 部作品，卡片標「�
     await expect(card(page, w).getByText(T('bonusOnly'))).toBeVisible();
   }
   await page.getByRole('button', { name: T('hideBonusOnly') }).click();
-  await expect(page.locator('.collection-heading')).toContainText(String(total - owned.size));
+  await expect(page.locator('.book-grid .book')).toHaveCount(total - owned.size);
+  await expect(page.getByText(T('filteredWorks', { total, count: total - owned.size })).first()).toBeVisible();
   for (const id of owned) await expect(card(page, byId.get(id)!)).toHaveCount(0);
 });
 
@@ -78,7 +80,7 @@ test('US-1.9 重製版：獨立卡用重製版發行資料，重抓不改回原�
     await nav(page, 'library');
     await openWork(page, remake);
     await expect(page.getByRole('heading', { name: T('characters'), exact: true }).first()).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('h1').first()).toHaveText(remake.title);
+    await expect(page.locator('h1:visible').first()).toHaveText(remake.title);
   });
 
   await test.step('另有原版卡時兩張卡互相顯示', async () => {
@@ -90,7 +92,7 @@ test('US-1.9 重製版：獨立卡用重製版發行資料，重抓不改回原�
     const section = page.locator('.same-work');
     await expect(section).toContainText('下級生');
     await section.getByRole('button').first().click();
-    await expect(page.locator('h1').first()).toHaveText('Kakyuusei');
+    await expect(page.locator('h1:visible').first()).toHaveText('Kakyuusei');
     await expect(page.locator('.same-work')).toContainText('下級生リメイク');
   });
 });
@@ -115,14 +117,14 @@ test('US-2.4 手動改過標題後從 VNDB 更新：顯示差異讓我選', asyn
     await expect(region.locator('.plan-item'), 'only the edited field is asked').toHaveCount(1);
     await region.getByRole('button', { name: T('keepMine') }).click();
     await expect(region).toHaveCount(0);
-    await expect(page.locator('h1').first()).toHaveText('我的マガルミナ');
+    await expect(page.locator('h1:visible').first()).toHaveText('我的マガルミナ');
   });
   await test.step('改用 VNDB', async () => {
     await refresh();
     const region = page.getByRole('region', { name: T('refreshConflicts') });
     await region.getByRole('button', { name: T('useProvider') }).click();
     await expect(region).toHaveCount(0);
-    await expect(page.locator('h1').first()).toHaveText(providerTitle);
+    await expect(page.locator('h1:visible').first()).toHaveText(providerTitle);
     expect((await workBy(x => x.id === w.id)).title).toBe(providerTitle);
   });
   await test.step('沒有修改過的欄位不提示', async () => {

@@ -1,5 +1,5 @@
 {
- "_doc": "Expected outcome per top-level sandbox_data folder. 'work' = VNDB id; any other id is a false match (hard failure). remake_release = separate card built from that release. split = folder must be split per member, each bound as listed.",
+ "_doc": "Expected outcome per top-level sandbox_data folder. 'work' = VNDB id; any other id is a false match (hard failure). remake_release = separate card built from that release. split = folder must be split per member, each bound as listed. manual = correct answer, but automatic matching must leave it for review (too short to match safely); binding it by hand is expected.",
  "folders": {
   "(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3)": {
    "work": "v59911",
@@ -80,11 +80,13 @@
    "split": {
     "[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar": {
      "work": "v20672",
-     "bonus_only": true
+     "bonus_only": true,
+     "manual": true
     },
     "[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 オフィシャル通販特典 「原法子との邂逅」 (files).rar": {
      "work": "v20672",
-     "bonus_only": true
+     "bonus_only": true,
+     "manual": true
     },
     "[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar": {
      "work": "v51928",

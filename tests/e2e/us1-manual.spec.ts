@@ -8,8 +8,9 @@ let core: Core;
 test.beforeEach(async () => { core = await startCore({ name: 'us1-manual', from: `${SNAPSHOTS}/intake` }); });
 test.afterEach(async () => { await core?.stop(); });
 
-const MAMA_CD = 'Vocal CD + Update';
-const MAMA_MDF = '(mdf+mds+rr3)';
+// After automatic matching only the two 善悪 bonus archives remain (the title is too short to match safely).
+const MAMA_CD = '善悪 フルHDリマスター版 Webアンケート特典';
+const MAMA_MDF = '原法子との邂逅';
 const bound = async (path: string) => { const { resources, byId } = await catalog(core); const r = resources.find(x => x.path.includes(path))!; return r.work_id ? byId.get(r.work_id)! : null; };
 
 test('US-1.5 看原因 → 搜 VNDB → 選候選 → 確認，重新配對/掃描不覆蓋', async ({ page }) => {
@@ -25,22 +26,22 @@ test('US-1.5 看原因 → 搜 VNDB → 選候選 → 確認，重新配對/掃�
   });
 
   const worksBefore = (await core.api('/works')).length;
-  await test.step('第一份ママ×カノEX：搜 VNDB 選 v59911', async () => {
+  await test.step('第一份善悪特典：搜 VNDB 選 v20672', async () => {
     const drawer = await openMatcher(page, MAMA_CD);
-    await drawer.getByLabel(T('query')).fill('ママ×カノEX');
+    await drawer.getByLabel(T('query')).fill('善悪');
     await drawer.getByRole('button', { name: T('searchVndb') }).click();
-    const candidate = drawer.locator('button.candidate').filter({ hasText: 'v59911' });
+    const candidate = drawer.locator('button.candidate').filter({ hasText: 'v20672' });
     await expect(candidate).toBeVisible({ timeout: 30_000 });
     await candidate.click();
     await expect(page.locator('.drawer')).toHaveCount(0);
-    expect((await bound(MAMA_CD))?.vndb_id).toBe('v59911');
+    expect((await bound(MAMA_CD))?.vndb_id).toBe('v20672');
   });
 
   await test.step('第二份選同一候選 → 併入同一張卡', async () => {
     const drawer = await openMatcher(page, MAMA_MDF);
-    await drawer.getByLabel(T('query')).fill('ママ×カノEX');
+    await drawer.getByLabel(T('query')).fill('善悪');
     await drawer.getByRole('button', { name: T('searchVndb') }).click();
-    await drawer.locator('button.candidate').filter({ hasText: 'v59911' }).click();
+    await drawer.locator('button.candidate').filter({ hasText: 'v20672' }).click();
     await expect(page.locator('.drawer')).toHaveCount(0);
     const a = await bound(MAMA_CD), b = await bound(MAMA_MDF);
     expect(b?.id).toBe(a?.id);
@@ -72,9 +73,9 @@ test('US-1.5 看原因 → 搜 VNDB → 選候選 → 確認，重新配對/掃�
 test('US-1.5 異常：確認前資源已被其他操作改動 → 顯示衝突，不靜默覆蓋', async ({ page }) => {
   await openApp(page, core);
   const drawer = await openMatcher(page, MAMA_CD);
-  await drawer.getByLabel(T('query')).fill('ママ×カノEX');
+  await drawer.getByLabel(T('query')).fill('善悪');
   await drawer.getByRole('button', { name: T('searchVndb') }).click();
-  const candidate = drawer.locator('button.candidate').filter({ hasText: 'v59911' });
+  const candidate = drawer.locator('button.candidate').filter({ hasText: 'v20672' });
   await expect(candidate).toBeVisible({ timeout: 30_000 });
   // Meanwhile another client binds the same resource to a different work.
   const { resources, works } = await catalog(core);

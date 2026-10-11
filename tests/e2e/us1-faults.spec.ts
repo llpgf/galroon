@@ -2,7 +2,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { openApp, nav, T } from './support/app';
 import { startCore, waitFor, SANDBOX, type Core } from './support/core';
-import { grade, summary } from './support/golden';
+import { grade, summary, GOLDEN } from './support/golden';
 import { FaultyVndb } from './support/vndb';
 
 let core: Core | undefined, vndb: FaultyVndb;
@@ -91,7 +91,13 @@ test('US-1.8 配對中途 Core 被關閉 → 重開為「已中斷」→ 繼續 
     const card = matchCard(page);
     await expect(card.getByText(T('interrupted'))).toBeVisible();
     await card.getByRole('button', { name: T('resume') }).click();
-    await waitFor('matching complete', async () => (await matchJob(core!))?.state === 'completed', 600_000, 3_000);
+    // Real VNDB may rate-limit (429) after many runs; the task then pauses with a reason, and a person resumes later.
+    let lastResume = Date.now();
+    await waitFor('matching complete', async () => {
+      const job = await matchJob(core!);
+      if (job?.state === 'paused' && Date.now() - lastResume > 30_000) { await core!.api(`/jobs/${job.id}/resume`, {}); lastResume = Date.now(); }
+      return job?.state === 'completed';
+    }, 900_000, 3_000);
   });
 
   await test.step('作品數與綁定數同一次跑完，無重複卡', async () => {
@@ -121,5 +127,7 @@ test('US-1.8 掃描中途 Core 被關閉 → 繼續 → 資源數與一次跑完
     await page.locator('article.job').filter({ hasText: T('interrupted') }).first().getByRole('button', { name: T('resume') }).click();
   }
   await waitFor('scans idle', async () => (await core!.api('/jobs')).every((j: any) => !['queued', 'running', 'pausing'].includes(j.state)), 300_000);
-  expect((await core.api('/resources')).length).toBe(31);
+  // Same resources as an uninterrupted scan: every golden folder, with split folders counted per member.
+  const expected = Object.values(GOLDEN.folders).reduce((n, f) => n + (f.split ? Object.keys(f.split).length : 1), 0);
+  expect((await core.api('/resources')).filter((r: any) => r.files > 0).length).toBe(expected);
 });

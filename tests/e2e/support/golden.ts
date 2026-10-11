@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Core } from './core';
 
-type Expect = { work?: string; unmatched?: boolean; remake_release?: string; card_title?: string; card_released?: string; same_edition_as?: string; bonus_only?: boolean; split?: Record<string, Expect> };
+type Expect = { work?: string; unmatched?: boolean; remake_release?: string; card_title?: string; card_released?: string; same_edition_as?: string; bonus_only?: boolean; manual?: boolean; split?: Record<string, Expect> };
 export const GOLDEN: { folders: Record<string, Expect> } = JSON.parse(readFileSync(fileURLToPath(new URL('../golden/sandbox_data.json', import.meta.url)), 'utf8'));
 
 export type Resource = { id: string; path: string; files: number; work_id?: string | null; release?: string; bindings: { work_id: string; release_id: string | null; role: string }[] };
@@ -21,23 +21,25 @@ export async function catalog(core: Core) {
 export async function grade(core: Core) {
   const { resources: all, byId } = await catalog(core);
   // A resource left without files (e.g. a folder later split into members) is not part of the collection.
-  const resources = all.filter(r => r.files > 0);
+  // Paths are compared in NFC: macOS/exFAT may return decomposed kana (デ = テ + ゛).
+  const resources = all.filter(r => r.files > 0).map(r => ({ ...r, path: r.path.normalize('NFC') }));
+  const nfc = (s: string) => s.normalize('NFC');
   const rows: Row[] = [];
   const judge = (folder: string, member: string | undefined, want: Expect, found: Resource[]) => {
     if (found.length === 0) { rows.push({ folder, member, expected: want.work || 'unmatched', actual: '(no resource)', verdict: 'missing' }); return; }
     for (const r of found) {
       const work = r.work_id ? byId.get(r.work_id) : undefined;
       const actual = work?.vndb_id || (work ? `manual:${work.title}` : 'unmatched');
-      const verdict = !work ? (want.unmatched ? 'ok' : 'unmatched') : actual === want.work ? 'ok' : 'FALSE MATCH';
+      const verdict = !work ? (want.unmatched || want.manual ? 'ok' : 'unmatched') : actual === want.work ? 'ok' : 'FALSE MATCH';
       rows.push({ folder, member, expected: want.work || 'unmatched', actual, verdict });
     }
   };
   for (const [folder, want] of Object.entries(GOLDEN.folders)) {
     if (want.split) {
-      for (const [member, m] of Object.entries(want.split)) judge(folder, member, m, resources.filter(r => r.path === `${folder}/${member}` || r.path === `${folder}\\${member}`));
-      const whole = resources.filter(r => r.path === folder);
+      for (const [member, m] of Object.entries(want.split)) judge(folder, member, m, resources.filter(r => r.path === nfc(`${folder}/${member}`) || r.path === nfc(`${folder}\\${member}`)));
+      const whole = resources.filter(r => r.path === nfc(folder));
       if (whole.length) rows.push({ folder, expected: 'split into members', actual: 'single resource', verdict: whole.some(r => r.work_id) ? 'FALSE MATCH' : 'unmatched' });
-    } else judge(folder, undefined, want, resources.filter(r => r.path === folder));
+    } else judge(folder, undefined, want, resources.filter(r => r.path === nfc(folder)));
   }
   return rows;
 }
@@ -52,7 +54,7 @@ export function summary(rows: Row[]) {
 export function expectedCards() {
   const keys = new Set<string>();
   for (const want of Object.values(GOLDEN.folders)) {
-    for (const e of want.split ? Object.values(want.split) : [want]) if (e.work) keys.add(e.remake_release || e.work);
+    for (const e of want.split ? Object.values(want.split) : [want]) if (e.work && !e.manual) keys.add(e.remake_release || e.work);
   }
   return keys.size;
 }

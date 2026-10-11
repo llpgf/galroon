@@ -87,7 +87,12 @@ pub fn read_page(c:&Connection,id:&str,q:&Page)->R<Value>{
   let key=entry["work_key"].as_str().unwrap();let local=if let Some(wid)=key.strip_prefix("local:"){Some(wid.to_owned())}else{None};
   let resolved=if let Some(wid)=local{c.query_row("SELECT id,title,merged_into FROM works WHERE id=?1",[wid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?}else{None};
   entry["reference_state"]=json!(if key.starts_with("vndb:"){"external"}else if resolved.as_ref().is_some_and(|v|v.2.is_some()){"merged"}else if resolved.is_some(){"local"}else{"missing"});
-  if let Some((wid,title,merged))=resolved{entry["local_work_id"]=json!(wid);entry["current_title"]=json!(title);entry["merged_into"]=json!(merged);}
+  if let Some((wid,title,merged))=resolved{
+   // Whether this entry's files are on disk now: follow merges to the current work, then count its indexed files.
+   let mut current=merged.clone().unwrap_or_else(||wid.clone());for _ in 0..16{match c.query_row("SELECT merged_into FROM works WHERE id=?1",[&current],|r|r.get::<_,Option<String>>(0)).optional()?.flatten(){Some(next)=>current=next,None=>break}}
+   let (files,present):(i64,i64)=c.query_row("SELECT count(f.id),coalesce(sum(f.availability='present'),0) FROM resource_bindings b JOIN resource_files rf ON rf.resource_id=b.resource_id JOIN files f ON f.id=rf.file_id WHERE b.work_id=?1",[&current],|r|Ok((r.get(0)?,r.get(1)?)))?;
+   entry["local_files"]=json!(if files==0{"none"}else if present==0{"missing"}else{"available"});
+   entry["local_work_id"]=json!(wid);entry["current_title"]=json!(title);entry["merged_into"]=json!(merged);}
  }
  list["entries"]=json!(entries);list["next_after"]=json!(next);list["total"]=json!(c.query_row("SELECT count(*) FROM list_entries WHERE list_id=?1",[id],|r|r.get::<_,i64>(0))?);Ok(list)
 }

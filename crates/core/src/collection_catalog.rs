@@ -89,7 +89,7 @@ fn sorted<'a>(entries: &'a [Entry], q: &Query) -> Result<Vec<&'a Entry>, ApiErro
     });Ok(visible)
 }
 fn view_token(c:&Connection, roots:&Roots, q:&Query)->Result<String,ApiError> {
-    let revision:i64=c.query_row("SELECT revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get(0))?;
+    let revision:i64=c.query_row("SELECT collection_revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get(0))?;
     digest(&(crate::context::library(c)?.id,revision,q,roots))
 }
 pub fn page(c: &Connection, roots: &Roots, q: &Query, before: Option<&str>) -> Result<Value, ApiError> {
@@ -106,15 +106,17 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     let labels=collator(&q.locale,false,false)?;
     let library=crate::context::library(c)?.id;
     let revision:i64=c.query_row("SELECT revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get(0))?;
+    // Cursors follow the collection, not exploration caches or lists (see smart_updates::migrate).
+    let collection_revision:i64=c.query_row("SELECT collection_revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get(0))?;
     let query_hash=digest(q)?;let root_hash=digest(roots)?;
     let offset=if let Some(raw)=before {
         if raw.len()>512 { return Err(ApiError("Invalid collection cursor".into())); }
         let cursor:Cursor=serde_json::from_str(raw).map_err(|_|ApiError("Invalid collection cursor".into()))?;
-        if cursor.library!=library||cursor.revision!=revision||cursor.query!=query_hash||cursor.roots!=root_hash { return Err(ApiError("Collection or filters changed. Reload before continuing.".into())); }
+        if cursor.library!=library||cursor.revision!=collection_revision||cursor.query!=query_hash||cursor.roots!=root_hash { return Err(ApiError("Collection or filters changed. Reload before continuing.".into())); }
         if cursor.offset==0||cursor.offset%60!=0 { return Err(ApiError("Invalid collection cursor".into())); }cursor.offset
     } else {0};
     let token=view_token(c,roots,q)?;let cache_key=instance.map(|id|format!("{id}:{token}"));
-    let continuation=|count:usize|->Result<Option<String>,ApiError>{if count.saturating_sub(offset)>60 {Ok(Some(serde_json::to_string(&Cursor{library:library.clone(),revision,query:query_hash.clone(),roots:root_hash.clone(),offset:offset+60}).map_err(|e|ApiError(e.to_string()))?))}else{Ok(None)}};
+    let continuation=|count:usize|->Result<Option<String>,ApiError>{if count.saturating_sub(offset)>60 {Ok(Some(serde_json::to_string(&Cursor{library:library.clone(),revision:collection_revision,query:query_hash.clone(),roots:root_hash.clone(),offset:offset+60}).map_err(|e|ApiError(e.to_string()))?))}else{Ok(None)}};
     if let Some(view)=cache_key.as_deref().and_then(cached) {return render(c,&view,offset,continuation(view.ids.len())?,cancelled);}
     let mut trace=BuildTrace::start(cancelled);
     let entries=read_entries(c,roots,cancelled)?;
@@ -223,7 +225,12 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         let resolved=members(&c,&roots,&selection).unwrap_or_else(|e|panic!("{}",e.0));assert_eq!(resolved["members"][0]["work_key"],"local:w124");assert_eq!(resolved["members"][2]["work_key"],"local:w004");
         assert!(page(&c,&roots,&filtered,first["next"].as_str()).is_err());
         assert!(page(&c,&Roots::from([("new".into(),false)]),&q,first["next"].as_str()).is_err());
-        c.execute("UPDATE works SET title='New title' WHERE id='w000'",[]).unwrap();assert!(page(&c,&roots,&q,first["next"].as_str()).is_err());assert!(members(&c,&roots,&selection).is_err());
+        // Opening a work page caches VNDB exploration data; that must not break someone paging through Collection.
+        c.execute("INSERT INTO settings(key,value) VALUES('exploration.work.v1','{}')",[]).unwrap();
+        // A reconciliation scan re-observes files and bumps work revisions without changing the collection.
+        c.execute("UPDATE works SET revision=revision+1",[]).unwrap();
+        assert_eq!(read(&c,&roots,&q,first["next"].as_str())["offset"],60);assert!(members(&c,&roots,&selection).is_ok());
+                c.execute("UPDATE works SET title='New title' WHERE id='w000'",[]).unwrap();assert!(page(&c,&roots,&q,first["next"].as_str()).is_err());assert!(members(&c,&roots,&selection).is_err());
     }
     #[test] fn shared_languages_multi_copy_availability_and_merged_custom_tags_keep_identity() {
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();

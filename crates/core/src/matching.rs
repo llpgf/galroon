@@ -60,13 +60,16 @@ pub struct Input { pub titles: Vec<String>, pub queries: Vec<String>, pub direct
 /// Brand and date labels such as `[251219] [しばそふと]`. Store codes and numeric IDs are ignored.
 fn labels(raw: &str, brands: &mut Vec<String>, dates: &mut Vec<String>) {
     static RE: OnceLock<Regex> = OnceLock::new();
+    static CODE: OnceLock<Regex> = OnceLock::new();
+    let code = CODE.get_or_init(|| Regex::new(r"(?i)^(?:rj|vj|dmm)\d+$").unwrap());
     let s: String = raw.nfkc().collect();
     for c in RE.get_or_init(|| Regex::new(r"\[([^\]/\\]+)\]").unwrap()).captures_iter(&s) {
         let label = c[1].trim();
         let date = |y: &str, m: &str, d: &str| format!("{y}-{m}-{d}");
-        if Regex::new(r"^\d{6}$").unwrap().is_match(label) { let v = date(&format!("20{}", &label[..2]), &label[2..4], &label[4..]); if !dates.contains(&v) { dates.push(v); } }
-        else if Regex::new(r"^\d{8}$").unwrap().is_match(label) { let v = date(&label[..4], &label[4..6], &label[6..]); if !dates.contains(&v) { dates.push(v); } }
-        else if !label.chars().all(|c| c.is_ascii_digit()) && !Regex::new(r"(?i)^(?:rj|vj|dmm)\d+$").unwrap().is_match(label) && normalized(label).chars().count() >= 2 && !brands.contains(&label.to_string()) { brands.push(label.to_string()); }
+        let digits = label.chars().all(|c| c.is_ascii_digit());
+        if digits && label.len() == 6 { let v = date(&format!("20{}", &label[..2]), &label[2..4], &label[4..]); if !dates.contains(&v) { dates.push(v); } }
+        else if digits && label.len() == 8 { let v = date(&label[..4], &label[4..6], &label[6..]); if !dates.contains(&v) { dates.push(v); } }
+        else if !digits && !code.is_match(label) && normalized(label).chars().count() >= 2 && !brands.contains(&label.to_string()) { brands.push(label.to_string()); }
     }
 }
 /// Bonus material such as store or survey extras, drama CDs, soundtracks and wallpapers.
@@ -153,11 +156,16 @@ pub fn corroborates_filename(query:&str,candidate:&Value)->bool {
         let s=replace(s,r"(?i)\[Ni\]|\(Ni\)","2");
         normalized(&s).replace("syou","shou").replace("syo","sho").replace("syu","shu").replace("sya","sha").replace("tyou","chou").replace("tyo","cho").replace("tyu","chu").replace("tya","cha")
     }
-    let nq=roman(query);let mut names=vec![];
+    // An update archive such as "mamakano_ex_2" or "mamakanoex101" names the work plus a version.
+    // Sequel digits stay ("haisonsyoujo2"); only a separated or 3+ digit version is dropped.
+    let versionless=roman(&replace(query,r"(?i)(?:[_-](?:ver)?\d+|\d{3,})$",""));let nq=roman(query);let mut names=vec![];
     for key in ["title","alttitle"]{if let Some(s)=candidate[key].as_str(){names.push(s);}}
     if let Some(titles)=candidate["titles"].as_array(){for t in titles{if let Some(s)=t["latin"].as_str(){names.push(s);}}}
     names.into_iter().filter(|s|s.is_ascii()).any(|name|{
-        let base=Regex::new(r"\s+[~～〜-]").unwrap().split(name).next().unwrap().trim();nq==roman(name)||nq==roman(base)
+        let base=Regex::new(r"\s+[~～〜-]").unwrap().split(name).next().unwrap().trim();
+        // "Mama x Kano EX" is written "mamakano" in filenames: a standalone x is a separator.
+        let unseparated=|s:&str|roman(&replace(s,r"(?i)\s+x\s+"," "));
+        [&nq,&versionless].into_iter().any(|q|*q==roman(name)||*q==roman(base)||*q==unseparated(name)||*q==unseparated(base))
     })
 }
 fn similarity(a: &str, b: &str) -> f64 {
@@ -211,12 +219,12 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
         ranked.push(candidate);
     }
     ranked.sort_by(|a,b| b["match"]["score"].as_f64().unwrap().total_cmp(&a["match"]["score"].as_f64().unwrap()));
-    let runner_up = ranked.get(1).and_then(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
+    // An exact title outranks another work matched only through its main title (e.g. the sequel "X -Prelude to War-").
+    let exact_first = ranked.first().is_some_and(|c| c["match"]["reason"].as_str().is_some_and(|r| r.starts_with("exact") && r != "exact_main_title"));
+    let runner_up = ranked.iter().skip(1).filter(|c| !(exact_first && c["match"]["reason"] == "exact_main_title")).find_map(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
     if let Some(first) = ranked.first_mut() {
         let score = first["match"]["score"].as_f64().unwrap();
-        // Short names collide easily; an exact short title also needs the folder's brand to name this developer.
-        let brand_backed = first["match"]["reason"].as_str().is_some_and(|r| r.starts_with("exact")) && !input.brands.is_empty() && { let mut i = input.clone(); i.dates.clear(); corroborated(&i, first) };
-        let short = !brand_backed && input.titles.iter().any(|t| normalized(&branded(t).map(|(_,tail)|tail).unwrap_or_else(||t.clone())).chars().count() < 4);
+        let short = input.titles.iter().any(|t| normalized(&branded(t).map(|(_,tail)|tail).unwrap_or_else(||t.clone())).chars().count() < 4);
         if score >= 98.0 && score - runner_up >= 8.0 && (!short || input.direct_id.is_some()) { first["match"]["strength"] = json!("strong"); }
         if score >= 98.0 && score - runner_up < 8.0 { first["match"]["ambiguous"] = json!(true); }
     }
@@ -329,17 +337,22 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let sequel = json!({"id":"v3","title":"猫忍えくすはーとSPIN! 3 ～x～","released":"2025-11-28","developers":[{"name":"Whirlpool"}]});
         let two = prepare("x", &["[251128] [Whirlpool] 猫忍えくすはーとSPIN! 2".into()]).unwrap(); let mut t = two.clone(); t.titles = vec!["猫忍えくすはーとSPIN! 2".into()];
         assert_ne!(rank(&t, vec![sequel])[0]["match"]["strength"], "strong");
+        // An exact title beats a sibling that only shares the main title.
+        let unravel = prepare("x", &["[240329][1261651][Archive] アンラベル・トリガー DL版 (files).rar".into()]).unwrap(); let mut u = unravel.clone(); u.titles = vec!["アンラベル・トリガー".into()];
+        let r = rank(&u, vec![json!({"id":"v55273","title":"アンラベル・トリガー -Prelude to War-","released":"2025-07-25","developers":[{"name":"Archive"}]}), json!({"id":"v47547","title":"アンラベル・トリガー","released":"2024-03-29","developers":[{"name":"Archive"}]})]);
+        assert_eq!(r[0]["id"], "v47547"); assert_eq!(r[0]["match"]["strength"], "strong");
+        // Update archives corroborate the romanized title.
+        assert!(corroborates_filename("mamakano_ex_2", &mama)); assert!(corroborates_filename("mamakanoex101", &mama));
     }
-    #[test] fn bonus_archives_reduce_to_their_work_and_short_titles_need_the_brand() {
+    #[test] fn bonus_archives_reduce_to_their_work_and_short_titles_stay_review() {
         assert_eq!(clean_name("[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar"), "善悪");
         assert_eq!(clean_name("[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 エッチな音声データ (ogg).rar"), "恋愛弱者な幼馴染少女と恋愛強者な彼女");
         assert_eq!(clean_name("[241025][1305021][WAFFLE] 奴隷姫騎士と奴隷侍女とのスローライフ アニメ追加版 オフィシャル通販特典 「奴隷たちとの畑づくり」 (files).rar"), "奴隷姫騎士と奴隷侍女とのスローライフ");
         assert!(bonus_name("善悪 フルHDリマスター版 Webアンケート特典 (files)"));
         let zenaku = json!({"id":"v20672","title":"Zen'aku","alttitle":"善悪","released":"2017-07-28","developers":[{"name":"Waffle"}]});
+        // Short titles stay review cases even when the brand agrees (same rule as "[Key] AIR").
         let with_brand = prepare("善悪 フルHDリマスター版 Webアンケート特典 (files)", &["[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar".into()]).unwrap();
-        assert_eq!(rank(&with_brand, vec![zenaku.clone()])[0]["match"]["strength"], "strong");
-        let bare = prepare("善悪", &[]).unwrap();
-        assert_eq!(rank(&bare, vec![zenaku])[0]["match"]["strength"], "review");
+        assert_eq!(rank(&with_brand, vec![zenaku])[0]["match"]["strength"], "review");
     }
     #[test] fn remakes_found_through_a_release_get_that_release() {
         let input = prepare("下級生リメイク 豪華版", &["[251219] [FG REMAKE] 下級生リメイク 豪華版 + Voice Drama + Tokuten".into()]).unwrap();

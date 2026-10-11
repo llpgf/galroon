@@ -5,5 +5,6 @@ const t=((key:string,options?:{name?:string;defaultValue?:string})=>key==='coreT
 describe('coreText',()=>{
  it('maps known Core sentences to translation keys',()=>{expect(coreText(t,'No VNDB candidate found.')).toBe('coreText_noCandidate');expect(coreText(t,'Scan complete')).toBe('coreText_scanComplete');});
  it('keeps the variable part of prefixed reasons',()=>{expect(coreText(t,'A different source name needs review: Fate/stay night')).toBe('other:Fate/stay night');});
+ it('names VNDB outages and unchecked resources honestly',()=>{expect(coreText(t,'Not checked against VNDB yet.')).toBe('coreText_notChecked');expect(coreText(t,'VNDB could not be reached within 8 seconds. Try again later.')).toBe('coreText_vndbUnreachable');expect(coreText(t,'Collection or filters changed. Reload before continuing.')).toBe('coreText_collectionChanged');});
  it('shows unknown text as Core wrote it',()=>{expect(coreText(t,'Disk full')).toBe('Disk full');expect(coreText(t,'')).toBe('');expect(coreText(t,null)).toBe('');});
 });

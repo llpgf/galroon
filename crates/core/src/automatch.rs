@@ -75,7 +75,7 @@ fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     let mut s=sql(c.prepare("SELECT f.id,f.relative_path,f.size,f.mtime FROM files f JOIN resource_files rf ON rf.file_id=f.id WHERE rf.resource_id=?1 ORDER BY length(f.relative_path) DESC,f.relative_path,f.id"))?;
     let mut rows=sql(s.query([rid]))?;let mut n=0;
     while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());if n<31{hints.push(local(&path));}n+=1;}
-    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:matching::prepare(&title,&hints)?}))
+    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:matching::prepare(&local(&title),&hints)?}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{

@@ -26,17 +26,19 @@ export function useCollectionPage(query:CollectionQuery,generation:number){
  const [trail,setTrail]=useState<{key:string;cursors:(string|null)[]}>({key:'',cursors:[null]});
  const cursors=useMemo(()=>trail.key===key?trail.cursors:[null],[trail,key]);
  const before=cursors.at(-1)||null;
+ // Set when the collection changed under an open cursor and paging restarted from the first page.
+ const [restarted,setRestarted]=useState(false);
  const [state,setState]=useState<{key:string;before:string|null;data:CollectionPage|null;error:string}>({key:'',before:null,data:null,error:''});
  useEffect(()=>{
   const controller=new AbortController();
   const params=new URLSearchParams({query:serialized});if(before)params.set('before',before);
-  const timer=setTimeout(()=>{void retryWhileBusy(()=>readApi<CollectionPage>('/collection?'+params,controller.signal),controller.signal).then(data=>{if(!controller.signal.aborted)setState({key,before,data,error:''});}).catch(error=>{if(!controller.signal.aborted)setState({key,before,data:null,error:error instanceof Error?error.message:String(error)});});},before?0:200);
+  const timer=setTimeout(()=>{void retryWhileBusy(()=>readApi<CollectionPage>('/collection?'+params,controller.signal),controller.signal).then(data=>{if(!controller.signal.aborted)setState({key,before,data,error:''});}).catch(error=>{if(controller.signal.aborted)return;const message=error instanceof Error?error.message:String(error);if(before&&message.startsWith('Collection or filters changed')){setRestarted(true);setTrail({key,cursors:[null]});return;}setState({key,before,data:null,error:message});});},before?0:200);
   return()=>{clearTimeout(timer);controller.abort();};
  },[key,before,serialized]);
  const current=state.key===key&&state.before===before;
  const data=current?state.data:null,error=current?state.error:'';
- return {data,error,loading:!current,metadata:state.data,reload:()=>setRetry(n=>n+1),
-  next:()=>{if(data?.next)setTrail({key,cursors:[...cursors,data.next]});},
-  previous:()=>{if(cursors.length>1)setTrail({key,cursors:cursors.slice(0,-1)});},
+ return {data,error,loading:!current,metadata:state.data,restarted,reload:()=>setRetry(n=>n+1),
+  next:()=>{setRestarted(false);if(data?.next)setTrail({key,cursors:[...cursors,data.next]});},
+  previous:()=>{setRestarted(false);if(cursors.length>1)setTrail({key,cursors:cursors.slice(0,-1)});},
   pageIndex:cursors.length-1};
 }
