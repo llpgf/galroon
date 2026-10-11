@@ -257,6 +257,8 @@ async fn request(provider: &mut Provider, endpoint: &str, body: Value, spacing: 
     if provider.cache.len()>=32 { provider.cache.clear(); }
     provider.cache.insert(key,(Instant::now(),data.clone())); Ok(data)
 }
+// VNDB compares `id` with one value; several ids must be OR-ed.
+fn id_filter(ids:&[String])->Value{if let [id]=ids{json!(["id","=",id])}else{let mut f=vec![json!("or")];f.extend(ids.iter().map(|id|json!(["id","=",id])));Value::Array(f)}}
 async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacing: Duration) -> Result<Value,String> {
     let queries=if let Some(id)=&input.direct_id {vec![id.clone()]} else {input.queries.clone()};
     let mut candidates=Vec::new();let mut searched=Vec::new();let mut incomplete=false;let mut warning=None;
@@ -288,7 +290,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             // A compilation release can point to multiple works: keep the ambiguity visible.
             let ids:Vec<String>=links.keys().filter(|id|!candidates.iter().any(|c|c["id"].as_str()==Some(id.as_str()))).cloned().collect();
             if !ids.is_empty() {
-                let body=json!({"filters":["id","=",ids.iter().take(30).collect::<Vec<_>>()],"fields":WORK_FIELDS,"results":30});
+                let body=json!({"filters":id_filter(&ids[..ids.len().min(30)]),"fields":WORK_FIELDS,"results":30});
                 match request(provider,endpoint,body,spacing).await {Ok(data)=>{incomplete|=data["more"].as_bool().unwrap_or(false)||ids.len()>30;candidates.extend(data["results"].as_array().unwrap().iter().cloned());},Err(message)=>{warning=Some(message);incomplete=true;break;}}
             }
             for candidate in &mut candidates { if let Some(id)=candidate["id"].as_str(){if let Some(matches)=links.get(id){candidate["release_matches"]=json!(matches);}} }
@@ -404,8 +406,12 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
     #[tokio::test] async fn release_identity_is_followed_and_compilations_stay_ambiguous() {
         use axum::{routing::post,Json,Router};
         let app=Router::new().route("/vn",post(|Json(v):Json<Value>|async move {
-            if v["filters"][0]=="id" {Json(json!({"results":[{"id":"v1","title":"Original name"},{"id":"v2","title":"Other work"}],"more":false}))}
-            else {Json(json!({"results":[],"more":false}))}
+            // Mirrors VNDB: `id` takes one string; several ids arrive OR-ed, anything else is a 400.
+            let ids=|f:&Value|f[0]=="id"&&f[1]=="="&&f[2].is_string();
+            let f=&v["filters"];
+            if ids(f)||(f[0]=="or"&&f.as_array().unwrap()[1..].iter().all(ids)) {(axum::http::StatusCode::OK,Json(json!({"results":[{"id":"v1","title":"Original name"},{"id":"v2","title":"Other work"}],"more":false})))}
+            else if f[0]=="search" {(axum::http::StatusCode::OK,Json(json!({"results":[],"more":false})))}
+            else {(axum::http::StatusCode::BAD_REQUEST,Json(json!({})))}
         })).route("/release",post(||async{Json(json!({"results":[{"id":"r1","alttitle":"Different release name DL版","vns":[{"id":"v1"},{"id":"v2"}]}],"more":false}))}));
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/vn",listener.local_addr().unwrap());let task=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
         let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
@@ -416,7 +422,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
     }
     #[tokio::test] async fn resource_search_is_authenticated_and_never_writes_catalog() {
         use rusqlite::params;
-        let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();
+        let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();app.db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();
         {let c=app.db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('root',?1,'fixture')",params![t.path().to_string_lossy()]).unwrap();c.execute("INSERT INTO resources(id,root_id,relative_path,title,kind) VALUES('r','root','1327332','1327332','folder')",[]).unwrap();}
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/api/vndb/search",listener.local_addr().unwrap());let a=app.clone();let task=tokio::spawn(async move{crate::serve_listener(a,listener).await.unwrap()});let client=reqwest::Client::new();
         assert_eq!(client.post(&url).json(&json!({"query":"1327332","resource_id":"r"})).send().await.unwrap().status(),401);
