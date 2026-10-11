@@ -1,6 +1,7 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
 coreText_searchIncomplete:'搜尋未完成。VNDB 恢復連線後請重新整理。',
+coreText_tooManyResults:'VNDB 上同名的作品太多，無法確定是哪一部。請手動選擇作品。',
 coreText_noTitle:'這個資源裡找不到可用的作品標題。',
 coreText_noCandidate:'VNDB 上找不到候選作品。',
 coreText_ambiguous:'有多部作品的證據一樣強，需要你選擇。',
