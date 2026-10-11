@@ -235,6 +235,15 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(jobs["jobs"].as_array().unwrap().iter().any(|j| j["kind"] == "scan"), "{jobs}");
     server.ok("list_plans", json!({})).await;
 
+    // Core refuses organize previews while tasks run; the automatic match task can outlast the scan on slow machines.
+    for _ in 0..600 {
+        let jobs = server.ok("list_jobs", json!({})).await;
+        if !jobs["jobs"].as_array().unwrap().iter().any(|j| matches!(j["state"].as_str(), Some("queued" | "running" | "pausing" | "cancelling"))) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     // Organizing outside a managed folder is refused by Core; nothing on disk changes either way.
     let (refused, is_error) = server.call("preview_organize", json!({"resource_id": game["id"], "destination": f.source})).await;
     assert!(is_error, "{refused}");
