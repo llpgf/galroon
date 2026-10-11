@@ -87,14 +87,19 @@ fn eligible(response:&Value)->Option<&Value>{
 }
 fn strings(v:&Value)->Vec<String>{v.as_array().map(|a|a.iter().filter_map(|s|s.as_str().map(str::to_owned)).collect()).unwrap_or_default()}
 pub fn review_reason(response:&Value)->Option<String>{
-    if response["incomplete"]==true{return Some("Search incomplete. Refresh when VNDB is available.".into());}
+    // Incomplete without a provider warning means VNDB had more results than one page: retrying will not help.
+    if response["incomplete"]==true{return Some(if response["warning"].is_string(){"Search incomplete. Refresh when VNDB is available."}else{"VNDB has too many works with this name to be sure. Choose the work manually."}.into());}
     // No recorded search yet (queued, or matching paused before reaching it): never claim VNDB has no candidate.
     if response.get("results").is_none(){return Some("Not checked against VNDB yet.".into());}
     let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{"No usable work title in this resource."}else{"No VNDB candidate found."}.into());};
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
     if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
-    for title in titles.iter().filter_map(Value::as_str){
+    let known=matching::candidate_names(candidate);let mut names=known.clone();names.extend(titles.first().and_then(Value::as_str));
+    for (index,title) in titles.iter().filter_map(Value::as_str).enumerate(){
+        // Bonus, crack and artwork members of the matched work file into its card. The resource's own name only
+        // passes as a VNDB name plus such words, never as a code name or bonus words alone.
+        if if index==0{matching::names_with_extras(title,&known)}else{matching::ancillary_member(title,&names)}{continue;}
         let Ok(mut input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};
         // Re-ranking one cleaned title keeps the resource's own brand/date corroboration.
         input.brands=strings(&response["brands"]);input.dates=strings(&response["dates"]);let row=matching::rank(&input,vec![candidate.clone()]);let reason=row[0]["match"]["reason"].as_str().unwrap_or("");
@@ -159,6 +164,21 @@ pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapsh
         db.lock().unwrap().execute("UPDATE jobs SET state='queued' WHERE id=?1",[&job]).unwrap();run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
         let before={let c=db.lock().unwrap();let p=crate::match_history::attempts(&c,"r0",None).unwrap();assert_eq!(p["items"].as_array().unwrap().len(),3);assert_eq!(p["items"][0]["state"],"matched");assert_eq!(p["items"][1]["reason"],"Second failure");assert_eq!(p["items"][2]["reason"],"First failure");let older=crate::match_history::attempts(&c,"r0",p["items"][1]["seq"].as_i64()).unwrap();assert_eq!(older["items"].as_array().unwrap().len(),1);p};
         let backup=crate::backup::export(&db,t.path()).unwrap();let restored=crate::backup::restore_new(&backup,&t.path().join("restored"),None).unwrap();let restored=crate::db::open(&restored.join("library.sqlite")).unwrap();assert_eq!(crate::match_history::attempts(&restored.lock().unwrap(),"r0",None).unwrap(),before);
+    }
+    #[test]fn incomplete_search_says_whether_a_retry_can_help(){
+        let outage=json!({"incomplete":true,"warning":"VNDB returned 503 Service Unavailable. Try again later.","results":[]});
+        assert_eq!(review_reason(&outage).as_deref(),Some("Search incomplete. Refresh when VNDB is available."));
+        let crowded=json!({"incomplete":true,"warning":null,"results":[]});
+        assert_eq!(review_reason(&crowded).as_deref(),Some("VNDB has too many works with this name to be sure. Choose the work manually."));
+    }
+    #[test]fn bonus_members_file_into_the_matched_card_but_another_work_still_needs_review(){
+        let input=matching::prepare("アマツツミ",&[]).unwrap();let ranked=matching::rank(&input,vec![json!({"id":"v18852","title":"Amatsutsumi","alttitle":"アマツツミ"})]);
+        let response=|members:&[&str]|{let mut titles=vec!["アマツツミ"];titles.extend(members);json!({"results":ranked,"titles":titles,"incomplete":false})};
+        assert_eq!(review_reason(&response(&["アマツツミ 同梱特典 サウンドトラック","Bonus","Boku Sensei Crak"])),Some("A different source name needs review: Boku Sensei Crak".into()));
+        assert_eq!(review_reason(&response(&["アマツツミ 同梱特典 サウンドトラック","Bonus","AmatsuCrak","APT-183"])),None);
+        assert_eq!(review_reason(&response(&["Bonus","エッチな皇女バニーのご奉仕"])),Some("A different source name needs review: エッチな皇女バニーのご奉仕".into()));
+        // A bonus-only folder name never vouches for itself.
+        let bonus=json!({"results":ranked,"titles":["Bonus","アマツツミ"],"incomplete":false});assert!(review_reason(&bonus).is_some());
     }
     #[tokio::test]async fn resource_without_a_usable_title_is_left_for_review(){
         let(_t,db)=fixture(&["","Clannad"]);let job=kick(&db,true).unwrap().unwrap();

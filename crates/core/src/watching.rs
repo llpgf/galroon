@@ -29,7 +29,7 @@ fn merge(changes:&mut Vec<Change>,new:Change){
  if changes.iter().any(|c|c.scope==new.scope&&(c.recursive||!new.recursive)||c.recursive&&inside(Path::new(&new.scope),Path::new(&c.scope))){return;}
  changes.retain(|c|!(c.scope==new.scope||new.recursive&&inside(Path::new(&c.scope),Path::new(&new.scope))));changes.push(new);changes.sort_by(|a,b|a.scope.cmp(&b.scope));
 }
-fn ignored(rel:&Path,exclude:&[String])->bool{crate::backup::protected_path(rel)||rel.components().any(|c|{let name=c.as_os_str().to_string_lossy();crate::scan::system_entry(&name)})||exclude.iter().any(|ex|inside(rel,Path::new(ex)))}
+fn ignored(rel:&Path,exclude:&[String])->bool{crate::backup::protected_path(rel)||rel.components().any(|c|crate::scan::system_entry(&c.as_os_str().to_string_lossy()))||exclude.iter().any(|ex|inside(rel,Path::new(ex)))}
 fn hints(root:&Path,paths:&[PathBuf],exclude:&[String],state_dir:&Path)->Vec<Change>{
  let mut changes=Vec::new();for path in paths{
   if inside(path,state_dir){continue;}let Ok(rel)=path.strip_prefix(root)else{continue;};if !valid_scope(&rel.to_string_lossy())||ignored(rel,exclude){continue;}
