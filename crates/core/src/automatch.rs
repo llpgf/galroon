@@ -10,7 +10,8 @@ pub fn migrate(c:&Connection)->R<()> {
 }
 fn scan_key(c:&Connection)->R<String>{Ok(sql(c.query_row("SELECT id||':'||updated FROM jobs WHERE kind='scan' AND state='completed' ORDER BY updated DESC,rowid DESC LIMIT 1",[],|r|r.get(0)).optional())?.unwrap_or_default())}
 fn set(c:&Connection,key:&str,value:&str)->R<()>{sql(c.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value]))?;Ok(())}
-pub fn enabled(c:&Connection)->R<bool>{Ok(sql(c.query_row("SELECT value FROM settings WHERE key='auto_match_enabled'",[],|r|r.get::<_,String>(0)).optional())?.as_deref()==Some("1"))}
+/// On unless explicitly turned off, so a fresh library matches after its first scan.
+pub fn enabled(c:&Connection)->R<bool>{Ok(sql(c.query_row("SELECT value FROM settings WHERE key='auto_match_enabled'",[],|r|r.get::<_,String>(0)).optional())?.as_deref()!=Some("0"))}
 fn active(c:&Connection)->R<Option<String>>{sql(c.query_row("SELECT id FROM jobs WHERE kind='match' AND state IN ('queued','running','pausing','cancelling') ORDER BY rowid DESC LIMIT 1",[],|r|r.get(0)).optional())}
 /// Idempotent bootstrap; explicit refresh retries all remaining unmatched resources.
 pub fn kick(db:&Db,refresh:bool)->R<Option<String>> {
@@ -127,8 +128,12 @@ pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapsh
     fn response(input:matching::Input,rows:Vec<Value>)->Value {json!({"results":matching::rank(&input,rows),"titles":input.titles,"incomplete":false})}
     fn exact(input:matching::Input)->Value{response(input,vec![json!({"id":"v4","title":"Clannad"})])}
     fn scalar(db:&Db,query:&str)->i64{db.lock().unwrap().query_row(query,[],|r|r.get(0)).unwrap()}
+    #[test]fn automatic_matching_is_on_until_turned_off(){
+        let(_t,db)=fixture(&["Clannad"]);let c=db.lock().unwrap();assert!(enabled(&c).unwrap());
+        c.execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();assert!(!enabled(&c).unwrap());
+    }
     #[tokio::test]async fn scoped_issue_retry_runs_without_enabling_global_matching(){
-        let(_t,db)=fixture(&["Clannad","Kanon"]);let job={let mut c=db.lock().unwrap();let tx=c.transaction().unwrap();crate::issues::reconcile(&tx).unwrap();let id:i64=tx.query_row("SELECT seq FROM issues WHERE resource_id='r0'",[],|r|r.get(0)).unwrap();let job=crate::issues::queue_retry(&tx,id,1).unwrap();assert_eq!(crate::issues::queue_retry(&tx,id,1).unwrap(),job);assert!(!enabled(&tx).unwrap());assert_eq!(explicit_retry(&tx).unwrap(),Some(job.clone()));tx.commit().unwrap();job};
+        let(_t,db)=fixture(&["Clannad","Kanon"]);db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();let job={let mut c=db.lock().unwrap();let tx=c.transaction().unwrap();crate::issues::reconcile(&tx).unwrap();let id:i64=tx.query_row("SELECT seq FROM issues WHERE resource_id='r0'",[],|r|r.get(0)).unwrap();let job=crate::issues::queue_retry(&tx,id,1).unwrap();assert_eq!(crate::issues::queue_retry(&tx,id,1).unwrap(),job);assert!(!enabled(&tx).unwrap());assert_eq!(explicit_retry(&tx).unwrap(),Some(job.clone()));tx.commit().unwrap();job};
         assert_eq!(scalar(&db,"SELECT count(*) FROM match_items"),1);run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
         let c=db.lock().unwrap();assert!(!enabled(&c).unwrap());assert_eq!(explicit_retry(&c).unwrap(),None);assert_eq!(c.query_row("SELECT work_id IS NULL FROM resources WHERE id='r1'",[],|r|r.get::<_,bool>(0)).unwrap(),true);
         crate::issues::reconcile(&c).unwrap();assert_eq!(c.query_row("SELECT state FROM issues WHERE resource_id='r0'",[],|r|r.get::<_,String>(0)).unwrap(),"resolved");
