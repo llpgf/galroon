@@ -3,6 +3,7 @@ import type {TFunction} from 'i18next';
 // shown in the interface language; anything else is shown as Core wrote it.
 const exact:Record<string,string>={
  'Search incomplete. Refresh when VNDB is available.':'coreText_searchIncomplete',
+ 'VNDB has too many works with this name to be sure. Choose the work manually.':'coreText_tooManyResults',
  'No usable work title in this resource.':'coreText_noTitle',
  'No VNDB candidate found.':'coreText_noCandidate',
  'Multiple works have equally strong evidence.':'coreText_ambiguous',

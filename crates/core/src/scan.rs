@@ -6,6 +6,12 @@ use std::{path::{Path,PathBuf},fs};
 
 #[derive(Clone,Serialize,Deserialize)]
 pub struct ScanSpec { pub root_id:String, #[serde(default)] pub scope:String, #[serde(default)] pub exclude:Vec<String> }
+/// NAS, OS and Galroon housekeeping entries: never part of a game resource.
+/// `._*` covers macOS AppleDouble files and the `._DAV` WebDAV cache some NAS servers create.
+pub fn system_entry(name:&str)->bool{
+    name.starts_with("._")||name.starts_with(".galroon-")||["@eaDir","#recycle","#snapshot",".snapshot",".galroon","@Recycle",".@__thumb",".DS_Store",".AppleDouble",".Spotlight-V100",".Trashes",".fseventsd",".TemporaryItems","$RECYCLE.BIN","System Volume Information"].contains(&name)
+    ||["thumbs.db","desktop.ini"].contains(&name.to_ascii_lowercase().as_str())
+}
 pub fn canonical(path:&Path) -> Result<PathBuf,String> { path.canonicalize().map_err(|e|e.to_string()) }
 pub fn link(meta:&fs::Metadata)->bool {
     #[cfg(windows)] { use std::os::windows::fs::MetadataExt; meta.file_attributes() & 0x400 != 0 }
@@ -81,7 +87,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             // Even unreadable or excluded children were seen. Never infer their absence.
             present_children.insert(entry.file_name());
             if crate::backup::protected_path(&path){skipped(db,jid,&path)?;continue;}
-            if name.starts_with(".galroon-")||["@eaDir","#recycle",".snapshot",".galroon"].contains(&name.as_str()) {skipped(db,jid,&path)?;continue;}
+            if system_entry(&name) {skipped(db,jid,&path)?;continue;}
             let rel=path.strip_prefix(&root).map_err(|e|e.to_string())?.to_string_lossy().to_string();
             if spec.exclude.iter().any(|ex|Path::new(&rel).starts_with(Path::new(ex))) {skipped(db,jid,&path)?;continue;}
             let meta=match fs::symlink_metadata(&path){Ok(m)=>m,Err(e)=>{complete=false;error(db,jid,&path.to_string_lossy(),&format!("{}: {e}",path.display()));continue}};
@@ -130,7 +136,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
         if complete {
             let mut stmt=c.prepare("SELECT id,path FROM files WHERE root_id=?1 AND seen_job!=?2 AND availability IN ('present','unverified')").map_err(|e|e.to_string())?;
             let rows=stmt.query_map(params![spec.root_id,jid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
-            let mut missing=Vec::new();for row in rows {let (fid,p)=row.map_err(|e|e.to_string())?;let relative=Path::new(&p).strip_prefix(&root).map_err(|e|e.to_string())?;let excluded=crate::backup::protected_path(Path::new(&p))||spec.exclude.iter().any(|ex|relative.starts_with(Path::new(ex)))||relative.components().any(|part|["@eaDir","#recycle",".snapshot",".galroon"].iter().any(|name|part.as_os_str()==std::ffi::OsStr::new(name)));
+            let mut missing=Vec::new();for row in rows {let (fid,p)=row.map_err(|e|e.to_string())?;let relative=Path::new(&p).strip_prefix(&root).map_err(|e|e.to_string())?;let excluded=crate::backup::protected_path(Path::new(&p))||spec.exclude.iter().any(|ex|relative.starts_with(Path::new(ex)))||relative.components().any(|part|system_entry(&part.as_os_str().to_string_lossy()));
                 let child=Path::new(&p).strip_prefix(dp).ok().and_then(|p|p.components().next()).map(|c|c.as_os_str());if !excluded&&child.is_some_and(|child|!present_children.contains(child)){missing.push(fid);}}
             drop(stmt);for fid in missing {c.execute("UPDATE files SET availability='missing' WHERE id=?1",[fid]).map_err(|e|e.to_string())?;}
         }
@@ -171,6 +177,15 @@ pub fn clean_title(s:&str)->String {
         assert!(!bundle("1327332",&v(&["[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar","[250725][1327332][Archive] アンラベル・トリガー -Prelude to War- 豪華限定版特典 設定資料集 (pdf).rar"])));
         // A folder that is itself a release is never split, even with differently named extras.
         assert!(!bundle("[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update",&v(&["(18禁ゲーム) [251219] [しばそふと] ママ×カノEX  豪華限定版 (mdf+mds+rr3).rar","[260101][x][y] Something Else.rar"])));
+    }
+    #[test]fn nas_and_os_housekeeping_files_never_become_resources(){
+        let t=tempfile::tempdir().unwrap();let root=t.path().join("source");
+        for path in ["[241025] [Navel] Game/game.rar","[241025] [Navel] Game/._game.rar","[241025] [Navel] Game/Thumbs.db","._DAV/[241025] [Navel] Game.rar.dir","._DAV/[241025] [Navel] Game.rar.pag",".DS_Store","@Recycle/old.rar","$RECYCLE.BIN/x.rar"]{let p=root.join(path);fs::create_dir_all(p.parent().unwrap()).unwrap();fs::write(p,b"fixture").unwrap();}
+        let db=crate::db::open(&t.path().join("state/db.sqlite")).unwrap();db.lock().unwrap().execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'test')",[root.to_str().unwrap()]).unwrap();
+        let j=create(&db,ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();run(db.clone(),j);
+        let c=db.lock().unwrap();let files:Vec<String>=c.prepare("SELECT relative_path FROM files").unwrap().query_map([],|r|r.get(0)).unwrap().map(|r|r.unwrap()).collect();
+        assert_eq!(files,vec![Path::new("[241025] [Navel] Game").join("game.rar").to_string_lossy().to_string()]);
+        assert!(system_entry("._DAV")&&system_entry("._x.rar")&&system_entry("THUMBS.DB")&&!system_entry("_DAV")&&!system_entry(".hidden-game"));
     }
     #[test]fn removed_subtree_is_missing_but_excluded_scoped_and_offline_files_are_preserved(){
         let t=tempfile::tempdir().unwrap();let root=t.path().join("source");for path in ["A/gone/story.zip","A/excluded/extra.zip","B/outside.zip"]{let p=root.join(path);fs::create_dir_all(p.parent().unwrap()).unwrap();fs::write(p,b"fixture").unwrap();}
