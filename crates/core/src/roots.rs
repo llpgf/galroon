@@ -12,6 +12,9 @@ pub fn require_idle(c:&Connection)->R<()>{
  if n>0{return Err("Pause running tasks and wait for file operations to finish first".into());}Ok(())
 }
 fn relative(value:&str)->R<PathBuf>{let p=Path::new(value);if p.as_os_str().is_empty()||p.components().any(|c|!matches!(c,Component::Normal(_)|Component::CurDir)){return Err("Stored file has an unsafe relative path".into());}Ok(p.into())}
+/// Joins a stored relative path one component at a time. A catalog moved from macOS stores "dir/file";
+/// pushed onto a Windows verbatim root (\\?\UNC\...) as one piece, the "/" would not be a separator.
+fn under(target:&Path,rel:&str)->R<PathBuf>{let mut out=target.to_path_buf();for part in relative(rel)?.components(){if let Component::Normal(name)=part{out.push(name);}}Ok(out)}
 fn snapshot(c:&Connection,rid:&str,target:&Path)->R<(Preview,Vec<(String,String)>)>{
  require_idle(c)?;plans::validate_chain(target)?;let target=scan::canonical(target)?;if !target.is_dir(){return Err("Choose an existing source folder".into());}
  let old:String=sql(c.query_row("SELECT path FROM roots WHERE id=?1",[rid],|r|r.get(0)))?;
@@ -21,7 +24,7 @@ fn snapshot(c:&Connection,rid:&str,target:&Path)->R<(Preview,Vec<(String,String)
  let mut s=sql(c.prepare("SELECT id,path,relative_path,size FROM files WHERE root_id=?1 ORDER BY id"))?;
  let rows=sql(sql(s.query_map([rid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))))?.collect::<rusqlite::Result<Vec<_>>>())?;
  let mut mapped=Vec::new();let(mut found,mut missing,mut changed)=(0,0,0);let mut evidence=Vec::new();
- for (fid,old_file,rel,size) in rows{let new=target.join(relative(&rel)?);plans::validate_chain(&new)?;let status=match std::fs::symlink_metadata(&new){Ok(m) if m.is_file()&&!scan::link(&m)&&m.len()==size as u64=>{found+=1;"found"},Ok(_)=>{changed+=1;"changed"},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{missing+=1;"missing"},Err(e)=>return Err(e.to_string())};evidence.push(serde_json::json!([fid,old_file,rel,size,status]));mapped.push((fid,new.to_string_lossy().into_owned()));}
+ for (fid,old_file,rel,size) in rows{let new=under(&target,&rel)?;plans::validate_chain(&new)?;let status=match std::fs::symlink_metadata(&new){Ok(m) if m.is_file()&&!scan::link(&m)&&m.len()==size as u64=>{found+=1;"found"},Ok(_)=>{changed+=1;"changed"},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{missing+=1;"missing"},Err(e)=>return Err(e.to_string())};evidence.push(serde_json::json!([fid,old_file,rel,size,status]));mapped.push((fid,new.to_string_lossy().into_owned()));}
  let mut s=sql(c.prepare("SELECT id,state FROM jobs WHERE state NOT IN ('completed','superseded') ORDER BY id"))?;let jobs=sql(sql(s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))))?.collect::<rusqlite::Result<Vec<_>>>())?;
  let mut s=sql(c.prepare("SELECT id,state,digest FROM plans WHERE state NOT IN ('completed','superseded') ORDER BY id"))?;let plans=sql(sql(s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))))?.collect::<rusqlite::Result<Vec<_>>>())?;
  let payload=serde_json::json!([rid,old,target,evidence,jobs,plans]);let digest=hex::encode(Sha256::digest(payload.to_string().as_bytes()));
@@ -44,6 +47,10 @@ pub fn remap(db:&Db,rid:&str,target:&Path,digest:&str)->R<Preview>{
 }
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]fn stored_relative_paths_join_by_component(){
+  let root=Path::new("root");assert_eq!(under(root,"a/b.rar").unwrap(),root.join("a").join("b.rar"));assert!(under(root,"../x").is_err());
+  #[cfg(windows)]{let verbatim=Path::new(r"\\?\UNC\nas\share");assert_eq!(under(verbatim,"dir/file.rar").unwrap().to_string_lossy(),r"\\?\UNC\nas\share\dir\file.rar");}
+ }
  #[test]fn remap_keeps_bindings_requires_review_and_reindex(){
  let t=tempfile::tempdir().unwrap();let source=t.path().join("old");let target=t.path().join("new");std::fs::create_dir(&source).unwrap();std::fs::create_dir(&target).unwrap();std::fs::write(source.join("story.zip"),b"original").unwrap();std::fs::write(target.join("story.zip"),b"original").unwrap();let db=crate::db::open(&t.path().join("state/library.sqlite")).unwrap();db.lock().unwrap().execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'Story')",[source.to_string_lossy()]).unwrap();let j=scan::create(&db,scan::ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();scan::run(db.clone(),j);
  let fid:String=db.lock().unwrap().query_row("SELECT id FROM files",[],|r|r.get(0)).unwrap();let rid:String=db.lock().unwrap().query_row("SELECT id FROM resources",[],|r|r.get(0)).unwrap();db.lock().unwrap().execute_batch("INSERT INTO works(id,title,original_title,notes) VALUES('w','Title','Title','Keep these notes'); UPDATE resources SET work_id='w'; INSERT INTO plans(id,kind,state,items,digest,created,approved) VALUES('p','organize','approved','[]','old',1,1);").unwrap();
