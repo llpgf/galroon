@@ -73,6 +73,35 @@ fn labels(raw: &str, brands: &mut Vec<String>, dates: &mut Vec<String>) {
     }
 }
 /// Bonus material such as store or survey extras, drama CDs, soundtracks and wallpapers.
+/// Splits a name into the part before its first bonus/crack/patch/artwork word, dropping release labels and format notes.
+fn extras_split(name: &str) -> (String, String) {
+    let s: String = name.nfkc().collect();
+    let s = replace(&replace(&replace(&s, r"^(?:\s*(?:\([^)]*\)|\[[^\]]*\]))+\s*", ""), r"\([^)]*\)", " "), r"※.*$", "");
+    let words = Regex::new(r"(?i)特典|同梱|予約|初回|限定|豪華|通常版|パッケージ版|pkg|dl版|ダウンロード|アップデート|update|patch|パッチ|修正|プログラム|crack|crak|クラック|認証回避|ヘッダー|アイコン|イラスト|壁紙|wallpaper|サウンドトラック|soundtrack|\bost\b|サントラ|original|オリジナル|ボーカル|vocal|song|album|ドラマ|ボイス|voice|drama|音声|データ|manual|マニュアル|bonus|omake|tokuten|dlc|4コマ|チラシ|ビジュアル|visual ?book|ガイドブック|artbook|メロンブックス|ソフマップ|sofmap|amazon|fanza|\bver\.?\s*\d[\d.]*|\bx\d+\b").unwrap();
+    let head = words.find(&s).map_or(s.clone(), |m| s[..m.start()].to_string());
+    let rest = words.replace_all(&s, "").into_owned();
+    (head, rest)
+}
+fn ascii_code(text: &str) -> bool { let t = text.trim().trim_matches(|c: char| !c.is_alphanumeric()); !t.is_empty() && t.is_ascii() && !t.contains(char::is_whitespace) && t.len() <= 32 }
+/// The name is exactly one of `names` followed only by bonus/crack/patch/artwork words.
+pub fn names_with_extras(name: &str, names: &[&str]) -> bool {
+    let (head, _) = extras_split(name); let key = normalized(&head);
+    // Parenthesised readings are dropped from the name, so compare against the bare spelling too.
+    !key.is_empty() && names.iter().any(|n| { let n: String = n.nfkc().collect(); normalized(&n) == key || normalized(&replace(&n, r"\([^)]*\)", "")) == key })
+}
+/// A member name (file or subfolder inside a resource) that adds nothing against the matched work:
+/// only bonus/crack/patch/artwork words, an ASCII code name, or one of `names` followed by such words.
+pub fn ancillary_member(member: &str, names: &[&str]) -> bool {
+    let (head, rest) = extras_split(member);
+    if normalized(&head).is_empty() { return normalized(&rest).is_empty() || ascii_code(&rest); }
+    ascii_code(&head) || names_with_extras(member, names)
+}
+/// Every name VNDB knows a candidate work by.
+pub fn candidate_names(candidate: &Value) -> Vec<&str> {
+    let mut names: Vec<&str> = ["title", "alttitle"].iter().filter_map(|k| candidate[*k].as_str()).collect();
+    for t in candidate["titles"].as_array().into_iter().flatten() { names.extend(["title", "latin"].iter().filter_map(|k| t[*k].as_str())); }
+    names.extend(candidate["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str)); names
+}
 pub fn bonus_name(name: &str) -> bool { let s: String = name.nfkc().collect(); Regex::new(r"特典|アンケート|音声データ|ボイスデータ|ドラマCD|サウンドトラック|設定資料|壁紙").unwrap().is_match(&s) }
 /// A local remake ("下級生リメイク") identified through a VNDB release that VNDB files under the original work.
 /// Returns that release (lowest id among equally named ones) so the remake can have its own card.
@@ -304,6 +333,21 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn bonus_crack_and_code_members_add_no_competing_title(){
+        // Real member names from a NAS library; `names` are the matched work's and the folder's own names.
+        let amatsu=["アマツツミ","Amatsutsumi"];
+        for member in ["Bonus","修正プログラム","Wallpaper","AlphaROM Cracker x2","UchiAruji Crak","FlipRun CrakV2","APT-183","has_0116p","09809cb540551d3e97cbfa174be33bed","patch_ss_101","tsubaki_wallpaper","特典データ",
+            "アマツツミ 同梱特典 アマツツミサウンドトラック","アマツツミ ヘッダー & アイコン","(FN輸入) (18禁ゲーム) [191025] [戯画] アマツツミ","アマツツミ (mdf+mds+rr3) ※自炊","『アマツツミ』パッチver1.0.1","アマツツミ + Original Soundtrack + Song Collection"] {
+            assert!(ancillary_member(member,&amatsu),"{member}");
+        }
+        for member in ["エッチな皇女バニーのご奉仕","アマツツミ2 特典","アマツツミ ファンディスク","Song of Saya","Boku Sensei Crak","オリジナルデジタルコンテンツ『美少女探偵アリアンナ』"] {
+            assert!(!ancillary_member(member,&amatsu),"{member}");
+        }
+        assert!(names_with_extras("恋愛×ロワイアル + Bonus",&["恋愛×ロワイアル"]));
+        assert!(names_with_extras("癒しの女神の実験台(モルモット) ヘッダー&アイコン",&["癒しの女神の実験台（モルモット）"]));
+        // The resource's own name never passes on bonus words or a code name alone.
+        assert!(!names_with_extras("Bonus",&amatsu));assert!(!names_with_extras("KOIROWA_AS1",&amatsu));
+    }
     #[test] fn ancillary_names_do_not_become_competing_titles_or_sequel_numbers(){
         for (query,hints,expected) in [
             ("マガルミナ",vec!["マガルミナ/magalumina_patch_v1_10.zip"],vec!["マガルミナ","magalumina"]),
