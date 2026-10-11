@@ -15,6 +15,7 @@ const exact:Record<string,string>={
  'Scan completed with errors. Some folders could not be read.':'coreText_scanErrors',
  'Matching complete. Uncertain resources remain Unmatched.':'coreText_matchComplete',
  'Not checked against VNDB yet.':'coreText_notChecked',
+ 'Local device identity is invalid':'coreText_deviceIdentity',
  "The folder's brand and release date belong to a different work with the same name.":'coreText_releaseConflict',
  'VNDB could not be reached within 8 seconds. Try again later.':'coreText_vndbUnreachable',
  'Collection or filters changed. Reload before continuing.':'coreText_collectionChanged',
