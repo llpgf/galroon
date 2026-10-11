@@ -307,7 +307,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
     }
     #[tokio::test] async fn resource_search_is_authenticated_and_never_writes_catalog() {
         use rusqlite::params;
-        let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();
+        let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();app.db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();
         {let c=app.db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('root',?1,'fixture')",params![t.path().to_string_lossy()]).unwrap();c.execute("INSERT INTO resources(id,root_id,relative_path,title,kind) VALUES('r','root','1327332','1327332','folder')",[]).unwrap();}
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/api/vndb/search",listener.local_addr().unwrap());let a=app.clone();let task=tokio::spawn(async move{crate::serve_listener(a,listener).await.unwrap()});let client=reqwest::Client::new();
         assert_eq!(client.post(&url).json(&json!({"query":"1327332","resource_id":"r"})).send().await.unwrap().status(),401);
