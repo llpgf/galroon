@@ -12,6 +12,19 @@ pub fn system_entry(name:&str)->bool{
     name.starts_with("._")||name.starts_with(".galroon-")||["@eaDir","#recycle","#snapshot",".snapshot",".galroon","@Recycle",".@__thumb",".DS_Store",".AppleDouble",".Spotlight-V100",".Trashes",".fseventsd",".TemporaryItems","$RECYCLE.BIN","System Volume Information"].contains(&name)
     ||["thumbs.db","desktop.ini"].contains(&name.to_ascii_lowercase().as_str())
 }
+/// Detaches housekeeping files catalogued before they were skipped (e.g. a NAS `._DAV` cache).
+/// A resource left without files drops out of the collection; files, works and bindings are kept.
+fn release_system_files(db:&Db,root_id:&str)->Result<(),String>{
+    let mut c=db.lock().map_err(|e|e.to_string())?;let tx=c.transaction().map_err(|e|e.to_string())?;
+    let rows:Vec<(String,String,String)>={let mut s=tx.prepare("SELECT rf.resource_id,rf.file_id,f.relative_path FROM resource_files rf JOIN files f ON f.id=rf.file_id WHERE f.root_id=?1").map_err(|e|e.to_string())?;
+        let r=s.query_map([root_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;r};
+    let mut touched=std::collections::BTreeSet::new();
+    for (rid,fid,_) in rows.into_iter().filter(|(_,_,rel)|Path::new(rel).components().any(|p|system_entry(&p.as_os_str().to_string_lossy()))){
+        tx.execute("DELETE FROM resource_files WHERE resource_id=?1 AND file_id=?2",params![rid,fid]).map_err(|e|e.to_string())?;touched.insert(rid);
+    }
+    for rid in touched {tx.execute("UPDATE resources SET revision=revision+1 WHERE id=?1",[rid]).map_err(|e|e.to_string())?;}
+    tx.commit().map_err(|e|e.to_string())
+}
 pub fn canonical(path:&Path) -> Result<PathBuf,String> { path.canonicalize().map_err(|e|e.to_string()) }
 pub fn link(meta:&fs::Metadata)->bool {
     #[cfg(windows)] { use std::os::windows::fs::MetadataExt; meta.file_attributes() & 0x400 != 0 }
@@ -142,6 +155,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
         }
         c.execute("UPDATE frontier SET state=?3 WHERE job_id=?1 AND path=?2",params![jid,dir,if complete{"done"}else{"error"}]).map_err(|e|e.to_string())?;
     }
+    release_system_files(db,&spec.root_id)?;
     let c=db.lock().map_err(|e|e.to_string())?;c.execute("UPDATE jobs SET state='completed',current_path='',message=CASE WHEN errors>0 THEN 'Scan completed with errors. Some folders could not be read.' ELSE 'Scan complete' END,updated=?2 WHERE id=?1",params![jid,now()]).map_err(|e|e.to_string())?;event(&c,jid,"scan.completed",&json!({})).map_err(|e|e.to_string())?;Ok(())
 }
 /// A folder that collects several works' own releases — children such as
@@ -186,6 +200,11 @@ pub fn clean_title(s:&str)->String {
         let c=db.lock().unwrap();let files:Vec<String>=c.prepare("SELECT relative_path FROM files").unwrap().query_map([],|r|r.get(0)).unwrap().map(|r|r.unwrap()).collect();
         assert_eq!(files,vec![Path::new("[241025] [Navel] Game").join("game.rar").to_string_lossy().to_string()]);
         assert!(system_entry("._DAV")&&system_entry("._x.rar")&&system_entry("THUMBS.DB")&&!system_entry("_DAV")&&!system_entry(".hidden-game"));
+        // A library scanned before these were skipped: the old cache resource loses its files on the next scan.
+        c.execute("INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES('junk','r',?1,?2,1,'1','dir','old')",[root.canonicalize().unwrap().join("._DAV").join("Game.rar.dir").to_string_lossy().to_string(),Path::new("._DAV").join("Game.rar.dir").to_string_lossy().to_string()]).unwrap();c.execute_batch("INSERT INTO resources(id,root_id,relative_path,title,kind) VALUES('cache','r','._DAV','._DAV','directory');INSERT INTO resource_files(resource_id,file_id) VALUES('cache','junk');").unwrap();drop(c);
+        let j=create(&db,ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();run(db.clone(),j);
+        let c=db.lock().unwrap();assert_eq!(c.query_row("SELECT count(*) FROM resource_files WHERE resource_id='cache'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(c.query_row("SELECT count(*) FROM resource_files",[],|r|r.get::<_,i64>(0)).unwrap(),1);
     }
     #[test]fn removed_subtree_is_missing_but_excluded_scoped_and_offline_files_are_preserved(){
         let t=tempfile::tempdir().unwrap();let root=t.path().join("source");for path in ["A/gone/story.zip","A/excluded/extra.zip","B/outside.zip"]{let p=root.join(path);fs::create_dir_all(p.parent().unwrap()).unwrap();fs::write(p,b"fixture").unwrap();}
