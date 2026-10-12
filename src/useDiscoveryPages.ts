@@ -1,9 +1,12 @@
+import {useContext} from 'react';
+import {CatalogGenerationContext} from './useOwnedWorks';
 import {useEffect,useRef,useState} from 'react';
 import {readApi} from './api';import {validManualPage,type ManualProfilePage} from './manualProfile';
 import {discoveryPath,manualDiscoveryPath,mergeResults,mergeDiscoveryResults,discoverableCharacter,type DiscoveryQuery,type DiscoveryData,type DiscoveryCharacter} from './discovery';
 type Provider={data:DiscoveryData;items:DiscoveryData['results']};type Manual={data:ManualProfilePage;partial:boolean;items:ManualProfilePage['works']};
 export function useDiscoveryPages(query:DiscoveryQuery,target:'works'|'characters',spoilers:boolean,revision:number,active:boolean){
- const scope=JSON.stringify([query.kind,query.value,target,spoilers,revision]);const current=useRef(scope);current.current=scope;
+ const catalogGeneration=useContext(CatalogGenerationContext);
+ const scope=JSON.stringify([query.kind,query.value,target,spoilers,revision,catalogGeneration]);const current=useRef(scope);current.current=scope;
  const [stateScope,setStateScope]=useState(scope),[provider,setProvider]=useState<Provider|null>(null),[manual,setManual]=useState<Manual|null>(null);
  const p=useRef<Provider|null>(null),m=useRef<Manual|null>(null),generation=useRef(0),providerRequest=useRef<AbortController|null>(null),manualRequest=useRef<AbortController|null>(null),requestedPage=useRef(1);
  const [loading,setLoading]=useState(true),[manualLoading,setManualLoading]=useState(true),[error,setError]=useState(''),[manualError,setManualError]=useState('');

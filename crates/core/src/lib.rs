@@ -1,3 +1,5 @@
+pub mod catalog_changes;
+pub mod web_projection;
 pub mod resource_page;
 pub mod resource_members_page;
 pub mod edition_options;
@@ -64,18 +66,24 @@ pub mod multipart;
 pub mod hashing;
 pub mod watching;
 pub mod access;
+pub mod network;
+pub mod pairing;
+pub mod lan_tls;
 mod services;
 pub use services::Services;
+pub mod core_host;
 #[cfg(windows)] pub mod local_core;
+#[cfg(unix)] pub mod unix_core;
+#[cfg(unix)] pub mod owner_cli;
 use axum::{routing::{get,post},Router,extract::{State,Path,Query},Json,http::{StatusCode,HeaderMap},response::{IntoResponse,Response}};
 use serde_json::{Value,json};
 use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
+#[derive(Clone)] pub struct App {pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
 pub struct ApiError(pub String);
-impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
+impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
 impl From<String> for ApiError {fn from(e:String)->Self{Self(e)}}
 type Result<T> = std::result::Result<Json<T>,ApiError>;
@@ -85,6 +93,7 @@ pub fn initialize(dir:PathBuf)->std::result::Result<App,String>{
 }
 pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::result::Result<App,String>{
     let device=context::device(device_dir)?;
+    let network=network::NetworkSettings::load(device_dir)?;
     std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     let lock=std::fs::OpenOptions::new().create(true).read(true).write(true).open(dir.join("core.lock")).map_err(|e|e.to_string())?;
     fs2::FileExt::try_lock_exclusive(&lock).map_err(|_|"This collection is already open in another Core")?;
@@ -92,18 +101,27 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     db.lock().map_err(|e|e.to_string())?.execute("DELETE FROM settings WHERE key='local_token'",[]).map_err(|e|e.to_string())?;
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
-    Ok(App{device,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
+    issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
+    Ok(App{device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
 pub fn router_for(app:App,transport:Transport)->Router {
+    let origins=match transport{
+     Transport::Loopback=>AllowOrigin::list(["http://localhost:1420","http://127.0.0.1:1420","http://tauri.localhost","tauri://localhost"].into_iter().map(|s|s.parse().unwrap())),
+     Transport::Lan=>AllowOrigin::predicate(|origin,request|request.headers.get(axum::http::header::HOST).and_then(|h|h.to_str().ok()).is_some_and(|host|origin.as_bytes()==format!("https://{host}").as_bytes()))
+    };
     Router::new().route("/api/health",get(||async{Json(json!({"name":"Galroon","version":env!("CARGO_PKG_VERSION")}))}))
     .route("/api/context",get(context::get).post(context::update))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))
     .route("/api/access/setup",post(access::configure)).route("/api/access/password",post(access::change_password))
-    .route("/api/access/login",post(access::web_login)).route("/api/access/logout",post(access::logout))
-    .route("/api/access/pairing",post(access::pairing)).route("/api/access/pair",post(access::pair))
+    .route("/api/access/login",post(access::web_login_from)).route("/api/access/logout",post(access::logout))
+    .route("/api/access/pairing",post(access::pairing)).route("/api/access/pair",post(access::pair_from))
+    .route("/api/access/pair-web",post(access::pair_web))
+    .route("/api/access/pairing-codes",get(access::pairing_codes)).route("/api/access/pairing-codes/{id}/revoke",post(access::revoke_pairing_code))
+    .route("/api/access/network",get(access::network_show).post(access::network_set))
     .route("/api/access/devices",get(access::devices)).route("/api/access/devices/{id}/revoke",post(access::revoke))
+    .route("/api/changes",get(catalog_changes::read))
     .route("/api/dashboard",get(dashboard)).route("/api/roots",get(roots).post(add_root))
     .route("/api/roots/{id}/watch",get(watch_status).post(configure_watch))
     .route("/api/roots/{id}/remap/preview",post(preview_root_remap)).route("/api/roots/{id}/remap",post(remap_root))
@@ -168,18 +186,37 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .fallback_service(tower_http::services::ServeDir::new(std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.join("web"))).unwrap_or_default()))
     .layer(axum::middleware::from_fn_with_state(app.clone(),access::guard))
     .layer(axum::middleware::from_fn(diagnostics::requests))
-    .layer(CorsLayer::new().allow_credentials(true).allow_origin(AllowOrigin::list(["http://localhost:1420","http://127.0.0.1:1420","http://tauri.localhost","tauri://localhost"].into_iter().map(|s|s.parse().unwrap()))).allow_methods([axum::http::Method::GET,axum::http::Method::POST]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))
-    .layer(axum::middleware::from_fn_with_state(transport,access::transport_host))
+    .layer(CorsLayer::new().allow_credentials(true).allow_origin(origins).allow_methods([axum::http::Method::GET,axum::http::Method::POST]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))
+    .layer(axum::middleware::from_fn_with_state((app.clone(),transport),access::transport_host))
     .layer(axum::middleware::from_fn(access::response_headers))
     .with_state(app)
 }
 pub async fn serve(app:App,port:u16)->std::result::Result<(),String>{let listener=tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,port)).await.map_err(|e|e.to_string())?;serve_listener(app,listener).await}
-pub async fn serve_listener(app:App,listener:tokio::net::TcpListener)->std::result::Result<(),String>{let _services=Services::start(app.clone())?;serve_listeners(app,vec![(listener,Transport::Loopback)],std::future::pending()).await}
+pub async fn serve_listener(app:App,listener:tokio::net::TcpListener)->std::result::Result<(),String>{let listeners=configured_listeners(&app,listener).await?;let _services=Services::start(app.clone())?;serve_tls_listeners(app,listeners,std::future::pending()).await}
 /// Serve a shared App until shutdown, then gracefully stop and await every listener.
 /// Does not start background workers: the caller owns one Services for all listeners.
 pub async fn serve_listeners(app:App,listeners:Vec<(tokio::net::TcpListener,Transport)>,shutdown:impl std::future::Future<Output=()>+Send+'static)->std::result::Result<(),String>{
+ let mut configured=Vec::new();
+ for (listener,transport) in listeners{configured.push(match transport{Transport::Loopback=>Listener::Loopback(listener),Transport::Lan=>{let settings=app.network.as_ref().filter(|n|n.enabled()).ok_or("LAN requires enabled network.json")?;Listener::Lan(listener,lan_tls::LanTls::load_or_generate(&app.device_dir,settings)?.config)}});}
+ serve_tls_listeners(app,configured,shutdown).await
+}
+pub enum Listener{Loopback(tokio::net::TcpListener),Lan(tokio::net::TcpListener,std::sync::Arc<rustls::ServerConfig>)}
+pub(crate) async fn configured_listeners(app:&App,loopback:tokio::net::TcpListener)->std::result::Result<Vec<Listener>,String>{
+ let mut listeners=vec![Listener::Loopback(loopback)];
+ if let Some(settings)=app.network.as_ref().filter(|n|n.enabled()){
+  let tls=lan_tls::LanTls::load_or_generate(&app.device_dir,settings)?;let address=settings.socket_addr();
+  let listener=tokio::net::TcpListener::bind(address).await.map_err(|e|format!("Cannot bind LAN HTTPS listener {address}: {e}"))?;listeners.push(Listener::Lan(listener,tls.config));
+ }Ok(listeners)
+}
+/// Each TLS listener negotiates before axum sees any HTTP bytes; all listeners drain together.
+pub async fn serve_tls_listeners(app:App,listeners:Vec<Listener>,shutdown:impl std::future::Future<Output=()>+Send+'static)->std::result::Result<(),String>{
  let (stop,rx)=tokio::sync::watch::channel(());let mut servers=tokio::task::JoinSet::new();
- for (listener,transport) in listeners{let router=router_for(app.clone(),transport);let mut stopped=rx.clone();servers.spawn(async move{axum::serve(listener,router).with_graceful_shutdown(async move{let _=stopped.changed().await;}).await.map_err(|e|e.to_string())});}
+ for listener in listeners{let transport=match &listener{Listener::Loopback(_)=>Transport::Loopback,Listener::Lan(_,_)=>Transport::Lan};let router=router_for(app.clone(),transport).into_make_service_with_connect_info::<lan_tls::PeerAddr>();let mut stopped=rx.clone();servers.spawn(async move{
+  let shutdown=async move{let _=stopped.changed().await;};match listener{
+   Listener::Loopback(tcp)=>axum::serve(tcp,router).with_graceful_shutdown(shutdown).await,
+   Listener::Lan(tcp,config)=>axum::serve(lan_tls::TlsListener::new(tcp,config),router).with_graceful_shutdown(shutdown).await
+  }.map_err(|e|e.to_string())
+ });}
  tokio::pin!(shutdown);let mut stopping=false;let mut error=None;
  while !servers.is_empty(){tokio::select!{
   _=&mut shutdown,if !stopping=>{stopping=true;let _=stop.send(());}

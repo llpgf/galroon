@@ -3,7 +3,7 @@ import {coreText} from './coreText';
 
 // Core activity can be a path or a phase description. Keep its message separate:
 // a retained path must never mask a failure, and legacy text is not an error code.
-export function TaskMessages({activity,message,state}:{activity:string;message:string;state:string}){
+export function TaskMessages({activity,message,state}:{activity?:string;message:string;state:string}){
  const {t}=useTranslation();
  if(!activity&&!message&&state!=='failed')return null;
  return <dl className="task-messages">

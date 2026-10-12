@@ -1,3 +1,5 @@
+import {useContext} from 'react';
+import {CatalogGenerationContext} from './useOwnedWorks';
 import {useEffect,useRef,useState} from 'react';
 import {useTranslation} from 'react-i18next';
 import {CircleCheck,RefreshCw} from 'lucide-react';
@@ -8,9 +10,10 @@ import {IssueTask} from './IssueTask';
 type Issue={id:number;resource_id:string|null;kind:string;category?:string;state:string;reason:string;revision:number;retry_pending?:boolean;title:string|null;path:string|null;source:string|null};
 type Page={items:Issue[];next:number|null};
 export function IssuesPanel({onReview,onSource}:{onSource:()=>void;onReview:(resource:{id:string;title:string;path:string})=>void}){
+ const catalogGeneration=useContext(CatalogGenerationContext);
  const {t}=useTranslation();const [filter,setFilter]=useState('open'),[items,setItems]=useState<Issue[]>([]),[next,setNext]=useState<number|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[queued,setQueued]=useState(false);const generation=useRef(0);const [taskIssue,setTaskIssue]=useState<number|null>(null);const [scanIssue,setScanIssue]=useState<Issue|null>(null),[scanQueued,setScanQueued]=useState(false);
  async function load(cursor:number|null){const gen=generation.current;setBusy(true);setError('');try{const p=await api<Page>(`/issues?state=${filter}${cursor===null?'':`&before=${cursor}`}`);if(gen!==generation.current)return;setItems(old=>cursor===null?p.items:[...old,...p.items]);setNext(p.next);}catch(e){if(gen===generation.current)setError(e instanceof Error?e.message:String(e));}finally{if(gen===generation.current)setBusy(false);}}
- useEffect(()=>{generation.current++;setItems([]);setNext(null);void load(null);return()=>{generation.current++;};},[filter]);
+ useEffect(()=>{generation.current++;setItems([]);setNext(null);void load(null);return()=>{generation.current++;};},[filter,catalogGeneration]);
  async function change(issue:Issue,state:string){setBusy(true);setError('');try{await api(`/issues/${issue.id}`,{revision:issue.revision,state});await load(null);}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
  async function retry(issue:Issue){setBusy(true);setError('');setQueued(false);try{await api('/issues/'+issue.id+'/retry',{revision:issue.revision});await load(null);setQueued(true);}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
  return <section className="issues-panel"><header className="panel-heading"><h2 title={t('issueScope')}>{t('issueCenter')}</h2><div className="tabs">{['open','deferred','resolved'].map(state=><button key={state} disabled={busy} aria-pressed={filter===state} onClick={()=>setFilter(state)}>{t('issue_'+state)}</button>)}</div><button className="icon-button" disabled={busy} aria-label={t('refreshView')} title={t('refreshView')} onClick={()=>void load(null)}><RefreshCw size={16}/></button></header>

@@ -8,8 +8,8 @@ impl Services{
   Ok(Self{watching,matching,smart})
  }
  pub fn request_stop(&self){self.watching.request_stop();self.matching.request_stop();self.smart.request_stop();}
- #[cfg(windows)]pub(crate) fn stop_smart_updates(&self){self.smart.request_stop();}
- #[cfg(windows)]pub(crate) fn restart_smart_updates(&mut self,db:crate::db::Db){self.smart=smart_updates::start(db);}
+ pub(crate) fn stop_smart_updates(&self){self.smart.request_stop();}
+ pub(crate) fn restart_smart_updates(&mut self,db:crate::db::Db){self.smart=smart_updates::start(db);}
 }
 impl Drop for Services{fn drop(&mut self){self.request_stop();}}
 

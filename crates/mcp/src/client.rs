@@ -35,7 +35,8 @@ async fn decode(response: reqwest::Response) -> R<Value> {
         StatusCode::CONFLICT if body["code"] == "collection_changed" => {
             "Galroon now has a different collection open than the one this MCP server was paired with. Switch back or pair again.".into()
         }
-        StatusCode::UNAUTHORIZED if message == "Authentication required" => {
+        // Current Core marks revoked/expired credentials, while older Core only said authentication was required.
+        StatusCode::UNAUTHORIZED if body["code"] == "credential_invalid" || message == "Authentication required" => {
             "The MCP credential was revoked or expired. Create a new pairing code in Galroon and run: galroon-mcp pair <CODE>".into()
         }
         _ if message.is_empty() => format!("Core returned HTTP {status}"),

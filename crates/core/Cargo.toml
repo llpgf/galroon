@@ -15,6 +15,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 hex = "0.4"
 thiserror = "2"
 fs2 = "0.4"

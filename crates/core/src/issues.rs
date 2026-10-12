@@ -14,6 +14,17 @@ pub fn migrate(c:&Connection)->rusqlite::Result<()>{
  let jobbed:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('issues') WHERE name='job_id')",[],|r|r.get(0))?;if !jobbed{c.execute_batch("ALTER TABLE issues ADD COLUMN job_id TEXT;")?;}
  c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS issue_job ON issues(job_id,category); CREATE INDEX IF NOT EXISTS issue_state ON issues(state,seq);")
 }
+// Background reconciliation publishes durable issues. GET /issues only reads them, so
+// browsing cannot manufacture catalog changes. The checkpoint excludes our own issue writes.
+pub(crate) fn refresh(c:&Connection)->std::result::Result<(),String>{
+ let run=||->std::result::Result<(),ApiError>{
+  let tx=c.unchecked_transaction()?;let before=crate::catalog_changes::seq(&tx)?;
+  let previous:Option<String>=tx.query_row("SELECT value FROM settings WHERE key='issues.catalog_seq'",[],|r|r.get(0)).optional()?;
+  if previous.as_deref()==Some(before.to_string().as_str()){return Ok(());}
+  reconcile(&tx)?;let after=crate::catalog_changes::seq(&tx)?;
+  tx.execute("INSERT INTO settings(key,value) VALUES('issues.catalog_seq',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[after.to_string()])?;tx.commit()?;Ok(())
+ };run().map_err(|e|e.0)
+}
 // Reconcile inside the caller's transaction. Repeated observations preserve deferrals.
 // Resources still queued in an unfinished matching task are not issues yet; their task reports progress.
 pub fn reconcile(c:&Connection)->std::result::Result<(),String>{
@@ -41,7 +52,7 @@ fn desktop(a:&App,h:&HeaderMap)->std::result::Result<(),ApiError>{if crate::acce
 fn open()->String{"open".into()}
 pub async fn list(State(a):State<App>,h:HeaderMap,Query(q):Query<List>)->Result<Value>{
  desktop(&a,&h)?;if !["open","deferred","resolved"].contains(&q.state.as_str())||q.before.is_some_and(|n|n<=0){return Err(ApiError("Invalid issue filter".into()));}
- let mut c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;let tx=c.transaction()?;reconcile(&tx)?;
+ let mut c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;let tx=c.transaction()?;
  let rows={let mut s=tx.prepare("SELECT i.seq,i.resource_id,i.kind,i.state,i.reason,i.revision,coalesce(r.title,rt.label,j.id),coalesce(r.relative_path,rt.path,json_extract(j.spec,'$.final_folder')),rt.label,EXISTS(SELECT 1 FROM jobs j WHERE j.kind IN ('match','scan') AND json_extract(j.spec,'$.issue_id')=i.seq AND j.state IN ('queued','running','pausing','cancelling')),i.category,coalesce(i.root_id,r.root_id),i.job_id FROM issues i LEFT JOIN jobs j ON j.id=i.job_id LEFT JOIN resources r ON r.id=coalesce(i.resource_id,json_extract(j.spec,'$.resource_id')) LEFT JOIN roots rt ON rt.id=coalesce(i.root_id,r.root_id) WHERE i.state=?1 AND i.seq<?2 ORDER BY i.seq DESC LIMIT 51")?;let rows=s.query_map(params![q.state,q.before.unwrap_or(i64::MAX)],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"resource_id":r.get::<_,Option<String>>(1)?,"kind":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"reason":r.get::<_,String>(4)?,"revision":r.get::<_,i64>(5)?,"title":r.get::<_,Option<String>>(6)?,"path":r.get::<_,Option<String>>(7)?,"source":r.get::<_,Option<String>>(8)?,"retry_pending":r.get::<_,bool>(9)?,"category":r.get::<_,String>(10)?,"root_id":r.get::<_,Option<String>>(11)?,"job_id":r.get::<_,Option<String>>(12)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;rows};tx.commit()?;
  let more=rows.len()>50;let mut rows=rows;rows.truncate(50);let next=if more{rows.last().map(|r|r["id"].clone()).unwrap_or(Value::Null)}else{Value::Null};Ok(Json(json!({"items":rows,"next":next})))
 }
