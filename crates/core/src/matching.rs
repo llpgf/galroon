@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=6;
+pub const ALGORITHM_VERSION:i64=7;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -111,6 +111,75 @@ fn extras_split(name: &str) -> (String, String) {
     (head, rest)
 }
 fn ascii_code(text: &str) -> bool { let t = text.trim().trim_matches(|c: char| !c.is_alphanumeric()); !t.is_empty() && t.is_ascii() && !t.contains(char::is_whitespace) && t.len() <= 32 }
+// Match the title before interpreting its tail: bonus words can also occur inside a real title.
+// Do not normalize the tail away; numbers, product suffixes and unlicensed quotations are evidence.
+fn member_tail(name:&str,names:&[&str],brands:&[&str])->Option<(String,bool)>{
+    static WRAPPERS:OnceLock<(Regex,Regex,Regex,Regex,Regex)>=OnceLock::new();
+    let (uploader,distribution,brackets,quoted,reading)=WRAPPERS.get_or_init(||(
+        Regex::new(r"^\s*\S+@\d+-\s*(\[\d{6}\])").unwrap(),Regex::new(r"^\s*(?:\(?(?:PD輸入|FN輸入|18禁ゲーム|18禁|一般ゲーム|同人ゲーム)\)\s*)+").unwrap(),
+        Regex::new(r"^(?:\s*\[[^\]]+\])+\s*").unwrap(),Regex::new(r"^([^\s「『」』]*)[「『]([^「『」』]+)[」』](.*)$").unwrap(),Regex::new(r"\([^)]*\)").unwrap()));
+    let s:String=name.nfkc().collect();let s=uploader.replace(&s,"$1");let s=distribution.replace(&s,"");let bracketed=brackets.is_match(&s);let s=brackets.replace(&s,"");let s=s.trim();
+    let variants:Vec<String>=names.iter().flat_map(|n|{let n:String=n.nfkc().collect();vec![normalized(&n),normalized(&reading.replace_all(&n,""))]}).filter(|n|!n.is_empty()).collect();
+    if let Some(c)=quoted.captures(s){
+        let prefix=&c[1];let maker=prefix.is_empty()||prefix=="ゲーム"||brands.iter().any(|b|normalized(b)==normalized(prefix));
+        if maker&&variants.contains(&normalized(&c[2])){return Some((c[3].to_string(),false));}
+    }
+    // A bracketed maker may use '+' as its separator. A '+' after the title still needs a real tail.
+    let distribution_plus=bracketed&&s.starts_with('+');let s=if distribution_plus{s.trim_start_matches('+')}else{s};
+    let mut ends:Vec<_>=s.char_indices().map(|(i,c)|i+c.len_utf8()).collect();ends.reverse();
+    ends.into_iter().find(|&end|variants.contains(&normalized(&s[..end]))).map(|end|{
+        let tail=&s[end..];let title_plus=tail.starts_with('+')&&!s[..end].ends_with(char::is_whitespace)&&!distribution_plus;
+        (tail.to_string(),title_plus)
+    })
+}
+// Balanced Japanese quotations also occur inside song/drama titles.
+fn quoted_end(s:&str)->Option<usize>{
+    let mut ends=Vec::new();
+    for (i,c) in s.char_indices(){match c{
+        '「'=>ends.push('」'),'『'=>ends.push('』'),'」'|'』'=>{if ends.pop()!=Some(c){return None;}if ends.is_empty(){return Some(i+c.len_utf8());}},_=>{}
+    }}None
+}
+fn media_tail(tail:&str)->bool{
+    static TOKEN:OnceLock<Regex>=OnceLock::new();
+    static NOTE:OnceLock<Regex>=OnceLock::new();
+    let token=TOKEN.get_or_init(||Regex::new(r"(?i)^(?:オープニング|エンディング|キャラクター|コンプリート|ミニ|サウンドトラック|サウンド|特別限定版|全店舗|げっちゅ屋|とらのあな|メロンブックス|ソフマップ|演出強化|演出調整|R18版|PlayDRM|認証回避|免认证补丁|特典版|(?:[\p{Han}]{1,4})?(?:システムボイス|テーマファイル)|凹んだときに聴きたい励ましCD|\d+週年スペシャルコンテンツ|ゲーム作中歌全\d+曲のFull_ver_音源|OP/ED|主題歌|ソング|ドラマ|ボイス|マキシ|シングル|サントラ|サウンドトラック|アルバム|ボーカル|ヴォーカル|パッチ|オリジナル|予約|同梱|店舗|特典|限定|壁紙|ヘッダー|アイコン|音声|データ|DLC|(?:special|complete|original|mini|character|soundtrack|sound|track|album|collection|vocal|song|drama|voice|cd|dvd|bonus|manual|wallpaper|patch|update|tokuten|amazon|sofmap|getchu|gamers|toranoana|melonbooks)(?-u:\b)|(?:ver\.?\s*|v)\d[\d.]*|vol\.\s*\d+)").unwrap());
+    let note=NOTE.get_or_init(||Regex::new(r"(?i)^\((?:flac|tak|wav|mp3|ogg|cue|log|rr\d+|mdf|mds|iso|files)(?:\+(?:flac|tak|wav|mp3|ogg|cue|log|rr\d+|mdf|mds|iso|files))*\)").unwrap());
+    let mut s=tail.trim();let mut audio=false;let mut any=false;
+    while !s.is_empty(){
+        s=s.trim_start_matches(|c:char|c.is_whitespace()||matches!(c,'+'|'_'|'-'|'&'|'!'|'.'));if s.is_empty(){return any;}
+        if s.starts_with("(認証回避Patch)"){s=&s["(認証回避Patch)".len()..];any=true;continue;}
+        if let Some(m)=note.find(s){s=&s[m.end()..];any=true;continue;}
+        if audio&&(s.starts_with('「')||s.starts_with('『')){
+            let Some(end)=quoted_end(s)else{return false;};s=&s[end..];continue;
+        }
+        // Performers and track/drama names are payload only immediately after an audio label.
+        if audio&&s.starts_with('/') {return !s[1..].trim().is_empty()&&!s[1..].contains(['「','『','」','』']);}
+        if audio&&s.to_lowercase().starts_with("feat. "){return !s[6..].trim().is_empty()&&!s[6..].contains(['「','『','」','』']);}
+        let Some(m)=token.find(s)else{return false;};let word=m.as_str().to_lowercase();if competing_tail(&word){return false;}
+        if !word.starts_with("vol.")&&word!="dlc"{audio=word.contains("ソング")||word.contains("主題歌")||word.contains("ドラマ")||word=="シングル"||word.ends_with("cd")||["song","drama","cd"].contains(&word.as_str());}
+        // Edition/modifier words alone are outside this rule; require actual bonus/media content.
+        any|=!["special","complete","original","mini","character","オープニング","エンディング","キャラクター","コンプリート","ミニ","特別限定版","全店舗","げっちゅ屋","とらのあな","メロンブックス","ソフマップ","演出強化","演出調整","r18版","playdrm","予約","同梱","店舗","限定"].contains(&word.as_str())&&!word.starts_with("vol.");s=&s[m.end()..];
+    }any||tail.trim().is_empty()
+}
+// Exclusions for the new fallback only; do not apply them to legacy bonus/code support.
+fn competing_tail(tail:&str)->bool{
+    static RE:OnceLock<(Regex,Regex)>=OnceLock::new();
+    let (audio,product)=RE.get_or_init(||(Regex::new(r"(?i)(?:ソング|主題歌|ドラマ|\bsong\b|\bdrama\b|cd)(?:DLC)?\s*(?:vol\.\s*\d+\s*)?[「『]").unwrap(),
+        Regex::new(r"(?i)[「『」』]|ファンディスク|ふぁんでぃすく|アペンド|スピンオフ|外伝|リメイク|ミニゲーム|(?:^|[^a-z])(?:fd|after|remake|append|spin[ -]?off)(?:$|[^a-z])").unwrap()));
+    let mut plain=String::new();let mut copied=0;
+    for m in audio.find_iter(tail){
+        if m.start()<copied{continue;}let start=m.end()-'「'.len_utf8();let mut end=start;
+        while tail[end..].starts_with(['「','『']){let Some(n)=quoted_end(&tail[end..])else{break;};end+=n;}
+        if end>start{plain.push_str(&tail[copied..start]);copied=end;}
+    }
+    plain.push_str(&tail[copied..]);product.is_match(&plain)
+}
+/// Additive A/B fallback: title-anchored media tails and distribution/quoted wrappers.
+/// Product and quotation exclusions belong only here; legacy bonus admission is unchanged.
+pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
+    let Some((tail,title_plus))=member_tail(member,names,brands)else{return false;};
+    !title_plus&&!competing_tail(&tail)&&media_tail(&tail)
+}
 /// The name is exactly one of `names` followed only by bonus/crack/patch/artwork words.
 pub fn names_with_extras(name: &str, names: &[&str]) -> bool {
     let (head, _) = extras_split(name); let key = normalized(&head);
