@@ -1,0 +1,7 @@
+# Only runtime assets enter the build; never send data, sessions or configuration.
+*
+!galroon-core
+!web/
+!web/**
+!Dockerfile
+!.dockerignore
