@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=10;
+pub const ALGORITHM_VERSION:i64=11;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -254,6 +254,44 @@ pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
         let Some(number)=digits.find(&key)else{return false;};
         key[..number.start()]==tail_key&&names.iter().any(|anchor|normalized(anchor).ends_with(number.as_str())&&member_tail(&member,&[*anchor],brands).is_some())
     })
+}
+/// Fan-release wrappers require this candidate's own titles/aliases, never folder or release names.
+/// Keep this separate from title_anchored_member, whose legacy callers also supply folder names.
+pub fn fan_release_member(member:&str,candidate:&Value)->bool{
+    // NFKC does not fold these two observed Han variants. This is deliberately not a script converter.
+    let spelling=|s:&str|s.nfkc().map(|c|match c{'墮'=>'堕','處'=>'処',_=>c}).collect::<String>();
+    let names:Vec<String>=candidate_names(candidate).iter().map(|n|spelling(n)).collect();
+    let keys:Vec<String>=names.iter().map(|n|normalized(n)).filter(|n|n.chars().count()>=4).collect();
+    let exact=|s:&str|{let key=normalized(s);keys.contains(&key)};
+    let title=|s:&str|{
+        let s=s.trim();let s=s.strip_prefix('《').and_then(|s|s.strip_suffix('》')).unwrap_or(s);
+        if exact(s){return true;}
+        // Each side must be a complete title of this work; a known first half never licenses the rest.
+        if s.match_indices('-').any(|(i,_)|exact(&s[..i])&&exact(&s[i+1..])){return true;}
+        names.iter().any(|n|{
+            let Some((_,body))=n.split_once('「')else{return false;};let Some(body)=body.strip_suffix('」')else{return false;};
+            !body.contains(['「','」'])&&normalized(body).chars().count()>=8&&normalized(body)==normalized(s)
+        })
+    };
+    static RE:OnceLock<(Regex,Regex,Regex)>=OnceLock::new();
+    let (prefix,label,suffix)=RE.get_or_init(||(
+        Regex::new(r"(?i)^(?:【[^【】]+[组組社]】|\(C\d{2,3}\)|\(同人ゲーム\)|(?:PSP|PSV|NS|Switch|Android|KRKR版|吉里吉里版)\s+)").unwrap(),
+        Regex::new(r"(?i)^(?:ADV|AVG|RPG|SLG|STG|ACT|\d{6}|\d{8}|(?:RJ|VJ|DMM)\d+)$").unwrap(),
+        Regex::new(r"(?i)(?:汉化(?:补丁|版)?|漢化(?:補丁|版)?|KRKR版|吉里吉里版|\s+(?:PSP|PSV|NS|Switch|Android)|\[(?:RJ|VJ|DMM)\d+\]|(?:v(?:er\.?)?\s*)\d+(?:\.\d+)*|\s+\d+(?:\.\d+)+)$").unwrap()));
+    let member=spelling(member);let mut s=member.trim();
+    loop{
+        if title(s){return true;}
+        if let Some(m)=prefix.find(s){s=s[m.end()..].trim_start();continue;}
+        if let Some(after)=s.strip_prefix('['){
+            if let Some((tag,rest))=after.split_once(']'){
+                let maker=candidate["developers"].as_array().into_iter().flatten().any(|d|["name","original"].iter().any(|k|d[*k].as_str().is_some_and(|n|normalized(&spelling(n))==normalized(tag))));
+                if label.is_match(tag)||maker{s=rest.trim_start();continue;}
+            }
+        }
+        break;
+    }
+    while let Some(m)=suffix.find(s){s=s[..m.start()].trim_end();if title(s){return true;}}
+    false
 }
 /// Candidate-only extension of the member fallback. Never feed it folder or release spellings.
 pub fn corroborated_member(member:&str,candidate:&Value,others:&[Value])->bool{
