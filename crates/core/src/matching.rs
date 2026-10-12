@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=12;
+pub const ALGORITHM_VERSION:i64=13;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -398,9 +398,9 @@ fn corroborated(input: &Input, candidate: &Value) -> bool {
 /// The folder names both a brand and a release date, and neither belongs to this candidate:
 /// a same-named work from another maker (コイカツ！ by ILLUSION is not コイ☆カツ！ by Silhouette).
 fn contradicted(input: &Input, candidate: &Value) -> bool { !input.brands.is_empty() && !input.dates.is_empty() && !corroborated(input, candidate) }
-// Retrieval only: readings, distribution suffixes and bonus labels are not new identity evidence.
-// Keep titles intact so even a newly retrieved base work still faces every existing admission rule.
-fn query_variants(title:&str)->Vec<String>{
+// Only readings and distribution suffixes leave a work's name. Patch/bonus extraction and
+// numbered packs remain search hints; retain the originals for member review in every case.
+fn title_variants(title:&str)->Vec<(String,bool)>{
     static RE:OnceLock<(Regex,Regex,Regex,Regex,Regex,Regex)>=OnceLock::new();
     let (suffix,reading,quoted,bonus,patch,excluded)=RE.get_or_init(||(
         Regex::new(r"(?i)(?:\s*\[(?:汉化|漢化|简中|簡中|官中)(?:硬盘|硬盤)?版\]|\s*win(?:7|8|10|11)|-PC(?:简中|簡中)(?:\.part\d+)?|\s+Steam(?:官中|简中|簡中)(?:步兵)?版|\s+if\s*エロパッチ対応(?:豪華)?版|[+&]DLC(?:x\d+)?|\s+追加シナリオ(?:DLC)?|特典付き限定版|\s+(?:初回生産限定|特別限定版)|\s+1[+&]2(?:パック)?)$").unwrap(),
@@ -410,10 +410,14 @@ fn query_variants(title:&str)->Vec<String>{
         Regex::new(r"(?i)^(?:追加パッチ|(?:Amazon|トレーダー|ソフマップ)?特典(?:DLC|ドラマ|ボイス)|パッチ)").unwrap(),
         Regex::new(r"(?i)BOX|^新增資料夾|^新建文件夹").unwrap()));
     if excluded.is_match(title)||(!title.chars().any(|c|('\u{3040}'..='\u{30ff}').contains(&c)||('\u{3400}'..='\u{9fff}').contains(&c))&&!title.ends_with("_tsuika")){return vec![];}
-    let mut stripped=title.to_string();
-    while let Some(m)=suffix.find(&stripped){stripped.truncate(m.start());stripped=stripped.trim_end().to_string();}
+    let mut stripped=title.to_string();let mut ranking=true;
+    while let Some(m)=suffix.find(&stripped){
+        if m.as_str().trim_start().starts_with("1"){ranking=false;}
+        stripped.truncate(m.start());stripped=stripped.trim_end().to_string();
+    }
     // Never split A+B sets; numbered packs above are search hints only, not single-work evidence.
     if stripped.contains('+'){return vec![];}
+    if stripped.contains('&'){ranking=false;}
     let mut bare=String::new();let mut copied=0;
     for m in reading.find_iter(&stripped){
         // A reading follows title text directly, not a detached edition/bonus annotation.
@@ -427,13 +431,18 @@ fn query_variants(title:&str)->Vec<String>{
         // Only the first quotation can be the work, and a maker prefix cannot already contain a bonus word.
         let prefix=c[1].trim();
         if (prefix.is_empty()||prefix.chars().all(|c|c.is_ascii_alphanumeric()))&&patch.is_match(c[3].trim_start()){
+            ranking=false;
             variants.insert(0,c[2].to_string());
         }
     }
-    if let Some(m)=bonus.find(&bare){variants.insert(0,bare[..m.start()].trim_end().to_string());}
-    let mut seen=HashSet::new();let key=normalized(title);
-    variants.into_iter().filter(|v|!v.contains(['「','『','」','』'])&&useful(v)&&normalized(v)!=key&&seen.insert(normalized(v))).collect()
+    if let Some(m)=bonus.find(&bare){ranking=false;variants.insert(0,bare[..m.start()].trim_end().to_string());}
+    let mut seen=HashSet::new();let key=normalized(title);let original_numbers=numbers(title);
+    variants.into_iter().filter(|v|!v.contains(['「','『','」','』'])&&useful(v)&&normalized(v)!=key&&seen.insert(normalized(v))).map(|v|{
+        // Removing a reading must not join digits into a new sequel number.
+        let rank=ranking&&normalized(&v).chars().count()>=4&&numbers(&v).iter().all(|n|original_numbers.contains(n));(v,rank)
+    }).collect()
 }
+#[cfg(test)]fn query_variants(title:&str)->Vec<String>{title_variants(title).into_iter().map(|(v,_)|v).collect()}
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
@@ -458,12 +467,12 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
             if useful(&title) && seen.insert(normalized(&title)) { titles.push(title); }
         }
     }
-    titles.truncate(6);
-    let variants=titles.first().map(|t|query_variants(t)).unwrap_or_default();
+    titles.truncate(6);seen=titles.iter().map(|t|normalized(t)).collect();
+    let variants=titles.first().map(|t|title_variants(t)).unwrap_or_default();let queries_only:Vec<_>=variants.iter().map(|(v,_)|v.clone()).collect();
     // Give the most useful variant the release lookup too, retain the original, then prefer
     // another variant over a nearly identical member name within the same three-query budget.
     let mut queries=Vec::new();let mut searched=HashSet::new();
-    for q in variants.iter().take(1).chain(titles.iter().take(1)).chain(variants.iter().skip(1)).chain(titles.iter().skip(1).take(1)){
+    for q in queries_only.iter().take(1).chain(titles.iter().take(1)).chain(queries_only.iter().skip(1)).chain(titles.iter().skip(1).take(1)){
         if searched.insert(normalized(q)){queries.push(q.clone());}
     }
     // Retrieve the tail, but preserve the full input as evidence until developer corroboration.
@@ -474,6 +483,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         if normalized(base).chars().count() >= 4 && !queries.iter().any(|q| normalized(q) == normalized(base)) { queries.push(base.into()); }
     }
     queries.truncate(3);
+    for (title,ranking) in variants{if ranking&&seen.insert(normalized(&title)){titles.push(title);}}
     Ok(Input { titles, queries, direct_id: None, brands, dates })
 }
 #[test]fn shiina_rio_members_are_technical_and_do_not_trip_the_short_guard(){
@@ -829,11 +839,56 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             let input=prepare(raw,&[]).unwrap();let want=clean_name(want);
             assert!(input.queries.contains(&want),"{raw}: {:?}, wanted {want}",input.queries);
             assert!(input.queries.contains(&clean_name(raw)),"original query: {raw}");assert!(input.queries.len()<=3);
-            assert_eq!(input.titles,vec![clean_name(raw)],"query variants must not become ranking evidence: {raw}");
+            assert_eq!(input.titles[0],clean_name(raw),"original title: {raw}");
             // Query changes alone cannot promote a candidate or affect the final admission decision.
             let mut old=input.clone();old.queries=vec![clean_name(raw)];let candidates=vec![candidate("v1",&want)];
             assert_eq!(rank(&input,candidates.clone()),rank(&old,candidates));
         }
+    }
+    #[test]fn ranking_variants_are_only_work_names_and_keep_original_evidence(){
+        for (raw,want) in [
+            ("ネコと女子寮（ワカイ）せよ！","ネコと女子寮せよ！"),
+            ("ネコと女子寮(ワカイ)せよ! 特別限定版 + OST","ネコと女子寮せよ!"),
+            ("人妻天国（ひとづまヘブン）～托卵・熟れた子宮に子種を注ぐ～","人妻天国～托卵・熟れた子宮に子種を注ぐ～"),
+            ("言の葉舞い散る夏の風鈴（こえ）","言の葉舞い散る夏の風鈴"),
+            ("炎の孕ませ乳（パイ）ドルマイ★スター学園Z","炎の孕ませ乳ドルマイ★スター学園Z"),
+            ("仄暗き時の果てより（自黯淡之刻的尽头）","仄暗き時の果てより"),
+            ("仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]","仄暗き時の果てより"),
+            ("夏空彼方win10","夏空彼方"),("Ever17-PC简中","Ever17"),("Ever17-PC简中.part1","Ever17"),
+            ("忍堕とし Steam官中步兵版","忍堕とし"),("仄暗き時の果てより[汉化硬盘版]","仄暗き時の果てより"),
+            ("虜ノ桜 美しく咲き、淫らに散らされる処女たち ifエロパッチ対応版","虜ノ桜 美しく咲き、淫らに散らされる処女たち"),
+            ("虜ノ翼 舞台裏で淫らに踊る処女人形 if エロパッチ対応豪華版","虜ノ翼 舞台裏で淫らに踊る処女人形"),
+            ("俺の上であがく六人の伽女+DLCx8","俺の上であがく六人の伽女"),("若葉色のカルテット&DLC","若葉色のカルテット"),
+            ("僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ 追加シナリオDLC","僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ"),
+            ("顔のない月〜待宵の双椿〜 追加シナリオ","顔のない月〜待宵の双椿〜"),
+            ("こあくまちゃんの誘惑っ！特典付き限定版","こあくまちゃんの誘惑っ！"),
+            ("炎の孕ませ乳(パイ)ドルマイ★スター学園Z 初回生産限定","炎の孕ませ乳ドルマイ★スター学園Z"),
+            ("作品タイトル２[汉化硬盘版]","作品タイトル2"),("作品タイトル（よみ）２","作品タイトル2"),
+        ]{
+            let input=prepare(raw,&[]).unwrap();let want=clean_name(want);
+            assert_eq!(input.titles[0],clean_name(raw));assert!(input.titles[1..].contains(&want),"{raw}: {:?}",input.titles);
+            let results=rank(&input,vec![candidate("v1",&want)]);assert_eq!(results[0]["match"]["strength"],"strong","{raw}");
+            assert_eq!(crate::automatch::review_reason(&json!({"results":results,"titles":input.titles})),None,"{raw}");
+        }
+        for raw in ["『虜ノ誓』追加パッチ「男だらけの運動会パッチ」","HOOKSOFT「どっちのiが好きですか？」Amazon特典DLC","若葉色のカルテット_立ち絵パッチ","虜ノ姉妹~迷い子の序章パッチ","高慢妻patch","torikonokizuna_tsuika_patch","ヤキモチストリーム トレーダー特典ドラマCD 「昔の制服で先輩後輩プレイ」","HaremKingdom_Amazon特典_ボイスドラマ「嫁全員で添い寝バトル」","若葉色（わかばいろ）のカルテット_立ち絵パッチ","ボクが当主になるために今日からメイドとHします 1&2","PRIMAL×HEARTS 1+2パック","作品甲+作品乙 特典付き限定版","作品甲&作品乙（よみ）win10","作品タイトル1（よみ）2","虜ノ誓&DLC","善悪（ぜんあく）","AIR[汉化硬盘版]"]{
+            let input=prepare(raw,&[]).unwrap();
+            assert_eq!(input.titles,vec![clean_name(raw)],"{raw}");
+        }
+    }
+    #[test]fn ranking_variants_obey_existing_admission_guards(){
+        let title="僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ";let input=prepare(&format!("{title} 追加シナリオDLC"),&[]).unwrap();
+        let results=rank(&input,vec![candidate("v54092",&format!("{title}２"))]);
+        assert_eq!(results[0]["match"]["reason"],"number_conflict");assert_eq!(results[0]["match"]["strength"],"review");
+        assert_eq!(crate::automatch::review_reason(&json!({"results":results,"titles":input.titles})).as_deref(),Some("The title and candidate have different sequel numbers."));
+        let input=prepare("夏空彼方win10",&["AIR".into()]).unwrap();let results=rank(&input,vec![candidate("v701","夏空彼方")]);assert_eq!(results[0]["match"]["strength"],"review");
+        let input=prepare("[250101][別ブランド] 夏空彼方win10",&[]).unwrap();let results=rank(&input,vec![candidate("v701","夏空彼方")]);
+        assert_eq!(results[0]["match"]["reason"],"release_conflict");assert_eq!(results[0]["match"]["strength"],"review");
+        let input=prepare("夏空彼方win10",&[]).unwrap();let results=rank(&input,vec![candidate("v701","夏空彼方"),candidate("v2","夏空彼方")]);
+        assert_eq!(results[0]["match"]["ambiguous"],true);assert_eq!(results[0]["match"]["strength"],"review");
+        // Appending ranking variants must not evict a contradictory member from the six original titles.
+        let input=prepare("夏空彼方win10",&["夏空彼方２".into(),"別タイトル甲".into(),"別タイトル乙".into(),"別タイトル丙".into(),"別タイトル丁".into(),"夏空彼方".into()]).unwrap();
+        assert_eq!(input.titles.len(),7);assert_eq!(input.titles[5],"別タイトル丁");let results=rank(&input,vec![candidate("v701","夏空彼方")]);assert_eq!(results[0]["match"]["strength"],"strong");
+        assert_eq!(crate::automatch::review_reason(&json!({"results":results,"titles":input.titles})).as_deref(),Some("A different source name needs review: 夏空彼方2"));
     }
     #[test]fn retrieval_variants_preserve_budget_originals_and_identity_guards(){
         let raw="仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]";
