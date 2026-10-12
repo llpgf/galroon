@@ -139,6 +139,7 @@ pub fn review_reason(response:&Value)->Option<String>{
             });
             if matching::title_anchored_member(title,if index==0{&known}else{fallback_names},brands)||matching::title_anchored_member(title,additional_names,brands){continue;}
             if index>0&&matching::corroborated_member(title,candidate,response["results"].as_array().unwrap()){continue;}
+            if index>0&&matching::fan_release_member(title,candidate){continue;}
             return Some(format!("A different source name needs review: {title}"));
         }
     }None
@@ -513,6 +514,80 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v30456","title":title})]);
         assert_eq!(review_reason(&json!({"results":ranked,"titles":["ハジラブ -Making*Lovers-&Making*LoversフルHDリマスター同梱限定セット版 (OST & Maxi & スケパッチ付)",title,other]})),Some(format!("A different source name needs review: {other}")));
     }
+    #[test]fn candidate_owned_chinese_and_fan_release_members(){
+        for (id,title,translation,member) in [
+            ("v10569","孤独に効く百合","孤独少女的百合物语","PSP 孤独少女的百合物语"),
+            ("v10568","恋妻くずし","恋妻くずし","【脸肿汉化组】《恋妻くずし》汉化补丁v1.0"),
+            ("v24202","堕落ロイヤル聖処女","堕落皇家聖處女","【變態協會漢化組】[ADV][夜のひつじ]墮落皇家聖處女 漢化補丁 V1.0"),
+            ("v22436","ハーレム双子ロリータ","双子洛丽塔后宫","双子洛丽塔后宫KRKR版"),
+            ("v18874","ゆびきり婚約ロリイタ","与你拉钩起誓的婚约","ゆびきり婚約ロリイタ-与你拉钩起誓的婚约"),
+            ("v19771","相思相愛ロリータの生活","与小萝莉相思相爱的生活","相思相愛ロリータの生活-与小萝莉相思相爱的生活"),
+            ("v20624","お泊まり恋人ロリータ","同居恋人洛丽塔","お泊まり恋人ロリータ-お泊まり恋人ロリータ"),
+            ("v25127","愛欲姉妹ロリータ","爱欲姐妹洛丽塔","愛欲姉妹ロリータ-愛欲姉妹ロリータ"),
+            ("v14850","妹「お姉ちゃんクソビッチなんで私にしませんか」","妹「お姉ちゃんクソビッチなんで私にしませんか」","お姉ちゃんクソビッチなんで私にしませんか"),
+            ("v15976","幼馴染の心が読めたらどうするか?","幼馴染の心が読めたらどうするか?","(C86) (同人ゲーム) [140906] [夜のひつじ] 幼馴染の心が読めたらどうするか? [RJ140827]"),
+            ("v27389","誘惑なまいきロリータ","诱惑、自大、洛丽塔","誘惑なまいきロリータ [RJ275492]"),
+        ]{
+            // Exercise both VNDB title fields and aliases without adding any folder/release spellings.
+            for field in ["titles","aliases"]{
+                let mut candidate=json!({"id":id,"title":title,"developers":[{"name":"Yoru no Hitsuji","original":"夜のひつじ"}]});
+                candidate[field]=if field=="titles"{json!([{"title":translation}])}else{json!([translation])};
+                let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+                for name in [member.to_string(),matching::clean_name(member)]{
+                    assert!(matching::fan_release_member(&name,&candidate),"{id}: {name}");
+                    assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),None,"{id}: {member}");
+                }
+                assert_eq!(review_reason(&response(matching::prepare(title,&[member.into()]).unwrap(),vec![candidate])),None,"{id}: prepared member");
+            }
+        }
+        // These observed forms survive NFKC and therefore need the explicit local map.
+        assert_ne!(matching::normalized("墮落皇家聖處女"),matching::normalized("堕落皇家聖処女"));
+        let candidate=json!({"id":"v24202","title":"堕落ロイヤル聖処女","titles":[{"title":"堕落皇家聖處女"}]});
+        assert!(matching::fan_release_member("墮落皇家聖処女 漢化版",&candidate));
+        let candidate=json!({"id":"v10569","title":"孤独に効く百合","titles":[{"title":"孤独少女的百合物语"}]});
+        for platform in ["PSP","PSV","NS","Switch","Android","KRKR版","吉里吉里版"]{
+            assert!(matching::fan_release_member(&format!("{platform} 孤独少女的百合物语"),&candidate));
+            assert!(matching::fan_release_member(&format!("孤独少女的百合物语 {platform}"),&candidate));
+        }
+        for group in ["【脸肿汉化组】","【變態協會漢化組】","【翻译社】"]{
+            for tail in ["汉化","漢化","汉化补丁","漢化補丁","汉化版","漢化版"]{
+                assert!(matching::fan_release_member(&format!("{group}[AVG]《孤独少女的百合物语》{tail} Ver.1.0"),&candidate));
+            }
+        }
+    }
+    #[test]fn fan_release_members_require_a_complete_own_title(){
+        for (id,title,member) in [
+            ("v16626","相思相愛ロリータ","(同人音声)[RJ153712][夜のひつじ]安眠添い寝ロリータ(R18)"),
+            ("v24279","世界の始まりゴッコ","世界の始まりゴッコ worldbegin_v1.0.0_win"),
+            ("v18874","ゆびきり婚約ロリイタ","ゆびきり婚約ロリイタ-与小萝莉相思相爱的生活"),
+            ("v18874","ゆびきり婚約ロリイタ","与小萝莉相思相爱的生活-ゆびきり婚約ロリイタ"),
+            ("v14850","妹「お姉ちゃんクソビッチなんで私にしませんか」","お姉ちゃん"),
+            ("v10568","恋妻くずし","【脸肿汉化组】"),
+            ("v10568","恋妻くずし","【脸肿汉化组】汉化补丁v1.0"),
+            ("v10568","恋妻くずし","【脸肿汉化组】《恋妻くずし2》汉化补丁v1.0"),
+            ("v10568","恋妻くずし","【脸肿汉化组】《恋妻くずし》未知补丁v1.0"),
+        ]{
+            let candidate=json!({"id":id,"title":title,"developers":[{"original":"夜のひつじ"}]});
+            assert!(!matching::fan_release_member(member,&candidate),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),Some(format!("A different source name needs review: {name}")));
+            }
+        }
+        // Synthetic boundary variants of the real quoted title isolate the eight-character guard.
+        for (body,allowed) in [("お姉ちゃんクソ",false),("お姉ちゃんクソビ",true)]{
+            let candidate=json!({"id":"v14850","title":format!("妹「{body}」")});
+            assert_eq!(matching::fan_release_member(body,&candidate),allowed,"{body}");
+        }
+        let own=json!({"id":"v10568","title":"恋妻くずし"});
+        let other=json!({"id":"v10569","title":"孤独に効く百合","titles":[{"title":"孤独少女的百合物语"}]});
+        for member in ["PSP 孤独少女的百合物语","恋妻くずし-孤独少女的百合物语"]{
+            let ranked=matching::rank(&matching::prepare("恋妻くずし",&[]).unwrap(),vec![own.clone(),other.clone()]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":["恋妻くずし",member]})),Some(format!("A different source name needs review: {member}")));
+        }
+        let mut release=own.clone();release["release_matches"]=json!([{"title":"孤独少女的百合物语"}]);
+        assert!(!matching::fan_release_member("PSP 孤独少女的百合物语",&release));
+    }
     #[test]fn candidate_corroborated_code_and_generic_members(){
         for (candidate,member) in [
             (json!({"id":"v27365","title":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~","alttitle":"まおかつ！ ～魔王と勇者のアイドル生活～"}),"Maokatsu Crk"),
@@ -548,7 +623,7 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
             (json!({"id":"v28131","title":"Boku to Sensei no Nyuuin Seikatsu","alttitle":"ぼくと先生の乳淫せいかつ","aliases":["nyuuin","bokunyuu"]}),vec!["Sensei Crk","Bok Crk","Sensei Boku Crk","Boku Sens Crk","Boku to Crk","Boku Sensei mystery","Boku new Sensei Crk"]),
             (json!({"id":"v10569","title":"Kodoku ni Kiku Yuri","alttitle":"孤独に効く百合","aliases":["こどゆり","kodoyuri"]}),vec!["PSP 孤独少女的百合物语","PSP 孤独少女的百合物语 汉化补丁"]),
             (json!({"id":"v22436","title":"Harem Futago Lolita","alttitle":"ハーレム双子ロリータ","aliases":["The Harem of Lolita Twins","lol4"]}),vec!["双子洛丽塔后宫KRKR版"]),
-            (json!({"id":"v10568","title":"Koi Tsuma Kuzushi","alttitle":"恋妻くずし","aliases":["Love Wife Demolish"]}),vec!["【脸肿汉化组】《恋妻くずし》汉化补丁v1.0","cg[脸肿汉化组]恋妻くずし 汉化补丁"]),
+            (json!({"id":"v10568","title":"Koi Tsuma Kuzushi","alttitle":"恋妻くずし","aliases":["Love Wife Demolish"]}),vec!["cg[脸肿汉化组]恋妻くずし 汉化补丁"]),
             (json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより","titles":[{"title":"来自昏暗的时间尽头","latin":"Laizi Hun'an de Shijian Jintou"}]}),vec!["来自昏暗的时间尽头 中文","仄暗き時の果てより 中文2","仄暗き時の果てより+ 中文"]),
         ]{
             let title=candidate["alttitle"].as_str().unwrap();let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
