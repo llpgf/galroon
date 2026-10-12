@@ -166,6 +166,8 @@ fn with_confirmation(c:&Connection,rid:&str,input:&matching::Input,response:&Val
     result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
 }
 pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapshot(c,rid)?.ok_or("Resource already matched")?;with_confirmation(c,rid,&snap.input,response)}
+/// Read-only input for live diagnostics, including bound resources; shares automatch's catalog builder.
+pub fn catalog_input(c:&Connection,rid:&str)->R<Option<matching::Input>>{Ok(catalog_snapshot(c,rid,true)?.map(|s|s.input))}
 /// Re-evaluate recorded candidates, including bound resources, using catalog evidence only. Never writes.
 pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     let Some(snap)=catalog_snapshot(c,rid,true)?else{return Ok(None);};let mut stored=response.clone();

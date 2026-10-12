@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=10;
+pub const ALGORITHM_VERSION:i64=11;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -360,6 +360,42 @@ fn corroborated(input: &Input, candidate: &Value) -> bool {
 /// The folder names both a brand and a release date, and neither belongs to this candidate:
 /// a same-named work from another maker (コイカツ！ by ILLUSION is not コイ☆カツ！ by Silhouette).
 fn contradicted(input: &Input, candidate: &Value) -> bool { !input.brands.is_empty() && !input.dates.is_empty() && !corroborated(input, candidate) }
+// Retrieval only: readings, distribution suffixes and bonus labels are not new identity evidence.
+// Keep titles intact so even a newly retrieved base work still faces every existing admission rule.
+fn query_variants(title:&str)->Vec<String>{
+    static RE:OnceLock<(Regex,Regex,Regex,Regex,Regex,Regex)>=OnceLock::new();
+    let (suffix,reading,quoted,bonus,patch,excluded)=RE.get_or_init(||(
+        Regex::new(r"(?i)(?:\s*\[(?:汉化|漢化|简中|簡中|官中)(?:硬盘|硬盤)?版\]|\s*win(?:7|8|10|11)|-PC(?:简中|簡中)(?:\.part\d+)?|\s+Steam(?:官中|简中|簡中)(?:步兵)?版|\s+if\s*エロパッチ対応(?:豪華)?版|[+&]DLC(?:x\d+)?|\s+追加シナリオ(?:DLC)?|特典付き限定版|\s+(?:初回生産限定|特別限定版)|\s+1[+&]2(?:パック)?)$").unwrap(),
+        Regex::new(r"\([\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+\)").unwrap(),
+        Regex::new(r"^([^「『」』]*)[「『]([^「『」』]+)[」』](.*)$").unwrap(),
+        Regex::new(r"(?i)(?:[\s_]+(?:Amazon|トレーダー|ソフマップ)?特典|[\s_]+Amazon特典|[\s_]+立ち絵パッチ|[~〜][^「『」』]*パッチ$|patch$|_tsuika(?:_patch)?$)").unwrap(),
+        Regex::new(r"(?i)^(?:追加パッチ|(?:Amazon|トレーダー|ソフマップ)?特典(?:DLC|ドラマ|ボイス)|パッチ)").unwrap(),
+        Regex::new(r"(?i)BOX|^新增資料夾|^新建文件夹").unwrap()));
+    if excluded.is_match(title)||(!title.chars().any(|c|('\u{3040}'..='\u{30ff}').contains(&c)||('\u{3400}'..='\u{9fff}').contains(&c))&&!title.ends_with("_tsuika")){return vec![];}
+    let mut stripped=title.to_string();
+    while let Some(m)=suffix.find(&stripped){stripped.truncate(m.start());stripped=stripped.trim_end().to_string();}
+    // Never split A+B sets; numbered packs above are search hints only, not single-work evidence.
+    if stripped.contains('+'){return vec![];}
+    let mut bare=String::new();let mut copied=0;
+    for m in reading.find_iter(&stripped){
+        // A reading follows title text directly, not a detached edition/bonus annotation.
+        if stripped[..m.start()].chars().next_back().is_some_and(|c|c.is_alphanumeric())&&!["版","限定","特典","パッチ","追加","同梱"].iter().any(|word|m.as_str().contains(word)){
+            bare.push_str(&stripped[copied..m.start()]);copied=m.end();
+        }
+    }
+    bare.push_str(&stripped[copied..]);
+    let mut variants=vec![bare.clone(),stripped];
+    if let Some(c)=quoted.captures(&bare){
+        // Only the first quotation can be the work, and a maker prefix cannot already contain a bonus word.
+        let prefix=c[1].trim();
+        if (prefix.is_empty()||prefix.chars().all(|c|c.is_ascii_alphanumeric()))&&patch.is_match(c[3].trim_start()){
+            variants.insert(0,c[2].to_string());
+        }
+    }
+    if let Some(m)=bonus.find(&bare){variants.insert(0,bare[..m.start()].trim_end().to_string());}
+    let mut seen=HashSet::new();let key=normalized(title);
+    variants.into_iter().filter(|v|!v.contains(['「','『','」','』'])&&useful(v)&&normalized(v)!=key&&seen.insert(normalized(v))).collect()
+}
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
@@ -385,7 +421,13 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         }
     }
     titles.truncate(6);
-    let mut queries = titles.iter().take(2).cloned().collect::<Vec<_>>();
+    let variants=titles.first().map(|t|query_variants(t)).unwrap_or_default();
+    // Give the most useful variant the release lookup too, retain the original, then prefer
+    // another variant over a nearly identical member name within the same three-query budget.
+    let mut queries=Vec::new();let mut searched=HashSet::new();
+    for q in variants.iter().take(1).chain(titles.iter().take(1)).chain(variants.iter().skip(1)).chain(titles.iter().skip(1).take(1)){
+        if searched.insert(normalized(q)){queries.push(q.clone());}
+    }
     // Retrieve the tail, but preserve the full input as evidence until developer corroboration.
     if let Some((_,tail))=titles.first().and_then(|s|branded(s)){if useful(&tail)&&!queries.contains(&tail){queries.push(tail);}}
     // A base-title fallback retrieves candidates; ranking always uses the full title.
@@ -719,6 +761,53 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             ("[211029] [ま～まれぇど] PRIMAL×HEARTS 1＋2パック", "PRIMAL×HEARTS 1+2パック"),
             ("『虜ノ誓』追加パッチ「男だらけの運動会パッチ」", "『虜ノ誓』追加パッチ「男だらけの運動会パッチ」"),
         ] { assert_eq!(clean_name(raw),want,"{raw}"); }
+    }
+    #[test]fn retrieval_variants_cover_readings_suffixes_and_outer_bonus_titles(){
+        for (raw,want) in [
+            ("ネコと女子寮（ワカイ）せよ！","ネコと女子寮せよ！"),
+            ("ネコと女子寮(ワカイ)せよ! 特別限定版 + OST","ネコと女子寮せよ!"),
+            ("人妻天国（ひとづまヘブン）～托卵・熟れた子宮に子種を注ぐ～","人妻天国～托卵・熟れた子宮に子種を注ぐ～"),
+            ("言の葉舞い散る夏の風鈴（こえ）","言の葉舞い散る夏の風鈴"),
+            ("炎の孕ませ乳（パイ）ドルマイ★スター学園Z","炎の孕ませ乳ドルマイ★スター学園Z"),
+            ("仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]","仄暗き時の果てより"),
+            ("夏空彼方win10","夏空彼方"),("Ever17-PC简中.part1","Ever17"),
+            ("忍堕とし Steam官中步兵版","忍堕とし"),("仄暗き時の果てより[汉化硬盘版]","仄暗き時の果てより"),
+            ("虜ノ桜 美しく咲き、淫らに散らされる処女たち ifエロパッチ対応版","虜ノ桜 美しく咲き、淫らに散らされる処女たち"),
+            ("虜ノ翼 舞台裏で淫らに踊る処女人形 if エロパッチ対応豪華版","虜ノ翼 舞台裏で淫らに踊る処女人形"),
+            ("俺の上であがく六人の伽女+DLCx8","俺の上であがく六人の伽女"),("虜ノ誓&DLC","虜ノ誓"),
+            ("僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ 追加シナリオDLC","僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ"),
+            ("顔のない月〜待宵の双椿〜 追加シナリオ","顔のない月〜待宵の双椿〜"),
+            ("こあくまちゃんの誘惑っ！特典付き限定版","こあくまちゃんの誘惑っ！"),
+            ("炎の孕ませ乳(パイ)ドルマイ★スター学園Z 初回生産限定","炎の孕ませ乳(パイ)ドルマイ★スター学園Z"),
+            ("ボクが当主になるために今日からメイドとHします 1&2","ボクが当主になるために今日からメイドとHします"),
+            ("PRIMAL×HEARTS 1+2パック","PRIMAL×HEARTS"),
+            ("『虜ノ誓』追加パッチ「男だらけの運動会パッチ」","虜ノ誓"),
+            ("HOOKSOFT「どっちのiが好きですか？」Amazon特典DLC","どっちのiが好きですか？"),
+            ("若葉色のカルテット_立ち絵パッチ","若葉色のカルテット"),("虜ノ姉妹~迷い子の序章パッチ","虜ノ姉妹"),
+            ("高慢妻patch","高慢妻"),("torikonokizuna_tsuika_patch","torikonokizuna"),
+            ("ヤキモチストリーム トレーダー特典ドラマCD 「昔の制服で先輩後輩プレイ」","ヤキモチストリーム"),
+            ("HaremKingdom_Amazon特典_ボイスドラマ「嫁全員で添い寝バトル」","HaremKingdom"),
+        ]{
+            let input=prepare(raw,&[]).unwrap();let want=clean_name(want);
+            assert!(input.queries.contains(&want),"{raw}: {:?}, wanted {want}",input.queries);
+            assert!(input.queries.contains(&clean_name(raw)),"original query: {raw}");assert!(input.queries.len()<=3);
+            assert_eq!(input.titles,vec![clean_name(raw)],"query variants must not become ranking evidence: {raw}");
+            // Query changes alone cannot promote a candidate or affect the final admission decision.
+            let mut old=input.clone();old.queries=vec![clean_name(raw)];let candidates=vec![candidate("v1",&want)];
+            assert_eq!(rank(&input,candidates.clone()),rank(&old,candidates));
+        }
+    }
+    #[test]fn retrieval_variants_preserve_budget_originals_and_identity_guards(){
+        let raw="仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]";
+        let input=prepare(raw,&[format!("{raw}/別のタイトル"),"第三のタイトル".into()]).unwrap();
+        assert_eq!(input.queries,vec!["仄暗き時の果てより",&clean_name(raw),"仄暗き時の果てより(自黯淡之刻的尽头)"]);
+        for raw in ["新增資料夾","新增資料夾 (2)","12345","Beat Angel Escalayer Reboot","Super Naughty Maid 2","English Titlepatch","English Titlewin10","ゆずソフトペンタBOX","ねこ20周年記念限定BOX","作品甲+作品乙","作品甲+作品乙 特典付き限定版","作品名 (初回限定版)","作品名(初回限定版)","作品名(特典パッチ)","作品名(2)","作品名(After Story)","作品名(Windows 10)","作品名 トレーダー特典ドラマCD 「別の作品」"]{
+            let input=prepare(raw,&[]).unwrap();
+            if raw.contains("トレーダー"){assert_eq!(input.queries[0],"作品名");assert!(!input.queries.iter().any(|q|q=="別の作品"));}
+            else{assert!(query_variants(&clean_name(raw)).is_empty(),"{raw}: {:?}",input.queries);}
+        }
+        let input=prepare("PRIMAL×HEARTS 1+2パック",&[]).unwrap();let results=rank(&input,vec![candidate("v1","PRIMAL×HEARTS")]);
+        assert_ne!(results[0]["match"]["strength"],"strong");
     }
     #[test] fn paths_and_numeric_containers_use_members_without_guessing_store_ids() {
         let p = prepare("1327332", &[r"1327332\[250725][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar".into()]).unwrap();
