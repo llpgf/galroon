@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=13;
+pub const ALGORITHM_VERSION:i64=14;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -254,6 +254,19 @@ pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
         let Some(number)=digits.find(&key)else{return false;};
         key[..number.start()]==tail_key&&names.iter().any(|anchor|normalized(anchor).ends_with(number.as_str())&&member_tail(&member,&[*anchor],brands).is_some())
     })
+}
+/// A proven compilation may label its discs/media as `Box 「Contained Work OST」`.
+/// The quotation must name a bound work; neither a box prefix nor a disc label licenses another title.
+pub(crate) fn compilation_member(member:&str,releases:&[&str],works:&[&str])->bool{
+    let tail_ok=|tail:&str|{let tail=tail.trim();tail.is_empty()||tail.eq_ignore_ascii_case("OST")||edition_bonus_tail(tail)||Regex::new(r"(?i)^(?:同梱\s*)?(?:disc|disk|ディスク)(?:[ -]*\d+)?$").unwrap().is_match(tail)};
+    let member:String=member.nfkc().collect();
+    if let Some((prefix,rest))=member.split_once('「'){
+        if !releases.iter().any(|r|normalized(&clean_name(prefix))==normalized(&clean_name(r))){return false;}
+        let Some((inner,tail))=rest.split_once('」')else{return false;};if inner.contains(['「','『','』'])||!tail_ok(tail){return false;}
+        let works:Vec<_>=works.iter().copied().filter(|w|!releases.iter().any(|r|normalized(w)==normalized(r))).collect();
+        return member_tail(inner,&works,&[]).is_some_and(|(tail,plus)|!plus&&tail_ok(&tail));
+    }
+    member_tail(&member,releases,&[]).is_some_and(|(tail,plus)|!plus&&tail_ok(&tail))
 }
 /// Fan-release wrappers require this candidate's own titles/aliases, never folder or release names.
 /// Keep this separate from title_anchored_member, whose legacy callers also supply folder names.
@@ -537,6 +550,34 @@ fn branded(query:&str)->Option<(String,String)>{let re=Regex::new(r"^\[([^\]]+)\
 #[test]fn single_brand_requires_developer_and_complete_title_and_preserves_short_guard(){
  let c=json!({"id":"v4","title":"CLANNAD","developers":[{"name":"Key"}]});let input=prepare("[Key] CLANNAD",&[]).unwrap();assert!(input.queries.contains(&"CLANNAD".into()));assert_eq!(input.titles,vec!["[Key] CLANNAD"]);assert_eq!(rank(&input,vec![c.clone()])[0]["match"]["strength"],"strong");assert_ne!(rank(&prepare("[Unknown] CLANNAD",&[]).unwrap(),vec![c.clone()])[0]["match"]["strength"],"strong");assert_ne!(rank(&prepare("[Key] CLANNAD 2",&[]).unwrap(),vec![c])[0]["match"]["strength"],"strong");let short=json!({"id":"v36","title":"AIR","developers":[{"name":"Key"}]});assert_ne!(rank(&prepare("[Key] AIR",&[]).unwrap(),vec![short])[0]["match"]["strength"],"strong");
 }
+// A pure compilation is a release identity, never a group assembled from similar work names.
+fn compilation(input:&Input,ranked:&[Value])->Option<Value>{
+    let top=ranked.first()?;if top["match"]["score"].as_f64()!=Some(99.0)||top["match"]["reason"]!="exact_release"{return None;}
+    let tied:Vec<_>=ranked.iter().filter(|c|c["match"]["score"].as_f64()==Some(99.0)).collect();
+    if !(2..=12).contains(&tied.len())||tied.iter().any(|c|c["match"]["reason"]!="exact_release"||c["match"]["primary"]==true){return None;}
+    if ranked.iter().any(|c|candidate_names(c).iter().any(|name|input.titles.iter().any(|q|normalized(q)==normalized(name)))){return None;}
+    // Release ranking can hide an exact alias (98), or independent main-title evidence (99).
+    // Removing all releases makes this re-rank ineligible for compilation detection.
+    let own:Vec<_>=ranked.iter().cloned().map(|mut c|{c.as_object_mut().unwrap().remove("release_matches");c}).collect();
+    if rank(input,own).iter().any(|c|c["match"]["score"].as_f64().unwrap_or(0.0)>=91.0){return None;}
+    // An uploader account is distribution metadata, not a brand claim.
+    let mut labels=input.clone();let uploader=Regex::new(r"(?i)^sd\d+@\d+$").unwrap();labels.brands.retain(|b|!uploader.is_match(b));
+    let mut release_id=None;let ids:HashSet<_>=tied.iter().filter_map(|c|c["id"].as_str()).collect();
+    for candidate in ranked{
+        let mut linked=false;
+        for release in candidate["release_matches"].as_array().into_iter().flatten(){
+            if !release["title"].as_str().is_some_and(|t|input.titles.iter().any(|q|normalized(q)==normalized(&clean_name(t)))){continue;}
+            let id=release["id"].as_str().filter(|id|id.starts_with('r')&&id.len()>1&&id[1..].bytes().all(|c|c.is_ascii_digit()))?;
+            if release_id.is_some_and(|previous|previous!=id){return None;}release_id=Some(id);linked=true;
+            let evidence=json!({"developers":release["producers"],"released":release["released"]});
+            if (!labels.brands.is_empty()||!labels.dates.is_empty())&&!corroborated(&labels,&evidence){return None;}
+            // New searches retain the complete release membership; old evidence records links per work.
+            if let Some(vns)=release["vns"].as_array(){let members:HashSet<_>=vns.iter().filter_map(|v|v["id"].as_str()).collect();if members.len()!=vns.len()||members!=ids{return None;}}
+        }
+        if linked!=ids.contains(candidate["id"].as_str()?){return None;}
+    }
+    Some(json!({"release_id":release_id?,"vndb_ids":tied.iter().map(|c|&c["id"]).collect::<Vec<_>>()}))
+}
 pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
     let mut seen = HashSet::new(); let mut ranked = Vec::new();
     for mut candidate in candidates {
@@ -599,6 +640,7 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
         if score >= 98.0 && score - runner_up >= 8.0 && (!short || input.direct_id.is_some()) { first["match"]["strength"] = json!("strong"); }
         if score >= 98.0 && score - runner_up < 8.0 { first["match"]["ambiguous"] = json!(true); }
     }
+    if let Some(bundle)=compilation(input,&ranked){let first=&mut ranked[0]["match"];first["compilation"]=bundle;first["strength"]=json!("strong");first["ambiguous"]=json!(false);}
     ranked.truncate(20); ranked
 }
 
@@ -663,16 +705,17 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             let mut links:HashMap<String,Vec<Value>>=HashMap::new();
             for release in releases["results"].as_array().unwrap() {
                 let exact=["title","alttitle"].iter().filter_map(|k|release[k].as_str()).find(|title|input.titles.iter().any(|q|normalized(q)==normalized(&clean_name(title))));
-                if let Some(title)=exact { if let Some(vns)=release["vns"].as_array() { for vn in vns.iter().take(30) { if let Some(id)=vn["id"].as_str() {
-                    links.entry(id.into()).or_default().push(json!({"id":release["id"],"title":title,"release_title":release["title"],"alttitle":release["alttitle"],"released":release["released"],"producers":release["producers"],"images":release["images"]}));
+                if let Some(title)=exact { if let Some(vns)=release["vns"].as_array() { incomplete|=vns.len()>30;for vn in vns.iter().take(30) { if let Some(id)=vn["id"].as_str() {
+                    links.entry(id.into()).or_default().push(json!({"id":release["id"],"title":title,"release_title":release["title"],"alttitle":release["alttitle"],"released":release["released"],"producers":release["producers"],"images":release["images"],"vns":release["vns"]}));
                 } } } }
             }
-            // A compilation release can point to multiple works: keep the ambiguity visible.
+            // Fetch every linked work before considering a compilation admission.
             let ids:Vec<String>=links.keys().filter(|id|!candidates.iter().any(|c|c["id"].as_str()==Some(id.as_str()))).cloned().collect();
             if !ids.is_empty() {
                 let body=json!({"filters":id_filter(&ids[..ids.len().min(30)]),"fields":WORK_FIELDS,"results":30});
                 match request(provider,endpoint,body,spacing).await {Ok(data)=>{incomplete|=data["more"].as_bool().unwrap_or(false)||ids.len()>30;candidates.extend(data["results"].as_array().unwrap().iter().cloned());},Err(message)=>{warning=Some(message);incomplete=true;break;}}
             }
+            incomplete|=links.keys().any(|id|!candidates.iter().any(|c|c["id"].as_str()==Some(id)));
             for candidate in &mut candidates { if let Some(id)=candidate["id"].as_str(){if let Some(matches)=links.get(id){candidate["release_matches"]=json!(matches);}} }
             if rank(input,candidates.clone()).first().is_some_and(|c|c["match"]["strength"]=="strong") {break;}
         }
@@ -936,15 +979,55 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let on=|id:&str,title:&str,release:&str|json!({"id":id,"title":title,"release_matches":[{"id":"r141029","title":release}]});
         let release="君が望む永遠 ～Enhanced Edition R～ - 初回生産版";let input=prepare("君が望む永遠 ～Enhanced Edition R～ 初回生産版 + Tokuten",&[]).unwrap();
         let r=rank(&input,vec![on("v358","君が望む永遠 ～special FanDisk～",release),on("v94","君が望む永遠",release),on("v28307","君が望む永遠 another episode 悲しみは風のように",release)]);
-        assert_eq!(r[0]["id"],"v94");assert_eq!(r[0]["match"]["strength"],"strong");assert_eq!(r[0]["match"]["reason"],"exact_release");
-        // A pure box set names none of its works, and "Foo 2 Box" is not an edition of "Foo".
-        let r=rank(&prepare("キスイロ",&[]).unwrap(),vec![on("v10641","キスベル","キスイロ"),on("v13632","キスアト","キスイロ")]);assert_eq!(r[0]["match"]["strength"],"review");assert_eq!(r[0]["match"]["ambiguous"],true);
-        let r=rank(&prepare("Sample Title 2 Twin Box",&[]).unwrap(),vec![on("v1","Sample Title","Sample Title 2 Twin Box"),on("v2","Other Work","Sample Title 2 Twin Box")]);assert_eq!(r[0]["match"]["strength"],"review");
-        let r=rank(&prepare("サクラノ詩－櫻の森の上を舞う－10th Anniversary edition",&[]).unwrap(),vec![on("v562","サクラノ詩－櫻の森の上を舞う－","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition"),on("v60562","サクラノ詩 Re:Graphic アペンドディスク","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition")]);assert_eq!(r[0]["id"],"v562");assert_eq!(r[0]["match"]["strength"],"strong");
+        assert_eq!(r[0]["id"],"v94");assert!(r[0]["match"]["compilation"].is_null());assert_eq!(r[0]["match"]["strength"],"strong");assert_eq!(r[0]["match"]["reason"],"exact_release");
+        // Pure box sets bind all linked works; "Foo 2 Box" is not a primary edition of "Foo".
+        let r=rank(&prepare("キスイロ",&[]).unwrap(),vec![on("v10641","キスベル","キスイロ"),on("v13632","キスアト","キスイロ")]);assert_eq!(r[0]["match"]["compilation"]["vndb_ids"],json!(["v10641","v13632"]));
+        let r=rank(&prepare("Sample Title 2 Twin Box",&[]).unwrap(),vec![on("v1","Sample Title","Sample Title 2 Twin Box"),on("v2","Other Work","Sample Title 2 Twin Box")]);assert!(r[0]["match"]["compilation"].is_object());
+        let r=rank(&prepare("サクラノ詩－櫻の森の上を舞う－10th Anniversary edition",&[]).unwrap(),vec![on("v562","サクラノ詩－櫻の森の上を舞う－","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition"),on("v60562","サクラノ詩 Re:Graphic アペンドディスク","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition")]);assert_eq!(r[0]["id"],"v562");assert!(r[0]["match"]["compilation"].is_null());assert_eq!(r[0]["match"]["strength"],"strong");
         // Two works that both lead the name leave the choice to the person.
         let r=rank(&prepare("Sample Title Plus Complete",&[]).unwrap(),vec![on("v1","Sample Title","Sample Title Plus Complete"),on("v2","Sample Title Plus","Sample Title Plus Complete")]);assert_eq!(r[0]["match"]["strength"],"review");
     }
-    #[tokio::test] async fn release_identity_is_followed_and_compilations_stay_ambiguous() {
+    fn compilation_rows(n:usize)->Vec<Value>{(1..=n).map(|i|json!({"id":format!("v{i}"),"title":format!("Contained work {i}"),"release_matches":[{"id":"r123","title":"Collection Box","released":"2025-01-31","producers":[{"name":"Maker","original":"メーカー"}]}]})).collect()}
+    fn compilation_rank(input:&Input,rows:Vec<Value>)->Value{rank(input,rows)[0]["match"]["compilation"].clone()}
+    #[test]fn pure_compilation_requires_one_exact_release_and_only_its_linked_works(){
+        let input=prepare("Collection Box",&[]).unwrap();let rows=compilation_rows(2);
+        assert_eq!(compilation_rank(&input,rows.clone()),json!({"release_id":"r123","vndb_ids":["v1","v2"]}));
+        let mut similar=rows.clone();similar.push(json!({"id":"v3","title":"Collection Boxes"}));assert_eq!(compilation_rank(&input,similar)["vndb_ids"],json!(["v1","v2"]));
+        let mut different=rows.clone();different[1]["release_matches"][0]["id"]=json!("r456");assert!(compilation_rank(&input,different).is_null());
+        let mut editions=rows.clone();for c in &mut editions{let mut r=c["release_matches"][0].clone();r["id"]=json!("r456");c["release_matches"].as_array_mut().unwrap().push(r);}assert!(compilation_rank(&input,editions).is_null());
+        let mut partial=rows.clone();for c in &mut partial{c["release_matches"][0]["title"]=json!("Collection Box Deluxe");}assert!(compilation_rank(&input,partial).is_null());
+        let mut missing=rows;for c in &mut missing{c["release_matches"][0]["vns"]=json!([{"id":"v1"},{"id":"v2"},{"id":"v3"}]);}assert!(compilation_rank(&input,missing).is_null());
+    }
+    #[test]fn compilation_requires_release_brand_and_date_corroboration(){
+        for title in ["[250131][Maker] Collection Box","[250131] Collection Box","[メーカー][250131] Collection Box"]{assert!(compilation_rank(&prepare(title,&[]).unwrap(),compilation_rows(2)).is_object(),"{title}");}
+        let mut single_brand=prepare("Collection Box",&[]).unwrap();single_brand.brands=vec!["Maker".into()];assert!(compilation_rank(&single_brand,compilation_rows(2)).is_object());
+        // Distribution hints can include uploader tags; corroboration follows the existing brand OR date predicate.
+        let mixed=prepare("[250131][Maker][Uploader] Collection Box",&[]).unwrap();assert!(compilation_rank(&mixed,compilation_rows(2)).is_object());
+        let mut uploader=single_brand.clone();uploader.brands=vec!["sd123456@123456".into()];assert!(compilation_rank(&uploader,compilation_rows(2)).is_object());uploader.brands.push("Wrong maker".into());assert!(compilation_rank(&uploader,compilation_rows(2)).is_null());
+        let input=prepare("Collection Box",&[]).unwrap();
+        for (brands,dates) in [(vec!["Wrong maker"],vec![]),(vec![],vec!["2024-01-31"]),(vec!["Wrong maker"],vec!["2024-01-31"])]{
+            let mut input=input.clone();input.brands=brands.iter().map(|s|s.to_string()).collect();input.dates=dates.iter().map(|s|s.to_string()).collect();
+            let mut rows=compilation_rows(2);for c in &mut rows{c["developers"]=json!([{"name":"Wrong maker"}]);c["released"]=json!("2024-01-31");}assert!(compilation_rank(&input,rows).is_null());
+        }
+    }
+    #[test]fn compilation_caps_members_at_twelve_before_rank_truncation(){let input=prepare("Collection Box",&[]).unwrap();assert!(compilation_rank(&input,compilation_rows(12)).is_object());for count in [13,21,31]{assert!(compilation_rank(&input,compilation_rows(count)).is_null());}}
+    #[test]fn compilation_cannot_hide_own_title_alias_or_other_strong_evidence(){
+        let input=prepare("Collection Box",&[]).unwrap();
+        for key in ["title","aliases"]{let mut rows=compilation_rows(2);rows[0][key]=if key=="title"{json!("Collection Box")}else{json!(["Collection Box"])};assert!(compilation_rank(&input,rows).is_null());}
+        let mut input=input;input.brands=vec!["Maker".into()];let mut rows=compilation_rows(2);rows.push(json!({"id":"v3","title":"Collection Box ~Other story~","developers":[{"name":"Maker"}]}));assert!(compilation_rank(&input,rows).is_null());
+    }
+    #[tokio::test]async fn compilation_retrieval_retains_full_membership_and_rejects_incomplete_or_missing_works(){
+        let endpoint="http://cached.invalid/vn";let mut input=prepare("Collection Box",&[]).unwrap();input.queries=vec!["Collection Box".into()];
+        for (more,missing) in [(false,false),(true,false),(false,true)]{
+            let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};let mut cache=|url:&str,body:Value,data:Value|{provider.cache.insert(format!("{url}:{body}"),(Instant::now(),data));};
+            cache(endpoint,json!({"filters":["search","=","Collection Box"],"sort":"searchrank","fields":WORK_FIELDS,"results":30}),json!({"results":[{"id":"v1","title":"Alpha Story"},{"id":"v2","title":"Beta Story"}],"more":more}));
+            let mut vns=json!([{"id":"v1"},{"id":"v2"}]);if missing{vns.as_array_mut().unwrap().push(json!({"id":"v3"}));cache(endpoint,json!({"filters":["id","=","v3"],"fields":WORK_FIELDS,"results":30}),json!({"results":[],"more":false}));}
+            cache("http://cached.invalid/release",json!({"filters":["search","=","Collection Box"],"sort":"searchrank","fields":"title,alttitle,vns.id,released,producers.name,producers.original,producers.developer,producers.publisher,images.url,images.type","results":100}),json!({"results":[{"id":"r123","title":"Collection Box","vns":vns}],"more":false}));
+            let result=retrieve(&input,&mut provider,endpoint,Duration::ZERO).await.unwrap();assert_eq!(result["incomplete"],more||missing);assert_eq!(result["results"][0]["release_matches"][0]["vns"],vns);
+            assert_eq!(crate::automatch::review_reason(&result).is_none(),!more&&!missing);assert!(provider.last.is_none());
+        }
+    }
+    #[tokio::test] async fn release_identity_is_followed_and_compilations_bind_all_members() {
         use axum::{routing::post,Json,Router};
         let app=Router::new().route("/vn",post(|Json(v):Json<Value>|async move {
             // Mirrors VNDB: `id` takes one string; several ids arrive OR-ed, anything else is a 400.
@@ -958,8 +1041,8 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
         let result=retrieve(&prepare("Different release name",&[]).unwrap(),&mut provider,&url,Duration::ZERO).await.unwrap();
         let candidates=result["results"].as_array().unwrap();assert_eq!(candidates.len(),2);
-        for c in candidates {assert_eq!(c["match"]["reason"],"exact_release");assert_eq!(c["match"]["strength"],"review");assert_eq!(c["release_matches"][0]["id"],"r1");}
-        assert_eq!(candidates[0]["match"]["ambiguous"],true);task.abort();
+        for c in candidates {assert_eq!(c["match"]["reason"],"exact_release");assert_eq!(c["release_matches"][0]["id"],"r1");}
+        assert_eq!(candidates[0]["match"]["compilation"]["vndb_ids"],json!(["v1","v2"]));assert_eq!(candidates[0]["match"]["strength"],"strong");task.abort();
     }
     #[tokio::test] async fn resource_search_is_authenticated_and_never_writes_catalog() {
         use rusqlite::params;

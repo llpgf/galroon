@@ -9,18 +9,19 @@ type R<T>=Result<T,Box<dyn std::error::Error>>;
 const LIMITATION:&str="Replay only sees candidates stored in the earlier run. Changes to VNDB queries require a live run to confirm.";
 const USAGE:&str="match_replay <library.sqlite> --out <report.json> [--baseline <report.json>] [--answers <answers.json>] [--root-map <old>=<new>]... [--fail-on changed,false,lost,missing,added,removed]";
 #[derive(Clone,Deserialize,Serialize)]
-struct Stored{state:Option<String>,work_id:Option<String>,vndb_id:Option<String>}
+struct Stored{state:Option<String>,work_id:Option<String>,vndb_id:Option<String>,#[serde(default)]vndb_ids:Vec<String>}
 #[derive(Clone,Deserialize,Serialize)]
-struct Row{resource_id:String,#[serde(default)]root_path:String,relative_path:String,vndb_id:Option<String>,strength:Option<String>,ambiguous:bool,reason:Option<String>,review_reason:Option<String>,stored:Stored}
+struct Row{resource_id:String,#[serde(default)]root_path:String,relative_path:String,vndb_id:Option<String>,#[serde(default)]vndb_ids:Vec<String>,strength:Option<String>,ambiguous:bool,reason:Option<String>,review_reason:Option<String>,stored:Stored}
 impl Row{
     fn strong(&self)->bool{self.vndb_id.is_some()&&self.strength.as_deref()==Some("strong")&&!self.ambiguous&&self.review_reason.is_none()}
-    fn identity(&self,section:&str)->Option<&str>{if section=="actual"{self.stored.vndb_id.as_deref().filter(|_|self.stored.state.as_deref()==Some("matched"))}else{self.vndb_id.as_deref().filter(|_|self.strong())}}
+    fn identity(&self,section:&str)->Option<BTreeSet<&str>>{let (admitted,ids,id)=if section=="actual"{(self.stored.state.as_deref()==Some("matched"),&self.stored.vndb_ids,&self.stored.vndb_id)}else{(self.strong(),&self.vndb_ids,&self.vndb_id)};let ids=id_set(ids,id.as_deref());if admitted&&!ids.is_empty(){Some(ids)}else{None}}
 }
+fn id_set<'a>(ids:&'a [String],legacy:Option<&'a str>)->BTreeSet<&'a str>{if ids.is_empty(){legacy.into_iter().collect()}else{ids.iter().map(String::as_str).collect()}}
 #[derive(Deserialize,Serialize)]
 struct Report{algorithm_version:i64,limitation:String,summary:Value,diff:Value,answers:Value,resources:Vec<Row>,#[serde(default,skip_serializing_if="Option::is_none")]error:Option<String>}
 impl Report{fn new()->Self{Self{algorithm_version:matching::ALGORITHM_VERSION,limitation:LIMITATION.into(),summary:Value::Null,diff:Value::Null,answers:Value::Null,resources:vec![],error:None}}}
 #[derive(Deserialize)]
-struct Answer{vndb:String,source:AnswerSource}
+struct Answer{#[serde(default)]vndb:Option<String>,#[serde(default)]vndb_ids:Vec<String>,source:AnswerSource}
 #[derive(Deserialize)]
 enum AnswerSource{#[serde(rename="user")]User,#[serde(rename="auto-2026-10-11")]Automatic}
 struct Args{db:PathBuf,out:PathBuf,baseline:Option<PathBuf>,answers:Option<PathBuf>,root_maps:Vec<(String,String)>,fail_on:BTreeSet<String>}
@@ -42,8 +43,11 @@ fn rows(c:&Connection)->R<Vec<Row>>{
     while let Some(r)=cursor.next()?{
         let id:String=r.get(0)?;let evidence:Option<String>=r.get(2)?;let evidence:Value=serde_json::from_str(evidence.as_deref().unwrap_or("{}"))?;
         let replay=automatch::replay(c,&id,&evidence).map_err(|e|format!("Resource {id}: {e}"))?;
-        let (candidate,review_reason)=if let Some(result)=replay{let reason=result["decision"]["reason"].as_str().map(str::to_owned);(result["results"][0].clone(),reason)}else{(Value::Null,Some("Resource has no usable catalog input (no indexed files or a system entry).".into()))};
-        rows.push(Row{resource_id:id,root_path:r.get(6)?,relative_path:r.get(1)?,vndb_id:candidate["id"].as_str().map(str::to_owned),strength:candidate["match"]["strength"].as_str().map(str::to_owned),ambiguous:candidate["match"]["ambiguous"]==true,reason:candidate["match"]["reason"].as_str().map(str::to_owned),review_reason,stored:Stored{state:r.get(3)?,work_id:r.get(4)?,vndb_id:r.get(5)?}});
+        let (candidate,vndb_ids,review_reason)=if let Some(result)=replay{let reason=result["decision"]["reason"].as_str().map(str::to_owned);let ids=automatch::bound_candidates(&result).iter().filter_map(|c|c["id"].as_str().map(str::to_owned)).collect();(result["results"][0].clone(),ids,reason)}else{(Value::Null,vec![],Some("Resource has no usable catalog input (no indexed files or a system entry).".into()))};
+        let stored_id:Option<String>=r.get(5)?;
+        let mut bindings=c.prepare("SELECT DISTINCT w.vndb_id FROM resource_bindings b JOIN works w ON w.id=b.work_id WHERE b.resource_id=?1 AND w.vndb_id IS NOT NULL ORDER BY w.vndb_id")?;
+        let mut stored_ids=bindings.query_map([&id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;if stored_ids.is_empty(){stored_ids.extend(stored_id.clone());}
+        rows.push(Row{resource_id:id,root_path:r.get(6)?,relative_path:r.get(1)?,vndb_id:candidate["id"].as_str().map(str::to_owned),vndb_ids,strength:candidate["match"]["strength"].as_str().map(str::to_owned),ambiguous:candidate["match"]["ambiguous"]==true,reason:candidate["match"]["reason"].as_str().map(str::to_owned),review_reason,stored:Stored{state:r.get(3)?,work_id:r.get(4)?,vndb_id:stored_id,vndb_ids:stored_ids}});
     }Ok(rows)
 }
 fn path_key(row:&Row,maps:&[(String,String)])->String{
@@ -82,15 +86,15 @@ fn diff(rows:&[Row],baseline:&Report,maps:&[(String,String)])->R<Value>{
 fn check_answers(rows:&[Row],answers:&BTreeMap<String,Answer>)->R<Value>{
     let mut paths=BTreeMap::new();for row in rows{let path:String=row.relative_path.nfc().collect();if let Some(before)=paths.insert(path,row){return Err(format!("Answer keys require unique NFC relative paths across roots: {}/{} and {}/{}",before.root_path,before.relative_path,row.root_path,row.relative_path).into());}}
     let mut normalized=BTreeMap::new();for (path,answer) in answers{
-        let _=&answer.source;let id=answer.vndb.strip_prefix('v').ok_or("Answer must contain a VNDB vNNN id")?;
-        if id.is_empty()||!id.bytes().all(|c|c.is_ascii_digit()){return Err("Answer must contain a VNDB vNNN id".into());}
+        let _=&answer.source;let ids=id_set(&answer.vndb_ids,answer.vndb.as_deref());if ids.is_empty(){return Err("Answer must contain at least one VNDB vNNN id".into());}
+        for id in ids{let id=id.strip_prefix('v').ok_or("Answer must contain a VNDB vNNN id")?;if id.is_empty()||!id.bytes().all(|c|c.is_ascii_digit()){return Err("Answer must contain a VNDB vNNN id".into());}}
         if normalized.insert(path.nfc().collect::<String>(),answer).is_some(){return Err(format!("Duplicate NFC answer key: {path}").into());}
     }
     let mut result=json!({});for section in ["actual","replay"]{
         let(mut agree,mut false_matches,mut missing)=(0,vec![],vec![]);
-        for (path,answer) in &normalized{let row=paths.get(path);match row.and_then(|r|r.identity(section)){
-            Some(id)=>if id==answer.vndb{agree+=1;}else{false_matches.push(json!({"relative_path":path,"expected":answer.vndb,"actual":id,"resource_id":row.unwrap().resource_id,"root_path":row.unwrap().root_path}));},
-            None=>missing.push(json!({"relative_path":path,"expected":answer.vndb,"resource_id":row.map(|r|&r.resource_id)})),
+        for (path,answer) in &normalized{let expected=id_set(&answer.vndb_ids,answer.vndb.as_deref());let row=paths.get(path);match row.and_then(|r|r.identity(section)){
+            Some(id)=>if id==expected{agree+=1;}else{false_matches.push(json!({"relative_path":path,"expected":expected,"actual":id,"resource_id":row.unwrap().resource_id,"root_path":row.unwrap().root_path}));},
+            None=>missing.push(json!({"relative_path":path,"expected":expected,"resource_id":row.map(|r|&r.resource_id)})),
         }}
         let unreviewed:Vec<_>=rows.iter().filter(|r|r.identity(section).is_some()&&!normalized.contains_key(&r.relative_path.nfc().collect::<String>())).collect();
         result[section]=json!({"counts":{"agree":agree,"false":false_matches.len(),"missing":missing.len(),"unreviewed":unreviewed.len()},"false":false_matches,"missing":missing,"unreviewed":unreviewed});
@@ -128,7 +132,7 @@ fn print_report(report:&Report){
         println!("{section}: {}",report.summary[section]);
         for key in ["gained","lost","changed","reason_changed"]{for entry in report.diff[section][key].as_array().into_iter().flatten(){
             let before=if section=="actual"{&entry["before"]["stored"]}else{&entry["before"]};let after=if section=="actual"{&entry["after"]["stored"]}else{&entry["after"]};
-            println!("  {key}: {}/{}: {} -> {}",entry["root_path"].as_str().unwrap_or(""),entry["relative_path"].as_str().unwrap_or(""),before["vndb_id"],after["vndb_id"]);
+            println!("  {key}: {}/{}: {} -> {}",entry["root_path"].as_str().unwrap_or(""),entry["relative_path"].as_str().unwrap_or(""),before["vndb_ids"],after["vndb_ids"]);
         }}
     }
     for key in ["added","removed"]{for entry in report.diff[key].as_array().into_iter().flatten(){println!("{key}: {}/{}",entry["root_path"].as_str().unwrap_or(""),entry["relative_path"].as_str().unwrap_or(""));}}
@@ -150,7 +154,21 @@ fn main(){let code=match run(&std::env::args_os().skip(1).collect::<Vec<_>>()){O
 
 #[cfg(test)]mod tests{
     use super::*;
-    fn row(id:&str,strong:bool)->Row{Row{resource_id:id.into(),root_path:"/root".into(),relative_path:id.into(),vndb_id:Some("v4".into()),strength:Some("strong".into()),ambiguous:false,reason:Some("exact_title".into()),review_reason:if strong{None}else{Some("Conflicting member".into())},stored:Stored{state:None,work_id:None,vndb_id:None}}}
+    fn row(id:&str,strong:bool)->Row{Row{resource_id:id.into(),root_path:"/root".into(),relative_path:id.into(),vndb_id:Some("v4".into()),vndb_ids:vec![],strength:Some("strong".into()),ambiguous:false,reason:Some("exact_title".into()),review_reason:if strong{None}else{Some("Conflicting member".into())},stored:Stored{state:None,work_id:None,vndb_id:None,vndb_ids:vec![]}}}
+    #[test]fn compares_full_sets_in_both_sections_and_loads_legacy_single_id_baselines(){
+        let mut legacy=serde_json::to_value(row("r",true)).unwrap();legacy.as_object_mut().unwrap().remove("vndb_ids");legacy["stored"].as_object_mut().unwrap().remove("vndb_ids");let mut old:Row=serde_json::from_value(legacy).unwrap();stored(&mut old,Some("v4"));
+        let mut new=old.clone();new.vndb_ids=vec!["v4".into(),"v5".into()];new.stored.vndb_ids=new.vndb_ids.clone();
+        let result=diff(&[new.clone()],&baseline(vec![old.clone()]),&[]).unwrap();for section in ["actual","replay"]{assert_eq!(result[section]["counts"]["changed"],1);}
+        let single=serde_json::from_value(json!({"r":{"vndb":"v4","source":"user"}})).unwrap();let checked=check_answers(&[new.clone()],&single).unwrap();for section in ["actual","replay"]{assert_eq!(checked[section]["counts"]["false"],1);}
+        let multiple=serde_json::from_value(json!({"r":{"vndb_ids":["v5","v4"],"source":"user"}})).unwrap();let checked=check_answers(&[new.clone()],&multiple).unwrap();for section in ["actual","replay"]{assert_eq!(checked[section]["counts"]["agree"],1);}
+        old.vndb_ids=vec!["v5".into(),"v4".into()];old.stored.vndb_ids=old.vndb_ids.clone();old.vndb_id=Some("v5".into());let result=diff(&[new],&baseline(vec![old]),&[]).unwrap();for section in ["actual","replay"]{assert_eq!(result[section]["counts"]["changed"],0);}
+    }
+    #[test]fn reads_full_replay_and_actual_compilation_sets(){
+        let t=tempfile::tempdir().unwrap();let db=galroon_core::db::open(&t.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+        c.execute_batch("INSERT INTO roots(id,path,label) VALUES('root','/unused','Fixture'); INSERT INTO resources(id,root_id,relative_path,title,kind) VALUES('r','root','Collection Box','Collection Box','archive'); INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES('f','root','/unused/Collection Box','Collection Box',1,'1','rar','fixture'); INSERT INTO resource_files(resource_id,file_id) VALUES('r','f'); INSERT INTO works(id,title,original_title,vndb_id) VALUES('a','Alpha Story','Alpha Story','v1'),('b','Beta Story','Beta Story','v2'); INSERT INTO resource_bindings(resource_id,work_id,role) VALUES('r','a','main'),('r','b','main'); UPDATE resources SET work_id='a' WHERE id='r'; INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('job','match','completed','{}',1,1);").unwrap();
+        let evidence=json!({"results":[{"id":"v1","title":"Alpha Story","release_matches":[{"id":"r123","title":"Collection Box"}]},{"id":"v2","title":"Beta Story","release_matches":[{"id":"r123","title":"Collection Box"}]}],"incomplete":false});
+        c.execute("INSERT INTO match_items(job_id,resource_id,revision,state,evidence,work_id) VALUES('job','r',1,'matched',?1,'a')",[evidence.to_string()]).unwrap();let rows=rows(&c).unwrap();assert_eq!(rows[0].vndb_ids,vec!["v1","v2"]);assert_eq!(rows[0].stored.vndb_ids,vec!["v1","v2"]);assert!(rows[0].strong());
+    }
     #[test]fn compares_final_admission_and_checks_all_answers(){
         let baseline=Report{algorithm_version:5,limitation:LIMITATION.into(),summary:Value::Null,diff:Value::Null,answers:Value::Null,error:None,resources:vec![row("gained",false),row("lost",true),row("changed",true),row("reason",false)]};
         let mut changed=row("changed",true);changed.vndb_id=Some("v5".into());let mut reason=row("reason",false);reason.review_reason=Some("Another reason".into());
@@ -159,7 +177,7 @@ fn main(){let code=match run(&std::env::args_os().skip(1).collect::<Vec<_>>()){O
         assert_eq!(check_answers(&rows,&answers).unwrap()["replay"]["counts"],json!({"agree":1,"false":1,"missing":2,"unreviewed":0}));assert_eq!(diff(&rows[..2],&baseline,&[]).unwrap()["counts"]["removed"],2);
     }
     fn baseline(resources:Vec<Row>)->Report{Report{resources,..Report::new()}}
-    fn stored(row:&mut Row,id:Option<&str>){row.stored=Stored{state:Some(if id.is_some(){"matched"}else{"review"}.into()),work_id:id.map(|_|"w".into()),vndb_id:id.map(str::to_owned)};}
+    fn stored(row:&mut Row,id:Option<&str>){row.stored=Stored{state:Some(if id.is_some(){"matched"}else{"review"}.into()),work_id:id.map(|_|"w".into()),vndb_id:id.map(str::to_owned),vndb_ids:vec![]};}
     #[test]fn id_mode_preserves_old_reports_and_ignores_root_changes(){
         let mut old=row("r",true);old.root_path.clear();let result=diff(&[row("r",true)],&baseline(vec![old]),&[]).unwrap();
         assert_eq!(result["mode"],"id");assert_eq!(result["replay"]["counts"]["changed"],0);

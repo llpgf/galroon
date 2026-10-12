@@ -96,6 +96,11 @@ fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapsho
 fn eligible(response:&Value)->Option<&Value>{
     if review_reason(response).is_some(){None}else{response["results"].as_array()?.first()}
 }
+/// The complete proposed binding, in primary-first order; admission still requires review_reason.
+pub fn bound_candidates(response:&Value)->Vec<&Value>{
+    let Some(rows)=response["results"].as_array()else{return vec![];};let Some(first)=rows.first()else{return vec![];};
+    if let Some(ids)=first["match"]["compilation"]["vndb_ids"].as_array(){ids.iter().filter_map(|id|rows.iter().find(|c|c["id"]==*id)).collect()}else{vec![first]}
+}
 fn strings(v:&Value)->Vec<String>{v.as_array().map(|a|a.iter().filter_map(|s|s.as_str().map(str::to_owned)).collect()).unwrap_or_default()}
 pub fn review_reason(response:&Value)->Option<String>{
     // Incomplete without a provider warning means VNDB had more results than one page: retrying will not help.
@@ -106,17 +111,21 @@ pub fn review_reason(response:&Value)->Option<String>{
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
     if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
-    let known=matching::candidate_names(candidate);let mut names=known.clone();names.extend(titles.first().and_then(Value::as_str));
-    let mut fallback=None;
-    for (index,title) in titles.iter().filter_map(Value::as_str).enumerate(){
+    let bound=bound_candidates(response);
+    let release_id=&candidate["match"]["compilation"]["release_id"];
+    let compilation_names:Vec<_>=candidate["release_matches"].as_array().into_iter().flatten().filter(|r|r["id"]==*release_id).filter_map(|r|r["title"].as_str()).collect();
+    let known:Vec<_>=bound.iter().flat_map(|c|matching::candidate_names(c)).collect();let mut names=known.clone();names.extend(titles.first().and_then(Value::as_str));
+    let mut fallbacks=vec![None;bound.len()];
+    'members: for (index,title) in titles.iter().filter_map(Value::as_str).enumerate(){
         // Bonus, crack and artwork members of the matched work file into its card. The resource's own name only
         // passes as a VNDB name plus such words, never as a code name or bonus words alone.
         if if index==0{matching::names_with_extras(title,&known)}else{matching::ancillary_member(title,&names)}{continue;}
+        for (work_index,&candidate) in bound.iter().enumerate(){
         let Ok(mut input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};
         // Re-ranking one cleaned title keeps the resource's own brand/date corroboration.
         input.brands=strings(&response["brands"]);input.dates=strings(&response["dates"]);let row=matching::rank(&input,vec![candidate.clone()]);let reason=row[0]["match"]["reason"].as_str().unwrap_or("");
         if !["exact_brand_title","exact_title","exact_alias","exact_release","direct_id","confirmed_title","exact_main_title"].contains(&reason)&&!matching::corroborates_filename(title,candidate){
-            let (fallback_names,brands,additional_names)=fallback.get_or_insert_with(||{
+            let (fallback_names,brands,additional_names)=fallbacks[work_index].get_or_insert_with(||{
                 let mut brands:Vec<&str>=response["brands"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 for maker in candidate["developers"].as_array().into_iter().flatten(){brands.extend(["name","original"].iter().filter_map(|k|maker[*k].as_str()));}
                 let mut additional_names=Vec::new();
@@ -137,11 +146,13 @@ pub fn review_reason(response:&Value)->Option<String>{
                 }
                 (fallback_names,brands,additional_names)
             });
-            if matching::title_anchored_member(title,if index==0{&known}else{fallback_names},brands)||matching::title_anchored_member(title,additional_names,brands){continue;}
-            if index>0&&matching::corroborated_member(title,candidate,response["results"].as_array().unwrap()){continue;}
-            if index>0&&matching::fan_release_member(title,candidate){continue;}
-            return Some(format!("A different source name needs review: {title}"));
+            if index>0&&response["results"][0]["match"]["compilation"].is_object()&&matching::compilation_member(title,&compilation_names,fallback_names){continue 'members;}
+            if matching::title_anchored_member(title,if index==0{&known}else{fallback_names},brands)||matching::title_anchored_member(title,additional_names,brands){continue 'members;}
+            if index>0&&matching::corroborated_member(title,candidate,response["results"].as_array().unwrap()){continue 'members;}
+            if index>0&&matching::fan_release_member(title,candidate){continue 'members;}
+        }else{continue 'members;}
         }
+        return Some(format!("A different source name needs review: {title}"));
     }None
 }
 fn brand(path:&str)->String{
@@ -205,6 +216,34 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     fn response(input:matching::Input,rows:Vec<Value>)->Value {json!({"results":matching::rank(&input,rows),"titles":input.titles,"incomplete":false})}
     fn exact(input:matching::Input)->Value{response(input,vec![json!({"id":"v4","title":"Clannad"})])}
     fn scalar(db:&Db,query:&str)->i64{db.lock().unwrap().query_row(query,[],|r|r.get(0)).unwrap()}
+    fn compilation_response(input:matching::Input)->Value{response(input,vec![json!({"id":"v1","title":"Alpha Story","release_matches":[{"id":"r123","title":"Collection Box"}]}),json!({"id":"v2","title":"Beta Story","release_matches":[{"id":"r123","title":"Collection Box"}]})])}
+    #[test]fn compilation_member_review_uses_all_bound_names_and_incomplete_search_stays_review(){
+        let mut result=compilation_response(matching::prepare("Collection Box",&[]).unwrap());assert!(eligible(&result).is_some());
+        result["titles"]=json!(["Collection Box","Beta Story Soundtrack","Alpha Story Patch"]);assert_eq!(review_reason(&result),None);
+        for member in ["Collection Box 「Beta Story OST」 (2wav+cue+log)","Collection Box 「Alpha Story」 Disc-1","Collection Box 「Beta Story Disk」","Collection Box 同梱 Disk"]{result["titles"]=json!(["Collection Box",member]);assert_eq!(review_reason(&result),None,"{member}");}
+        for member in ["Collection Box 「Unrelated Game」 Disc-1","Collection Box 「Alpha Story 2」","Collection Box 「Beta Story Other Subtitle」","Collection Box 「Other Box」","Collection Box 「Beta Story OST」 Unknown Game"]{result["titles"]=json!(["Collection Box",member]);assert!(review_reason(&result).is_some(),"{member}");}
+        result["titles"]=json!(["Collection Box"]);
+        result["titles"].as_array_mut().unwrap().push(json!("Unrelated Game"));assert_eq!(review_reason(&result),Some("A different source name needs review: Unrelated Game".into()));
+        result["titles"]=json!(["Collection Box"]);result["incomplete"]=json!(true);assert!(eligible(&result).is_none());result["warning"]=json!("Provider unavailable");assert_eq!(review_reason(&result),Some("Search incomplete. Refresh when VNDB is available.".into()));
+    }
+    #[tokio::test]async fn compilation_admits_all_works_atomically_as_automatic_main_bindings(){
+        let(_t,db)=fixture(&["Collection Box","Collection Box"]);
+        db.lock().unwrap().execute_batch("INSERT INTO works(id,title,original_title,vndb_id,notes) VALUES('existing','My Beta','Original Beta','v2','Keep notes');").unwrap();
+        let job=kick(&db,true).unwrap().unwrap();run_with(&db,&job,|i|async move{Ok(compilation_response(i))}).await.unwrap();
+        {let c=db.lock().unwrap();for rid in ["r0","r1"]{let bindings=editions::bindings(&c,rid).unwrap();assert_eq!(bindings.len(),2);assert!(bindings.iter().all(|b|b.role=="main"&&b.release_id.is_none()));
+            assert_eq!(c.query_row("SELECT w.vndb_id FROM resources r JOIN works w ON w.id=r.work_id WHERE r.id=?1",[rid],|r|r.get::<_,String>(0)).unwrap(),"v1");assert!(snapshot(&c,rid).unwrap().is_none());
+            let evidence:String=c.query_row("SELECT evidence FROM match_items WHERE resource_id=?1",[rid],|r|r.get(0)).unwrap();let evidence:Value=serde_json::from_str(&evidence).unwrap();assert_eq!(evidence["results"][0]["match"]["compilation"]["vndb_ids"],json!(["v1","v2"]));
+            assert_eq!(bound_candidates(&replay(&c,rid,&evidence).unwrap().unwrap()).len(),2);
+        }assert_eq!(c.query_row("SELECT title||':'||notes FROM works WHERE id='existing'",[],|r|r.get::<_,String>(0)).unwrap(),"My Beta:Keep notes");}
+        assert_eq!(scalar(&db,"SELECT count(*) FROM works"),2);assert_eq!(scalar(&db,"SELECT count(*) FROM releases"),0);assert_eq!(scalar(&db,"SELECT count(*) FROM resource_history"),2);
+        assert_eq!(scalar(&db,"SELECT count(*) FROM events WHERE code='manual.bind'"),0);assert_eq!(scalar(&db,"SELECT count(*) FROM events WHERE code='match.attempt' AND json_extract(payload,'$.state')='matched'"),2);assert!(kick(&db,true).unwrap().is_none());
+    }
+    #[tokio::test]async fn compilation_history_and_attempt_failures_roll_back_every_work_and_binding(){
+        for trigger in ["CREATE TRIGGER reject_history BEFORE INSERT ON resource_history BEGIN SELECT RAISE(ABORT,'History failure'); END;","CREATE TRIGGER reject_attempt BEFORE INSERT ON events WHEN NEW.code='match.attempt' BEGIN SELECT RAISE(ABORT,'Attempt failure'); END;"]{
+            let(_t,db)=fixture(&["Collection Box"]);let job=kick(&db,true).unwrap().unwrap();db.lock().unwrap().execute_batch(trigger).unwrap();assert!(run_with(&db,&job,|i|async move{Ok(compilation_response(i))}).await.is_err());
+            for table in ["works","resource_bindings","resource_history"]{assert_eq!(scalar(&db,&format!("SELECT count(*) FROM {table}")),0);}assert_eq!(scalar(&db,"SELECT count(*) FROM match_items WHERE state='pending'"),1);
+        }
+    }
     #[test]fn catalog_inputs_and_hint_order_are_unicode_independent_but_fingerprints_stay_raw(){
         let title="[240101][ブランド] サンプルタイトル";let path=format!("親ブランド/{title}");
         let members:Vec<String>=(0..40).map(|i|format!("{path}/[メーカー{i:02}] {}{i:02}.rar",if i%2==0{"カキクケコカ"}else{"ガギグゲゴ"})).collect();
@@ -792,9 +831,11 @@ fn apply(db:&Db,job:&str,rid:&str,expected:&Snapshot,response:&Value)->R<()> {
     let mut result=with_confirmation(&tx,rid,&expected.input,response)?;
     result["source"]=json!({"revision":expected.revision,"listing_fingerprint":expected.fingerprint,"queries":expected.input.queries});let response=&result;
     if let Some(candidate)=eligible(response){
+        let compilation=candidate["match"]["compilation"].is_object();let mut bindings=Vec::new();
+        for candidate in bound_candidates(response){
         let external=candidate["id"].as_str().ok_or("Candidate has no VNDB ID")?;
         // A remake filed by VNDB as a release of the original work gets its own card for that release.
-        let remake=matching::remake_release(&expected.input,candidate);let release_key=remake.as_ref().and_then(|r|r["id"].as_str()).unwrap_or("").to_string();
+        let remake=if compilation{None}else{matching::remake_release(&expected.input,candidate)};let release_key=remake.as_ref().and_then(|r|r["id"].as_str()).unwrap_or("").to_string();
         let existing:Option<String>=sql(tx.query_row("SELECT id FROM works WHERE vndb_id=?1 AND coalesce(vndb_release,'')=?2",params![external,release_key],|r|r.get(0)).optional())?;
         let mut wid=existing.clone().unwrap_or_else(db::id);
         if existing.is_some(){let mut seen=std::collections::HashSet::new();loop{if !seen.insert(wid.clone()){return Err("Work merge history contains a cycle".into());}let merged:Option<String>=sql(tx.query_row("SELECT merged_into FROM works WHERE id=?1",[&wid],|r|r.get(0)))?;if let Some(next)=merged{wid=next;}else{break;}}}
@@ -805,12 +846,16 @@ fn apply(db:&Db,job:&str,rid:&str,expected:&Snapshot,response:&Value)->R<()> {
             sql(tx.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,developer,released,tags,aliases,source_json,vndb_release) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![wid,source["title"].as_str(),source["original_title"].as_str(),external,source["description"].as_str(),source["cover"].as_str(),source["developer"].as_str(),source["released"].as_str(),source["tags"].to_string(),source["aliases"].to_string(),source.to_string(),remake.as_ref().and_then(|r|r["id"].as_str())]))?;
         }
         if existing.is_none(){sql(crate::job_summary::record(&tx,job,"new_works",&wid,"yes"))?;}
-        let release=editions::legacy_release(&tx,&wid,"Unclassified edition")?;
+        let release=if compilation{None}else{editions::legacy_release(&tx,&wid,"Unclassified edition")?};
         // Bonus archives split out of a bundle folder are extras of their work, not the game itself.
         let path:String=sql(tx.query_row("SELECT relative_path FROM resources WHERE id=?1",[rid],|r|r.get(0)))?;
-        let role=if path.contains(['/','\\'])&&matching::bonus_name(&path){"extra"}else{"unknown"};
-        editions::set_bindings_in(&tx,rid,editions::EditBindings{revision:expected.revision,primary_work_id:Some(wid.clone()),bindings:vec![editions::Binding{work_id:wid.clone(),release_id:release,role:role.into()}]})?;
-        complete_item(&tx,job,rid,"matched",response,Some(&wid))?;
+        let role=if compilation{"main"}else if path.contains(['/','\\'])&&matching::bonus_name(&path){"extra"}else{"unknown"};
+        if !bindings.iter().any(|b:&editions::Binding|b.work_id==wid){bindings.push(editions::Binding{work_id:wid,release_id:release,role:role.into()});}
+        }
+        let primary=bindings.first().map(|b|b.work_id.clone());
+        // Same binding/history primitive as manual_bindings_in, without a person's timeline event.
+        editions::set_bindings_in(&tx,rid,editions::EditBindings{revision:expected.revision,primary_work_id:primary.clone(),bindings})?;
+        complete_item(&tx,job,rid,"matched",response,primary.as_deref())?;
     }else{complete_item(&tx,job,rid,"review",response,None)?;}
     sql(tx.commit())?;Ok(())
 }

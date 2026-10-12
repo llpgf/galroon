@@ -15,3 +15,5 @@ Schema 47 stores proposals in `match_suggestions`. Only one open suggestion may 
 Owners on loopback and paired desktops on loopback/LAN may create, confirm and dismiss. Web sessions can only read, through the common path-redacting projection. Source attribution derives from the authenticated session (`mcp:<paired device name>` or `owner:owner`); it is not caller-supplied. Normal collection/device identity pins apply.
 
 See [API contract](../development/API_CONTRACT.md#ai-match-suggestions-schema-47-phase-3a) for request and response shapes and [MCP](MCP.md) for assistant setup.
+
+Phase 3b separately admits deterministically proven pure compilations automatically (US-5.2 acceptance 1 and 5); see [matching](MATCHING.md#pure-compilations--algorithm-14-us-52). It shares `editions::set_bindings_in`, the binding/history primitive underlying `manual_bindings_in`, but records an automatic match attempt. AI suggestions still require a person to confirm.
