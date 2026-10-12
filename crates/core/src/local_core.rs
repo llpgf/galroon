@@ -1,11 +1,10 @@
 //! Per-user Windows control channel. Bearer credentials never go into argv or disk.
 use std::{path::{Path,PathBuf},os::windows::{io::AsRawHandle},time::Duration};
 use tokio::{io::{AsyncReadExt,AsyncWriteExt},net::windows::named_pipe::{ServerOptions,ClientOptions}};
-use serde::{Serialize,Deserialize};
+pub use crate::core_host::Session;
 use sha2::{Digest,Sha256};
 use windows_sys::Win32::{Foundation::{CloseHandle,LocalFree},Security::{GetTokenInformation,TokenUser,TOKEN_QUERY,TOKEN_USER,SECURITY_ATTRIBUTES},Security::Authorization::{ConvertSidToStringSidW,ConvertStringSecurityDescriptorToSecurityDescriptorW},System::{Threading::{GetCurrentProcess,OpenProcessToken,OpenProcess,QueryFullProcessImageNameW,PROCESS_QUERY_LIMITED_INFORMATION},Pipes::GetNamedPipeServerProcessId}};
 type R<T>=Result<T,String>;
-#[derive(Clone,Serialize,Deserialize)]pub struct Session{pub library_id:String,pub device_id:String,pub api_min:u32,pub api_max:u32,pub url:String,pub token:String,pub instance_id:String,pub pid:u32}
 fn last_error()->String{std::io::Error::last_os_error().to_string()}
 fn owner_sid()->R<String>{unsafe{
  let mut token=std::ptr::null_mut();if OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut token)==0{return Err(last_error());}
@@ -55,28 +54,18 @@ pub fn fatal_since(dir:&Path,started:i64)->Option<String>{
 }
 pub async fn run(dir:PathBuf)->R<()>{let device_dir=dir.clone();run_with_device(dir,device_dir).await}
 pub async fn run_with_device(dir:PathBuf,device_dir:PathBuf)->R<()>{
- let app=crate::initialize_with_device(dir,&device_dir)?;
- let library=crate::context::library(&*app.db.lock().map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;
- let session=Session{library_id:library.id,device_id:app.device.id.clone(),api_min:1,api_max:1,url:format!("http://127.0.0.1:{}",listener.local_addr().map_err(|e|e.to_string())?.port()),token:app.token.clone(),instance_id:app.instance_id.clone(),pid:std::process::id()};
- let name=pipe_name(&app.state_dir)?;let mut next_pipe=secure_pipe(&name,true)?;let db=app.db.clone();let _lifetime_lock=app.process_lock.clone();let (stop_tx,stop_rx)=tokio::sync::oneshot::channel::<()>();
- let mut services=crate::Services::start(app.clone())?;let mutation_gate=app.mutation_lock.clone();
- let http=tokio::spawn(async move{crate::serve_listeners(app,vec![(listener,crate::Transport::Loopback)],async{let _=stop_rx.await;}).await});
+ let (host,listener)=crate::core_host::CoreHost::initialize(dir,&device_dir,0).await?;
+ let session=host.session.clone();let name=pipe_name(&host.app.state_dir)?;let mut next_pipe=secure_pipe(&name,true)?;
+ let mut core=host.start(listener)?;
  loop{next_pipe.connect().await.map_err(|e|e.to_string())?;let mut pipe=next_pipe;next_pipe=secure_pipe(&name,false)?;
   let read=async{let mut bytes=Vec::new();loop{let b=pipe.read_u8().await?;if b==b'\n'{break;}bytes.push(b);if bytes.len()>32{return Err(std::io::Error::other("Invalid request"));}}Ok(String::from_utf8_lossy(&bytes).to_string())};
   let action=tokio::time::timeout(Duration::from_secs(3),read).await;let mut stopping=false;
   let response=match action{Ok(Ok(a))if a=="session"=>serde_json::to_value(&session).unwrap(),Ok(Ok(a))if a=="stop"=>{
-   services.stop_smart_updates();let _gate=mutation_gate.lock().map_err(|e|e.to_string())?;let c=db.lock().map_err(|e|e.to_string())?;let active:i64=c.query_row("SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
-   if active>0{services.restart_smart_updates(db.clone());serde_json::json!({"error":"Pause running tasks before stopping Core"})}else{services.request_stop();stopping=true;serde_json::json!({"stopped":true})}
+   if core.request_stop_if_idle()?{stopping=true;serde_json::json!({"stopped":true})}else{serde_json::json!({"error":"Pause running tasks before stopping Core"})}
   },Ok(Ok(a))=>serde_json::json!({"error":format!("Unknown control command ({} bytes)",a.len())}),Ok(Err(e))=>serde_json::json!({"error":format!("Control read failed: {e}")}),Err(_)=>serde_json::json!({"error":"Control request timed out"})};
   let payload=format!("{response}\n");let _=tokio::time::timeout(Duration::from_secs(3),pipe.write_all(payload.as_bytes())).await;
   let _=tokio::time::timeout(Duration::from_secs(3),pipe.read_u8()).await;
-  if stopping{let _=stop_tx.send(());http.await.map_err(|e|e.to_string())??;
-   // Drain any request that passed authentication just before HTTP shutdown.
-   loop{let active={let c=db.lock().map_err(|e|e.to_string())?;c.execute("UPDATE jobs SET state='pausing' WHERE state='running'",[]).map_err(|e|e.to_string())?;c.execute("UPDATE jobs SET state='interrupted' WHERE state='queued'",[]).map_err(|e|e.to_string())?;c.query_row("SELECT (SELECT count(*) FROM jobs WHERE state IN ('running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?};if active==0{break;}tokio::time::sleep(Duration::from_millis(100)).await;}
-   let checkpoint_path={let c=db.lock().map_err(|e|e.to_string())?;c.path().map(PathBuf::from)};
-   if let Some(path)=checkpoint_path {tokio::task::spawn_blocking(move||crate::checkpoint::drain(&path)).await.map_err(|e|e.to_string())?;}
-   return Ok(());
-  }
+  if stopping{return core.shutdown().await;}
   let _=pipe.disconnect();
  }
 }
