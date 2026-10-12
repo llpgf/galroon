@@ -7,7 +7,7 @@
 相對於 LAN_CORE_PLAN §4.15，本 PR 刻意作以下調整：
 
 - GitHub Actions `ubuntu-24.04` 建置 Linux x86_64 Core 與前端，產出一個 `galroon-nas-x86_64` artifact。NAS 可用記憶體約 1.3 GB，在 NAS 上執行 rustc 容易 OOM 且速度慢；Mac 也沒有 Docker，因此不採多階段 image 編譯或 Mac `docker save`／NAS `docker load`。
-- NAS 只以預先建好的檔案組裝 runtime image。使用 `ubuntu:24.04`，與 CI 的 glibc 世代一致，取代計畫的 debian-slim。安裝 `7zip`（`/usr/bin/7zz`）與 CA 憑證，設定 `GALROON_7ZIP`。Core 與 `web/` 放在 `/opt/galroon/`，符合 `lib.rs` 的 `ServeDir` 路徑。
+- NAS 只以預先建好的檔案組裝 runtime image。使用 `ubuntu:24.04`，與 CI 的 glibc 世代一致，取代計畫的 debian-slim。安裝 `7zip`（7-Zip 23.01，執行檔為 `/usr/bin/7z`）與 CA 憑證，設定 `GALROON_7ZIP`。Core 與 `web/` 放在 `/opt/galroon/`，符合 `lib.rs` 的 `ServeDir` 路徑。
 - 不發布或拉取 Galroon registry image；image 只在 NAS 上建置及保留。首次建置仍需取得指定的 Ubuntu 基底 image 與 Ubuntu 套件。
 - 只掛載實際需要的 `/volume1/Backup/Galgame`，保留 NAS 原路徑與唯讀限制，不掛載整個 Backup。
 - uid/gid 由 compose 注入，不寫死在 image；部署預設 `1032:100`。使用絕對 executable 路徑執行 owner，以符合 N1a 與 image 的 PATH。
@@ -112,7 +112,7 @@ GALROON_DEV_SESSION="$PWD/target/nas-session/session.json" npm run dev
 1. 確認 N1a、N1b、N1c 與匹配 Phase 1b 都在待測 commit。以**相同 commit、同一份收藏、同樣匹配設定**，在 Mac 經 SMB 重新建立基準，記錄 commit、收藏檔案清單雜湊與設定。舊 `nas-2026-10-11-v6` 的 561 筆是 algorithm 5，不能直接當基準。本 PR 的 sandbox 不執行 SMB／收藏操作。
 2. 在 NAS 以新的資料目錄啟動，先記錄收藏檔案清單與 mtime、NAS 可用記憶體／swap、其他服務既有狀態。透過上述 owner session＋SSH 通道＋開發 UI 新增 `/volume1/Backup/Galgame`，執行完整掃描與自動匹配，記錄兩者耗時與設定。唯讀 bind mount 與 galroon-dev 的唯讀 ACL 全程保留。
 3. 從 container 啟動直到掃描、匹配結束，定期執行 `scripts/nas/status.sh` 保存輸出。它只 inspect `galroon`、顯示最後 50 行日誌，優先讀 host `/sys/fs/cgroup/memory/docker/<id>/memory.max_usage_in_bytes`（v1），再試 systemd／v2 `memory.peak` 路徑及 container 內的 counter，並標示版本與實際路徑；找不到時明確回報 unavailable，**不可當作 0 或驗收通過**。
-4. 記憶體尖峰初始預算 **600 MiB = 629145600 bytes**，首次實測後確認。cgroup counter 包含 `7zz` 子程序與快取，不使用會扣掉部分快取的 `docker stats` 顯示值取代。compose `1g` 是硬上限，不是 600 MiB 驗收門檻。同時記錄 host `MemAvailable`、`SwapTotal - SwapFree`、`OOMKilled`、`RestartCount` 與啟動時間；不得 OOM 或異常重啟。峰值需在停止／重建前保存，重建 container 會重新計量；若曾重啟或 counter 無法取得，該輪須調查後重測。
+4. 記憶體尖峰初始預算 **600 MiB = 629145600 bytes**，首次實測後確認。cgroup counter 包含 `7z` 子程序與快取，不使用會扣掉部分快取的 `docker stats` 顯示值取代。compose `1g` 是硬上限，不是 600 MiB 驗收門檻。同時記錄 host `MemAvailable`、`SwapTotal - SwapFree`、`OOMKilled`、`RestartCount` 與啟動時間；不得 OOM 或異常重啟。峰值需在停止／重建前保存，重建 container 會重新計量；若曾重啟或 counter 無法取得，該輪須調查後重測。
 5. 保存一致的 NAS 收藏庫副本：先記錄峰值與停止日誌，再依下節停止 Core，將 data 目錄（含必要的 SQLite WAL 檔）複製到 Mac 的獨立驗收目錄；不要對執行中的 SQLite 只複製主檔。重新啟動服務。使用匹配 Phase 1b 的工具比較：
 
    ```bash
@@ -164,6 +164,6 @@ mv .env.rollback .env
 
 本次 sandbox 已通過全部 `scripts/nas/*.sh` 的 `bash -n`、PyYAML 解析與 `scripts/check_repository.py`。另以 mock SSH／gh 驗證參數引號（含空白、單引號、換行）、setup 僅經 stdin、危險設定拒絕、遠端 sh 語法、run ID／分支下載，以及損毀 artifact 不覆蓋前次下載。ShellCheck 未安裝，略過。
 
-sandbox 無法啟動 Docker、連線 NAS 或證明實機 runtime 相依套件、DSM ACL、7zz、compose plugin、cgroup 路徑、記憶體門檻與 graceful shutdown。上述項目都需實際 CI 與 N1 驗收確認。
+sandbox 無法啟動 Docker、連線 NAS 或證明實機 runtime 相依套件、DSM ACL、7-Zip、compose plugin、cgroup 路徑、記憶體門檻與 graceful shutdown。上述項目都需實際 CI 與 N1 驗收確認。
 
 Ubuntu 同版本可降低 glibc 不相容風險，但不代表已驗證所有動態函式庫；首次啟動必須檢查 loader 錯誤。基底 image、apt 套件與 stable Rust 工具鏈會隨時間更新，目前沒有以 digest 固定，應保留已驗收的 image tag。artifact 下載與 release context 都會累積磁碟使用；工具不會自動清理。SHA tag 識別來源 commit，不保證同一 commit 在不同日期重建的 image 完全相同。

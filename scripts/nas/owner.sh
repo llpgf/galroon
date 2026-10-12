@@ -5,14 +5,14 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 [[ $# -gt 0 ]] || nas_die 'Usage: owner.sh <owner args...>'
 for arg in "$@"; do
-    [[ "$arg" != --data-dir && "$arg" != --data-dir=* ]] || nas_die 'This wrapper fixes --data-dir to /data.'
+    [[ "$arg" != --data-dir* && "$arg" != --control-dir* ]] || nas_die 'This wrapper fixes --data-dir and --control-dir.'
 done
 command=(sudo -n "$NAS_DOCKER" exec)
 if [[ "$1" == setup ]]; then
     [[ $# == 1 ]] || nas_die 'Usage: owner.sh setup (password via stdin only)'
     command+=(-i)
 fi
-command+=(galroon /opt/galroon/galroon-core owner "$@" --data-dir /data)
+command+=(galroon /opt/galroon/galroon-core owner "$@" --data-dir /data --control-dir /run/galroon)
 remote=$(nas_quote "${command[@]}")
 if [[ "$1" == setup && -t 0 ]]; then
     IFS= read -r -s -p 'Owner password: ' secret
