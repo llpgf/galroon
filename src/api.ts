@@ -1,3 +1,5 @@
+import i18n from 'i18next';
+import {revisionConflictText} from './coreText';
 import {reportClientError} from './clientDiagnostics';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 export type Session={url:string;token:string;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
@@ -57,7 +59,7 @@ async function changeSavedConnection(command:string,args:Record<string,unknown>)
  try{await invoke(command,args);window.location.reload();}
  catch(error){changing=false;epoch++;stopRequested=false;phase(previous.phase,previous.error);if(previous.phase==='offline')scheduleReconnect();throw error;}
 }
-export class ApiRequestError extends Error {constructor(message:string,public status:number){super(message);}}
+export class ApiRequestError extends Error {constructor(message:string,public status:number){super(revisionConflictText(i18n.t.bind(i18n),message));}}
 export async function webAccessTransport(url:string,signal:AbortSignal):Promise<string|undefined>{
  const status=await fetch(`${url}/api/access/status`,{credentials:'include',signal});
  if(status.ok){const value=await status.json();if(value.transport)return value.transport;}
@@ -117,10 +119,10 @@ export interface Work{added_order?:number;preferred_release_id?:string|null;id:s
  /** Other local cards for the same VNDB work, such as an original and its remake. */same_work?:{id:string;title:string;original_title:string;released:string;vndb_release:string|null}[]}
 export interface Binding{work_id:string;release_id:string|null;role:'main'|'patch'|'extra'|'unknown'}
 export interface Edition{platforms?:string[];origin?:string;notes?:string;id:string;label:string;languages:string[];edition_type:string;released_date:string;vndb_id:string|null;work_ids:string[];revision:number}
-export interface Resource{primary_work_title?:string|null;unknown?:number;auto_match_reason?:string|null;root_id:string;missing:number;unverified:number;revision:number;bindings:Binding[];id:string;title:string;path:string;kind:string;work_id:string|null;release:string;files:number;bytes:number;root_path:string}
-export interface Root{id:string;path:string;label:string;role:string;online:boolean;missing:number;unverified:number}
+export interface Resource{primary_work_title?:string|null;unknown?:number;auto_match_reason?:string|null;root_id:string;missing:number;unverified:number;revision:number;bindings:Binding[];id:string;title:string;path:string;kind:string;work_id:string|null;release:string;files:number;bytes:number;root_path?:string}
+export interface Root{id:string;path?:string;label:string;role:string;online:boolean;missing:number;unverified:number}
 export interface JobSummary{version:1;new_works:number;new_editions:number;new_resources:number;new_files:number;updated_files:number;unmatched_resources:number;needs_review:number;skipped:number;failed:number}
-export interface Job{summary?:JobSummary|null;reuse_existing?:boolean;automatic?:boolean;id:string;kind:string;state:string;processed:number;discovered:number;bytes:number;errors:number;current_path:string;message:string;created:number}
+export interface Job{summary?:JobSummary|null;reuse_existing?:boolean;automatic?:boolean;id:string;kind:string;state:string;processed:number;discovered:number;bytes:number;errors:number;current_path?:string;message:string;created:number}
 export interface Plan{created?:number;has_origin?:boolean;undo_of?:string|null;reversed_by?:string|null;id:string;kind:string;state:string;digest:string;items:{id:string;source:string;target:string;size:number}[];operations:{id:string;state:string;error:string}[]}
 export interface Isolated{id:string;original:string;current:string;state:string}
 

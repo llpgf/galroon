@@ -1,3 +1,5 @@
+import {useContext} from 'react';
+import {CatalogGenerationContext} from './useOwnedWorks';
 import {useEffect,useRef,useState} from 'react';
 import {readApi} from './api';
 import {appendWorks,type ProfileData,type Related} from './exploration';
@@ -6,7 +8,8 @@ import {mergeProfileCredits} from './profileCredits';
 type Provider={data:ProfileData;works:Related[]};
 type Manual={data:ManualProfilePage;works:Related[];partial:boolean};
 export function useProfilePages(kind:'person'|'character'|'company',id:string,spoilers:boolean,revision:number,active=true){
- const scope=JSON.stringify([kind,id,spoilers,revision]);const currentScope=useRef(scope);currentScope.current=scope;
+ const catalogGeneration=useContext(CatalogGenerationContext);
+ const scope=JSON.stringify([kind,id,spoilers,revision,catalogGeneration]);const currentScope=useRef(scope);currentScope.current=scope;
  const generation=useRef(0),providerRequest=useRef<AbortController|null>(null),manualRequest=useRef<AbortController|null>(null);
  const [stateScope,setStateScope]=useState(scope),[provider,setProvider]=useState<Provider|null>(null),[manual,setManual]=useState<Manual|null>(null);
  const providerRef=useRef<Provider|null>(null),manualRef=useRef<Manual|null>(null);

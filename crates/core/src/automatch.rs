@@ -184,6 +184,11 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test]async fn completed_auto_match_publishes_catalog_sequence(){
+        let(_t,db)=fixture(&["Clannad"]);let job=kick(&db,false).unwrap().unwrap();let before=crate::catalog_changes::seq(&db.lock().unwrap()).unwrap();
+        run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
+        assert!(crate::catalog_changes::seq(&db.lock().unwrap()).unwrap()>before);assert_eq!(scalar(&db,"SELECT count(*) FROM resources WHERE work_id IS NOT NULL"),1);
+    }
     #[test]fn unsearched_resources_are_not_reported_as_missing_from_vndb(){
         assert_eq!(review_reason(&json!({})).as_deref(),Some("Not checked against VNDB yet."));
         assert_eq!(review_reason(&json!({"results":[]})).as_deref(),Some("No VNDB candidate found."));

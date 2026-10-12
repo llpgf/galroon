@@ -87,7 +87,7 @@ pub(crate) fn build_using(c:&Connection,list:&str,input:&Build,root_online:&BTre
  check_cancel(cancelled)?;let id=crate::db::id();c.execute("INSERT INTO smart_snapshots(id,list_id,definition_revision,created,total,unknown_count,collection_count,external_count,input_digest) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id,list,input.revision,crate::db::now(),results.len() as i64,unknown,collection,external,input_digest])?;
  if let Some(expires)=valid_until{c.execute("INSERT INTO smart_snapshot_freshness(snapshot_id,expires) VALUES(?1,?2)",params![id,expires])?;}
  for (position,(key,title,_)) in results.iter().enumerate(){check_cancel(cancelled)?;c.prepare_cached("INSERT INTO smart_snapshot_entries(snapshot_id,position,work_key,title) VALUES(?1,?2,?3,?4)")?.execute(params![id,position as i64,key,title])?;}
- check_cancel(cancelled)?;c.execute("INSERT INTO smart_snapshot_requests(id,digest,snapshot_id) VALUES(?1,?2,?3)",params![input.request_id,request_digest,id])?;Ok(id)
+ check_cancel(cancelled)?;c.execute("INSERT INTO smart_snapshot_requests(id,digest,snapshot_id) VALUES(?1,?2,?3)",params![input.request_id,request_digest,id])?;crate::catalog_changes::bump(c)?;Ok(id)
 }
 #[derive(Serialize,Deserialize)]#[serde(deny_unknown_fields)]pub struct Convert{pub snapshot:String,pub expected_total:i64,pub name:String,pub request_id:String}
 pub fn convert(c:&Connection,list:&str,input:&Convert)->R<Value>{

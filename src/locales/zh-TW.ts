@@ -1,5 +1,6 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
+coreText_revisionConflict:'這筆資料已被其他裝置修改，請重新載入',
 webPairHint:'輸入 Core 擁有者產生的瀏覽器配對碼。瀏覽器僅提供唯讀存取。',
 webPairSignIn:'使用配對碼登入',
 webPairRequired:'此連線需要瀏覽器配對碼，請向 Core 擁有者索取。',

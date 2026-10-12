@@ -104,9 +104,13 @@ pub async fn guard(State(a):State<App>,mut request:Request,next:Next)->Response{
  let path=request.uri().path();if !path.starts_with("/api/")||matches!(path,"/api/health"|"/api/access/status"){return next.run(request).await;}
  if matches!(path,"/api/access/login"|"/api/access/pair"|"/api/access/pair-web"){if source.is_none(){return (StatusCode::FORBIDDEN,Json(json!({"error":"Socket peer address required"}))).into_response();}
   if !origin_allowed(request.headers(),transport){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}return next.run(request).await;}
+ let web;
+ let route=request.extensions().get::<axum::extract::MatchedPath>().map(|v|v.as_str()).unwrap_or("").to_owned();
  match authenticate(&a,request.headers()){
   Err(error)=>return ApiError(error).into_response(),
-  Ok(who)=>{if who.role=="web"&&request.method()!=axum::http::Method::GET&&request.method()!=axum::http::Method::HEAD&&path!="/api/access/logout"{return (StatusCode::FORBIDDEN,Json(json!({"error":"This browser session is read-only"}))).into_response();}if who.role=="web"&&path=="/api/access/logout"&&!origin_allowed(request.headers(),transport){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}}
+  Ok(who)=>{web=who.role=="web";if web&&!route.is_empty()&&crate::web_projection::access(&route)==crate::web_projection::WebAccess::Deny&&matches!(*request.method(),axum::http::Method::GET|axum::http::Method::HEAD){return crate::web_projection::denied();}
+   if who.role=="web"&&request.method()!=axum::http::Method::GET&&request.method()!=axum::http::Method::HEAD&&path!="/api/access/logout"{return (StatusCode::FORBIDDEN,Json(json!({"error":"This browser session is read-only"}))).into_response();}
+   if who.role=="web"&&path=="/api/access/logout"&&!origin_allowed(request.headers(),transport){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}}
  }
  let library=match crate::context::library(&a.db.lock().unwrap()){Ok(v)=>v,Err(e)=>return ApiError(e.to_string()).into_response()};
  for (key,expected) in [("x-galroon-library",library.id.as_str()),("x-galroon-device",a.device.id.as_str())] {
@@ -114,7 +118,8 @@ pub async fn guard(State(a):State<App>,mut request:Request,next:Next)->Response{
    return (StatusCode::CONFLICT,Json(json!({"error":"Collection connection changed","code":"collection_changed"}))).into_response();
   }
  }
- let mut response=next.run(request).await;
+ let response=next.run(request).await;
+ let mut response=if web{crate::web_projection::response(&a,&route,response).await}else{response};
  response.headers_mut().insert(header::HeaderName::from_static("x-galroon-library"),library.id.parse().unwrap());
  response.headers_mut().insert(header::HeaderName::from_static("x-galroon-device"),a.device.id.parse().unwrap());
  response.headers_mut().insert(header::CACHE_CONTROL,header::HeaderValue::from_static("no-store"));response
@@ -217,6 +222,7 @@ fn session_cookie(name:&str,token:&str,lifetime:i64,transport:Transport)->String
   assert!(!c.get(format!("{base}/api/issues")).header("Cookie",cookie).send().await.unwrap().status().is_success());
   assert!(c.get(format!("{base}/api/issues")).bearer_auth(&app.token).send().await.unwrap().status().is_success());
   {let db=app.db.lock().unwrap();db.execute("INSERT INTO roots(id,path,label) VALUES('empty-source-test','generated-empty-source','Empty generated source')",[]).unwrap();crate::watching::ensure(&db).unwrap();}
+  crate::issues::refresh(&app.db.lock().unwrap()).unwrap();
   let source_page=c.get(format!("{base}/api/issues")).bearer_auth(&app.token).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();let source=source_page["items"].as_array().unwrap().iter().find(|i|i["root_id"]=="empty-source-test").unwrap();assert!(source["resource_id"].is_null());assert_eq!(source["category"],"source");assert_eq!(source["title"],"Empty generated source");
   let preview=c.post(format!("{base}/api/issues/{}/scan-preview",source["id"])).bearer_auth(&app.token).json(&json!({"revision":source["revision"]})).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(preview["root_id"],"empty-source-test");
   {let db=app.db.lock().unwrap();db.execute("INSERT INTO jobs(id,kind,state,spec,message,created,updated) VALUES('old-acquire','acquire','failed',?1,'Generated failure',1,1)",[json!({"destination":"generated-destination","final_folder":"generated-target","files":[],"password":"synthetic-not-a-real-secret"}).to_string()]).unwrap();crate::acquire_issues::reconcile(&db).unwrap();}

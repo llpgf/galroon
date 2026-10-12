@@ -1,8 +1,11 @@
+import {useContext} from 'react';
+import {CatalogGenerationContext} from './useOwnedWorks';
 import {useEffect,useState} from 'react';
 import {readApi} from './api';import type {Exploration} from './exploration';
 /** An old spoiler scope must never remain in the DOM during the next request. */
 export function useWorkExploration(path:string,spoilers:boolean,revision:number,active=true){
- const scope=JSON.stringify([path,spoilers,revision]);
+ const catalogGeneration=useContext(CatalogGenerationContext);
+ const scope=JSON.stringify([path,spoilers,revision,catalogGeneration]);
  const [response,setResponse]=useState<{scope:string;value:Exploration}|null>(null);
  const [state,setState]=useState({scope,loading:true,error:''}),[request,setRequest]=useState({scope,attempt:0});
  const refresh=request.scope===scope&&request.attempt>0;

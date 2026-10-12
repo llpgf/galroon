@@ -125,3 +125,89 @@ API responses/logs use request correlation IDs where supplied. Review diagnostic
 Response: `items` (at most60 complete existing resource projections), `next` (nullable cursor), `total` (filtered count), `offset`, `revision`, `library_id`. Order is title then resource ID. Only resources joined to a root and at least one existing file are eligible, matching existing projection behavior. Matching status is based on physical primary `work_id`, not any secondary binding. Items retain all bindings and missing/unverified/unknown file counts. This bounds resources per page; it does not cap bindings within an individual resource. Match-review text is current advisory metadata; cursor revision follows existing catalog invalidation triggers.
 
 The unpaged `/api/resources` remains available for compatibility. Current-source Organize now uses this route; the installed lists-index package predates it.
+
+
+## Web data boundary and catalog changes (schema 46)
+
+All web sessions, including loopback, use the following route policy. Owner and desktop payloads retain their existing fields. Denied web reads return HTTP 403 with `{"error":"Desktop access required"}`. GET policies also apply to HEAD. The router coverage test requires every readable route to appear in `web_projection::WEB_ROUTES`.
+
+`GET /api/changes` is available to every authenticated role and returns `{"seq":number,"library_id":string}`. The sequence increases on committed visible catalog changes, including relationship-only writes, source availability and completed smart results; it is not a transaction count. Authentication, cache fills, leases and diagnostics do not increment it. Poll with the library identity; values from different libraries must not be compared.
+
+Compatibility exception: `/resources/page` is identical for desktop and web except for removed `items[].root_path` and any path-bearing text redacted by the safety boundary. `/roots` retains only id, label, role, online, missing and unverified. Resource members use source-relative `path`; job reads omit `current_path`. Unrecognized absolute paths in messages are replaced with `[redacted path]`, including POSIX, drive-letter and UNC paths on any host OS.
+
+| GET／HEAD route | web 分類 | 說明 |
+|---|---|---|
+| `/api/health` | 原樣 | 無實體路徑欄位 |
+| `/api/context` | 原樣 | 無實體路徑欄位 |
+| `/api/access/status` | 原樣 | 無實體路徑欄位 |
+| `/api/access/me` | 原樣 | 無實體路徑欄位 |
+| `/api/access/pairing-codes` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/access/network` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/access/devices` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/changes` | 原樣 | 無實體路徑欄位 |
+| `/api/dashboard` | 原樣 | 無實體路徑欄位 |
+| `/api/roots` | 投影 | 只留 id、label、role、online、missing、unverified |
+| `/api/roots/{id}/watch` | 投影 | 監看 message／exclude 的絕對路徑遮蔽 |
+| `/api/jobs` | 投影 | 陣列與 ?paged=true 均移除 current_path；遮蔽 message |
+| `/api/jobs/{id}` | 投影 | 移除 current_path；遮蔽 message |
+| `/api/timeline` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/issues/{id}/task` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/resources/page` | 投影 | items 移除 root_path |
+| `/api/resources` | 投影 | 移除 root_path；保留相對 path |
+| `/api/works` | 原樣 | 無實體路徑欄位 |
+| `/api/works/lookup` | 原樣 | 無實體路徑欄位 |
+| `/api/works/{id}/assets` | 投影 | resources 移除 root_path |
+| `/api/collection` | 原樣 | 無實體路徑欄位 |
+| `/api/issues` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/diagnostics` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/vns/{id}/relationship-decisions` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/vns/{id}/relationship-history` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/vns/{id}/relationship-corrections` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/vns/{id}/relationship-corrections/history` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/relationship-candidates/{id}` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/entities/{id}/manual-works` | 原樣 | 無實體路徑欄位 |
+| `/api/entities/{id}/field-decisions` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/entities/{id}/field-history` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/works/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/works/{id}/edition-options` | 原樣 | 無實體路徑欄位 |
+| `/api/releases/labels` | 原樣 | 無實體路徑欄位 |
+| `/api/releases` | 原樣 | 無實體路徑欄位 |
+| `/api/releases/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/releases/{id}/membership` | 原樣 | 無實體路徑欄位 |
+| `/api/resources/{id}/members` | 投影 | files[].path 改為 relative |
+| `/api/resources/{id}/members/page` | 投影 | 已使用 relative；仍經共用投影與遮蔽 |
+| `/api/resources/{id}/matching-history` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/matching` | 投影 | 背景工作文字遮蔽 |
+| `/api/works/{id}/metadata` | 原樣 | 無實體路徑欄位 |
+| `/api/works/{id}/exploration` | 原樣 | 無實體路徑欄位 |
+| `/api/people/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/characters/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/companies/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/discover` | 原樣 | 無實體路徑欄位 |
+| `/api/discover/manual` | 原樣 | 無實體路徑欄位 |
+| `/api/artwork` | 原樣 | 無實體路徑欄位 |
+| `/api/artwork/cache` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/vns/{id}/exploration` | 原樣 | 無實體路徑欄位 |
+| `/api/lists` | 原樣 | 無實體路徑欄位 |
+| `/api/lists/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/vns/{id}/related-tags` | 原樣 | 無實體路徑欄位 |
+| `/api/works/{id}/related-tags` | 原樣 | 無實體路徑欄位 |
+| `/api/entity-tags/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/custom-tags` | 原樣 | 無實體路徑欄位 |
+| `/api/custom-tags/{id}/membership` | 拒絕（403） | 既有 desktop 編輯權限 |
+| `/api/smart-lists/options` | 原樣 | 無實體路徑欄位 |
+| `/api/smart-lists/{id}/results` | 投影 | 遮蔽背景計算 update_error 中的路徑 |
+| `/api/smart-lists` | 原樣 | 無實體路徑欄位 |
+| `/api/smart-lists/{id}` | 原樣 | 無實體路徑欄位 |
+| `/api/works/{id}/split-preview` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/backups` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/plans` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/plans/{id}` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/duplicate-checks/{id}` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/quarantine` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/resources/{id}/acquire-preview` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/archive/capabilities` | 原樣 | 無實體路徑欄位 |
+
+Source remap preview is POST and remains forbidden to web sessions.
+
+Issue reconciliation is published on startup and by the existing background worker; GET `/api/issues` reads persisted results and does not cause catalog writes. Web JSON bodies are bounded at 32 MiB; an oversized or unparseable response fails closed without returning its contents.
