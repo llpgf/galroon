@@ -1,6 +1,6 @@
 # MCP server (AI assistants)
 
-Status: source increment 2026-10-09. `galroon-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server that lets an AI client (Claude Desktop, Claude Code or other MCP clients) read and tidy a Galroon collection through the running Core. It is a separate stdio process; Core, schema and API1 are unchanged.
+Status: source increment 2026-10-09. `galroon-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server that lets an AI client (Claude Desktop, Claude Code or other MCP clients) read and tidy a Galroon collection through the running Core. It is a separate stdio process. Phase 3a (2026-10-12) adds suggest-only matching with Core schema 47; API1 remains unchanged.
 
 ## Setup
 
@@ -30,12 +30,15 @@ Galroon must be running. Core listens on a new loopback port each start, so on W
 | --- | --- |
 | `galroon_overview`, `search_collection`, `get_work`, `list_resources`, `list_resource_files`, `list_issues`, `list_jobs`, `list_lists`, `get_list`, `list_plans` | Read only. Output is compacted (≤60 items per page, long text and arrays clipped, 100 KB cap). `list_resources` includes Core's auto-match review reason for unmatched resources; `list_resource_files` lists the file names, sizes and availability inside one resource, relative to its source folder, so the assistant can identify a work from names, brands, dates and store IDs before searching VNDB. |
 | `search_vndb` | Read only; queries VNDB through Core with optional resource file-name hints. |
+| `suggest_match` | Records `{resource_id, revision, vndb_ids, query, rationale}` for review. Core checks the evidence and stores an open suggestion; it never creates a work or binding. Write tool, `destructiveHint: false`. |
 | `match_resource` | Binds a resource to an existing work, or creates the work from a VNDB candidate exactly as the match dialog does, then binds. Resource revision required. |
 | `update_work` | Status, favorite, notes. Only these fields are sent, because Core merges the body into work overrides. Work revision required. |
 | `create_list`, `add_to_list` | Manual lists via the existing request-ID/revision receipts. |
 | `preview_organize` | Creates an organize plan (files are hashed, nothing moves). The user approves and executes it in Galroon. |
 
 Not exposed: plan approve/execute, quarantine/restore, undo, merge/split, regroup, root remap, backup/restore, scans, matching start, access management and arbitrary API calls. Every tool is annotated `destructiveHint: false`.
+
+For unmatched/review cases, assistants should use **`suggest_match`, not `match_resource`**. Supply the current resource revision, one or more VNDB work IDs and a checkable explanation. A person must confirm; verification does not authorize automatic binding. `match_resource` retains its existing behavior for explicitly requested manual binding. See [AI suggestions](AI_SUGGESTIONS.md).
 
 ## Boundaries
 

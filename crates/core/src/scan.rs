@@ -117,6 +117,8 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             let prior:Option<(i64,String)>=tx.query_row("SELECT size,mtime FROM files WHERE root_id=?1 AND path=?2",params![spec.root_id,full],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
             tx.execute("INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(root_id,path) DO UPDATE SET hash=CASE WHEN size=excluded.size AND mtime=excluded.mtime THEN hash ELSE NULL END,size=excluded.size,mtime=excluded.mtime,seen_job=excluded.seen_job,availability='present'",params![id(),spec.root_id,full,rel,size,mtime,ext,jid]).map_err(|e|e.to_string())?;
             let fid:String=tx.query_row("SELECT id FROM files WHERE root_id=?1 AND path=?2",params![spec.root_id,full],|r|r.get(0)).map_err(|e|e.to_string())?;
+            // A changed observation invalidates revision-pinned reviews; identical rescans keep them.
+            if prior.as_ref().is_some_and(|old|old!=&(size,mtime.clone())){tx.execute("UPDATE resources SET revision=revision+1 WHERE id IN (SELECT resource_id FROM resource_files WHERE file_id=?1)",[&fid]).map_err(|e|e.to_string())?;}
             if prior.is_none(){crate::job_summary::record(&tx,jid,"new_files",&fid,"yes").map_err(|e|e.to_string())?;}else if prior.as_ref()!=Some(&(size,mtime.clone())) && !tx.query_row("SELECT EXISTS(SELECT 1 FROM job_summary_entries WHERE job_id=?1 AND dimension='new_files' AND subject=?2)",params![jid,fid],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?{crate::job_summary::record(&tx,jid,"updated_files",&fid,"yes").map_err(|e|e.to_string())?;}
             let added=tx.execute("INSERT OR IGNORE INTO observations(job_id,file_id) VALUES(?1,?2)",params![jid,fid]).map_err(|e|e.to_string())?;
             if added>0 {tx.execute("UPDATE jobs SET processed=processed+1,discovered=discovered+1,bytes=bytes+?2,updated=?3 WHERE id=?1",params![jid,size,now()]).map_err(|e|e.to_string())?;}
@@ -154,7 +156,7 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             let rows=stmt.query_map(params![spec.root_id,jid],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
             let mut missing=Vec::new();for row in rows {let (fid,p)=row.map_err(|e|e.to_string())?;let relative=Path::new(&p).strip_prefix(&root).map_err(|e|e.to_string())?;let excluded=crate::backup::protected_path(Path::new(&p))||spec.exclude.iter().any(|ex|relative.starts_with(Path::new(ex)))||relative.components().any(|part|system_entry(&part.as_os_str().to_string_lossy()));
                 let child=Path::new(&p).strip_prefix(dp).ok().and_then(|p|p.components().next()).map(|c|c.as_os_str());if !excluded&&child.is_some_and(|child|!present_children.contains(child)){missing.push(fid);}}
-            drop(stmt);for fid in missing {c.execute("UPDATE files SET availability='missing' WHERE id=?1",[fid]).map_err(|e|e.to_string())?;}
+            drop(stmt);for fid in missing {c.execute("UPDATE resources SET revision=revision+1 WHERE id IN (SELECT resource_id FROM resource_files WHERE file_id=?1)",[&fid]).map_err(|e|e.to_string())?;c.execute("UPDATE files SET availability='missing' WHERE id=?1",[fid]).map_err(|e|e.to_string())?;}
         }
         c.execute("UPDATE frontier SET state=?3 WHERE job_id=?1 AND path=?2",params![jid,dir,if complete{"done"}else{"error"}]).map_err(|e|e.to_string())?;
     }

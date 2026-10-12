@@ -62,7 +62,7 @@ fn tool(name: &str, title: &str, description: &str, read_only: bool, properties:
         "title": title,
         "description": description,
         "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": false},
-        "annotations": {"title": title, "readOnlyHint": read_only, "destructiveHint": false, "idempotentHint": read_only, "openWorldHint": name == "search_vndb"},
+        "annotations": {"title": title, "readOnlyHint": read_only, "destructiveHint": false, "idempotentHint": read_only, "openWorldHint": matches!(name, "search_vndb" | "suggest_match")},
     })
 }
 
@@ -101,6 +101,11 @@ pub fn definitions() -> Vec<Value> {
         tool("search_vndb", "Search VNDB", "Search VNDB for match candidates. Pass resource_id to let Galroon use that resource's file names as hints.", true, json!({
             "query": {"type": "string"}, "resource_id": {"type": "string"},
         }), &["query"]),
+        tool("suggest_match", "Suggest matches for review", "Record VNDB works and evidence for a person to review. Never binds. Use this for review cases; a person confirms in Galroon.", false, json!({
+            "resource_id": {"type": "string"}, "revision": revision("resource"),
+            "vndb_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32, "uniqueItems": true},
+            "query": {"type": "string"}, "rationale": {"type": "string"},
+        }), &["resource_id", "revision", "vndb_ids", "query", "rationale"]),
         tool("match_resource", "Match resource to work", "Assign a scanned resource to a work. Give work_id for a work already in the collection, or vndb_id (e.g. v17) plus the query that found it; the work is added if needed. Reversible in Galroon.", false, json!({
             "resource_id": {"type": "string"},
             "revision": revision("resource"),
@@ -239,6 +244,7 @@ fn work(v: &Value) -> Value {
 
 fn resource(v: &Value) -> Value {
     let mut out = pick(v, &["id", "title", "path", "kind", "files", "bytes", "missing", "work_id", "primary_work_title", "release", "root_id", "revision", "auto_match_reason"]);
+    if !v["suggestion"].is_null() { out["suggestion"] = bounded(&v["suggestion"]); }
     if v["bindings"].as_array().is_some_and(|b| b.len() > 1) {
         out["bindings"] = bounded(&v["bindings"]);
     }
@@ -357,6 +363,11 @@ async fn dispatch(core: &Core, name: &str, args: &Value) -> R<Value> {
             let mut out = pick(&found, &["query", "warning", "note"]);
             out["results"] = items(&found["results"], candidate);
             Ok(out)
+        }
+        "suggest_match" => {
+            let rid = segment(need(args, "resource_id")?)?;
+            let ids = args["vndb_ids"].as_array().ok_or("vndb_ids must be an array")?;
+            core.post(&format!("/resources/{rid}/suggestions"), &json!({"revision": need_i64(args, "revision")?, "works": ids, "query": need(args, "query")?, "rationale": need(args, "rationale")?})).await
         }
         "match_resource" => {
             let rid = segment(need(args, "resource_id")?)?;
