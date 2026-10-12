@@ -3,6 +3,7 @@ use crate::{db::{self,Db},editions,matching};
 use rusqlite::{Connection,OptionalExtension,params};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
+use unicode_normalization::UnicodeNormalization;
 type R<T>=Result<T,String>;
 fn sql<T>(v:rusqlite::Result<T>)->R<T>{v.map_err(|e|e.to_string())}
 pub fn migrate(c:&Connection)->R<()> {
@@ -69,20 +70,27 @@ struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     catalog_snapshot(c,rid,false)
 }
+fn member_hints(paths:Vec<String>)->Vec<String>{
+    let mut paths:Vec<String>=paths.into_iter().map(|p|p.nfc().collect()).collect();
+    paths.sort_by_cached_key(|p|(std::cmp::Reverse(p.chars().count()),p.clone()));paths.truncate(31);paths
+}
 fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if !include_bound&&(primary.is_some()||!editions::bindings(c,rid)?.is_empty()){return Ok(None);}
     // Catalogs scanned before system entries were skipped can still hold macOS metadata such as ._DAV.
     if std::path::Path::new(&path).components().any(|p|crate::scan::system_entry(&p.as_os_str().to_string_lossy())){return Ok(None);}
     let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
+    let path:String=path.nfc().collect();let title:String=title.nfc().collect();
     // A bundle member (scan split "Bundle/child") is named by the child, never by the collection folder.
     let parent=std::path::Path::new(&path).parent().map(|p|p.to_string_lossy().to_string()).filter(|p|!p.is_empty());
     let local=|p:&str|parent.as_deref().and_then(|top|std::path::Path::new(p).strip_prefix(top).ok()).map(|p|p.to_string_lossy().to_string()).unwrap_or_else(||p.to_string());
     let mut hints=vec![local(&path)];
     let mut s=sql(c.prepare("SELECT f.id,f.relative_path,f.size,f.mtime FROM files f JOIN resource_files rf ON rf.file_id=f.id WHERE rf.resource_id=?1 ORDER BY length(f.relative_path) DESC,f.relative_path,f.id"))?;
-    let mut rows=sql(s.query([rid]))?;let mut n=0;
-    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());if n<31{hints.push(local(&path));}n+=1;}
-    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
+    // Preserve the raw SQL order and values for existing listing fingerprints. Hint selection is NFC-only.
+    let mut rows=sql(s.query([rid]))?;let mut members=Vec::new();
+    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());members.push(path);}
+    if members.is_empty(){return Ok(None);}hints.extend(member_hints(members).iter().map(|p|local(p)));
+    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{
@@ -189,6 +197,44 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     fn response(input:matching::Input,rows:Vec<Value>)->Value {json!({"results":matching::rank(&input,rows),"titles":input.titles,"incomplete":false})}
     fn exact(input:matching::Input)->Value{response(input,vec![json!({"id":"v4","title":"Clannad"})])}
     fn scalar(db:&Db,query:&str)->i64{db.lock().unwrap().query_row(query,[],|r|r.get(0)).unwrap()}
+    #[test]fn catalog_inputs_and_hint_order_are_unicode_independent_but_fingerprints_stay_raw(){
+        let title="[240101][ブランド] サンプルタイトル";let path=format!("親ブランド/{title}");
+        let members:Vec<String>=(0..40).map(|i|format!("{path}/[メーカー{i:02}] {}{i:02}.rar",if i%2==0{"カキクケコカ"}else{"ガギグゲゴ"})).collect();
+        let nfd=|s:&str|s.nfd().collect::<String>();let hints=member_hints(members.clone());
+        assert_eq!(hints,member_hints(members.iter().rev().map(|p|nfd(p)).collect()));assert_eq!(hints.len(),31);
+        assert!(hints.windows(2).all(|p|p[0].chars().count()>p[1].chars().count()||(p[0].chars().count()==p[1].chars().count()&&p[0]<=p[1])));
+        let(_t,db)=fixture(&[title]);let c=db.lock().unwrap();c.execute("DELETE FROM resource_files",[]).unwrap();c.execute("DELETE FROM files",[]).unwrap();
+        for (i,p) in members.iter().enumerate(){let id=format!("f{i:02}");
+            c.execute("INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES(?1,'root',?2,?2,16,'1','rar','fixture')",params![id,p]).unwrap();
+            c.execute("INSERT INTO resource_files(resource_id,file_id) VALUES('r0',?1)",[&id]).unwrap();
+        }
+        let mut inputs=Vec::new();let mut fingerprints=Vec::new();
+        for decomposed in [false,true]{
+            let form=|s:&str|if decomposed{nfd(s)}else{s.to_string()};let raw_path=form(&path);
+            c.execute("UPDATE resources SET relative_path=?1,title=?2 WHERE id='r0'",params![raw_path,form(title)]).unwrap();
+            for (i,p) in members.iter().enumerate(){c.execute("UPDATE files SET relative_path=?1 WHERE id=?2",params![form(p),format!("f{i:02}")]).unwrap();}
+            let snap=snapshot(&c,"r0").unwrap().unwrap();let mut hash=Sha256::new();hash.update(raw_path.as_bytes());hash.update(snap.revision.to_le_bytes());
+            let mut s=c.prepare("SELECT id,relative_path,size,mtime FROM files ORDER BY length(relative_path) DESC,relative_path,id").unwrap();
+            for row in s.query_map([],|r|Ok(json!([r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?]))).unwrap(){hash.update(row.unwrap().to_string().as_bytes());}
+            assert_eq!(snap.fingerprint,hex::encode(hash.finalize()));fingerprints.push(snap.fingerprint);
+            let input=snap.input;inputs.push(json!({"titles":input.titles,"queries":input.queries,"brands":input.brands,"dates":input.dates,"direct_id":input.direct_id}));
+        }
+        assert_eq!(inputs[0],inputs[1]);assert_ne!(fingerprints[0],fingerprints[1]);assert_eq!(inputs[0]["titles"][0],"サンプルタイトル");
+        assert!(!inputs[0]["titles"].as_array().unwrap().iter().any(|t|t=="親ブランド"));
+    }
+    #[test]fn exact_title_file_stems_are_ancillary_with_any_short_extension(){
+        let title="女装お嬢様への異常な愛情";let candidate=json!({"id":"v13508","title":title});
+        for ext in ["cf","exe","ini","cfg","dat","a","X1234"]{
+            let member=format!("{title}.{ext}");assert!(matching::title_anchored_member(&member,&[title],&[]));
+            assert_eq!(review_reason(&response(matching::prepare(title,&[format!("RJ119660/{member}")]).unwrap(),vec![candidate.clone()])),None);
+        }
+        let folder="[Key] CLANNAD";let input=matching::prepare(folder,&[format!("{folder}.cf")]).unwrap();
+        assert_eq!(review_reason(&response(input,vec![json!({"id":"v4","title":"CLANNAD","developers":[{"name":"Key"}]})])),None);
+        for member in [format!("{title}2.cf"),format!("{title}別作品.cf"),format!("{title}.abcdef"),format!("{title}.a-b"),"別の作品タイトル.cf".into()]{
+            assert!(!matching::title_anchored_member(&member,&[title],&[]),"{member}");
+            assert!(review_reason(&response(matching::prepare(title,&[member.clone()]).unwrap(),vec![candidate.clone()])).is_some(),"{member}");
+        }
+    }
     #[test]fn replay_includes_bound_resources_and_shares_live_decisions_without_writes(){
         let(_t,db)=fixture(&["Clannad","Unknown title","Clannad Anniversary Collection"]);
         db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('w','Clannad','Clannad','v4')",[]).unwrap();
