@@ -4,7 +4,7 @@ use notify::{Watcher,RecursiveMode,EventKind};
 use rusqlite::{Connection,params,OptionalExtension};
 use serde::{Serialize,Deserialize};
 use serde_json::{Value,json};
-use std::{collections::BTreeMap,path::{Path,PathBuf,Component},sync::{Arc,atomic::{AtomicBool,Ordering},mpsc},thread,time::Duration};
+use std::{collections::BTreeMap,path::{Path,PathBuf,Component},sync::{Arc,atomic::{AtomicBool,Ordering},mpsc},thread,time::{Duration,Instant}};
 type R<T>=Result<T,String>;
 fn sql<T>(r:rusqlite::Result<T>)->R<T>{r.map_err(|e|e.to_string())}
 const QUIET_SECONDS:i64=3;
@@ -46,76 +46,168 @@ fn save_hints(c:&Connection,cfg:&Config,changes:Vec<Change>)->R<()>{
  if pending.len()>128{gap(c,&cfg.id,"Too many changed folders. Run a manual scan to reconcile this source.")?;pending.clear();}
  sql(c.execute("UPDATE source_watch SET pending=?2,last_event=?3 WHERE root_id=?1",params![cfg.id,json!(pending).to_string(),now()]))?;Ok(())
 }
-fn enqueue(app:&App,cfg:&Config,stop:&AtomicBool)->R<Option<String>>{
+fn enqueue(app:&App,cfg:&Config,stop:&AtomicBool,full:bool)->R<Option<String>>{
  let _gate=app.mutation_lock.lock().map_err(|e|e.to_string())?;if stop.load(Ordering::SeqCst){return Ok(None);}let mut c=app.db.lock().map_err(|e|e.to_string())?;let tx=sql(c.transaction())?;
  if roots::require_idle(&tx).is_err(){return Ok(None);}
- let(saved,event,job):(String,i64,Option<String>)=sql(tx.query_row("SELECT pending,last_event,job_id FROM source_watch WHERE root_id=?1 AND revision=?2 AND enabled=1 AND status='watching'",params![cfg.id,cfg.revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))))?;
- if let Some(j)=job{let state=sql(tx.query_row("SELECT state FROM jobs WHERE id=?1",[&j],|r|r.get::<_,String>(0)).optional())?;match state.as_deref(){Some("completed")|Some("superseded")|None=>{sql(tx.execute("UPDATE source_watch SET job_id=NULL WHERE root_id=?1",[&cfg.id]))?;},Some("cancelled")=>{sql(tx.execute("UPDATE source_watch SET enabled=0,revision=revision+1,status='disabled',needs_scan=1,message='Automatic updates stopped after cancellation. Enable watching to continue.' WHERE root_id=?1",[&cfg.id]))?;sql(tx.commit())?;return Ok(None);},_=>return Ok(None)}}
- if now()-event<QUIET_SECONDS{sql(tx.commit())?;return Ok(None);}
+ let saved:Option<(String,i64,Option<String>)>=sql(tx.query_row("SELECT pending,last_event,job_id FROM source_watch WHERE root_id=?1 AND revision=?2 AND enabled=1 AND status IN ('watching','polling')",params![cfg.id,cfg.revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional())?;let Some((saved,event,job))=saved else{return Ok(None);};
+ if let Some(j)=job{let state=sql(tx.query_row("SELECT state FROM jobs WHERE id=?1",[&j],|r|r.get::<_,String>(0)).optional())?;match state.as_deref(){Some("failed") if full=>{sql(tx.execute("UPDATE source_watch SET job_id=NULL WHERE root_id=?1",[&cfg.id]))?;},Some("completed")|Some("superseded")|None=>{sql(tx.execute("UPDATE source_watch SET job_id=NULL WHERE root_id=?1",[&cfg.id]))?;},Some("cancelled")=>{sql(tx.execute("UPDATE source_watch SET enabled=0,revision=revision+1,status='disabled',needs_scan=1,message='Automatic updates stopped after cancellation. Enable watching to continue.' WHERE root_id=?1",[&cfg.id]))?;sql(tx.commit())?;return Ok(None);},_=>return Ok(None)}}
+ if full&&sql(tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='scan' AND json_extract(spec,'$.root_id')=?1 AND state IN ('paused','interrupted'))",[&cfg.id],|r|r.get::<_,bool>(0)))?{return Ok(None);}
+ if !full&&now()-event<QUIET_SECONDS{sql(tx.commit())?;return Ok(None);}
  let mut pending:Vec<Change>=serde_json::from_str(&saved).map_err(|e|e.to_string())?;
  // First attachment, reconnects and notification gaps reconcile automatically.
- // A failed/partial baseline remains visible for review instead of looping forever.
+ // Native reconciliation leaves failed/partial baselines for review; polling retries at its interval.
  let reconcile:bool=sql(tx.query_row("SELECT needs_scan=1 AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.rowid>source_watch.gap_after AND j.kind='scan' AND json_extract(j.spec,'$.root_id')=source_watch.root_id AND json_extract(j.spec,'$.scope')='' AND (j.state IN ('failed','paused','interrupted') OR (j.state='completed' AND j.errors>0))) FROM source_watch WHERE root_id=?1",[&cfg.id],|r|r.get(0)))? && crate::automatch::enabled(&tx)?;
- if reconcile {pending.clear();pending.push(Change{scope:String::new(),recursive:true});}
+ if full||reconcile {pending.clear();pending.push(Change{scope:String::new(),recursive:true});}
  if pending.is_empty(){sql(tx.commit())?;return Ok(None);}let mut change=pending.remove(0);
  // If a queued directory disappeared, enumerate its nearest surviving parent.
  while !Path::new(&cfg.path).join(&change.scope).is_dir(){if change.scope.is_empty(){return Ok(None);}change.scope=Path::new(&change.scope).parent().unwrap_or(Path::new("")).to_string_lossy().into();change.recursive=false;}
  let j=scan::enqueue(&tx,scan::ScanSpec{root_id:cfg.id.clone(),scope:change.scope,exclude:exclusions(app,cfg)},change.recursive,true)?;
  sql(tx.execute("UPDATE source_watch SET pending=?2,job_id=?3 WHERE root_id=?1",params![cfg.id,json!(pending).to_string(),j]))?;sql(tx.commit())?;Ok(Some(j))
 }
-struct Attached{_watcher:notify::RecommendedWatcher,rx:mpsc::Receiver<notify::Result<notify::Event>>,overflow:Arc<AtomicBool>,revision:i64,path:String}
+struct Attached<W:Watcher>{_watcher:W,rx:mpsc::Receiver<notify::Result<notify::Event>>,overflow:Arc<AtomicBool>,revision:i64,path:String}
+struct Polling{revision:i64,next:Instant}
+struct Runtime<W:Watcher>{attached:BTreeMap<String,Attached<W>>,retries:BTreeMap<String,(i64,Instant)>,polling:BTreeMap<String,Polling>}
+impl<W:Watcher> Runtime<W>{fn new()->Self{Self{attached:BTreeMap::new(),retries:BTreeMap::new(),polling:BTreeMap::new()}}}
+struct Options{force_polling:bool,poll_interval:Duration,retry_interval:Duration}
+impl Options{
+ fn from_values(force:Option<&str>,seconds:Option<&str>)->Self{
+  let interval=Duration::from_secs(seconds.and_then(|s|s.parse::<u64>().ok()).unwrap_or(900).max(60));
+  Self{force_polling:force==Some("1"),poll_interval:if Instant::now().checked_add(interval).is_some(){interval}else{Duration::from_secs(900)},retry_interval:Duration::from_secs(30)}
+ }
+ fn environment()->Self{
+  // For filesystems without inotify, and for N1 NAS fallback verification without
+  // lowering the shared host's watch quota. No native watcher is created in this mode.
+  Self::from_values(std::env::var("GALROON_WATCH_FORCE_POLLING").ok().as_deref(),std::env::var("GALROON_WATCH_POLL_SECONDS").ok().as_deref())
+ }
+}
+fn attach<W:Watcher>(cfg:&Config)->notify::Result<Attached<W>>{
+ let (tx,rx)=mpsc::sync_channel(256);let overflow=Arc::new(AtomicBool::new(false));let full=overflow.clone();
+ let mut watcher=W::new(move|event:notify::Result<notify::Event>|{if matches!(&event,Ok(e)if matches!(e.kind,EventKind::Access(_))){return;}
+  if tx.try_send(event).is_err(){full.store(true,Ordering::SeqCst);}},notify::Config::default())?;
+ watcher.watch(Path::new(&cfg.path),RecursiveMode::Recursive)?;Ok(Attached{_watcher:watcher,rx,overflow,revision:cfg.revision,path:cfg.path.clone()})
+}
+fn polling<W:Watcher>(app:&App,cfg:&Config,runtime:&mut Runtime<W>,options:&Options,reason:&str)->R<()>{
+ let seconds=options.poll_interval.as_secs();let interval=if seconds>0&&seconds.is_multiple_of(60){format!("{} minutes",seconds/60)}else{format!("{seconds} seconds")};
+ let message=format!("File watching is unavailable ({reason}); scanning every {interval} instead.");
+ let c=app.db.lock().map_err(|e|e.to_string())?;
+ if !runtime.polling.get(&cfg.id).is_some_and(|p|p.revision==cfg.revision){
+  gap(&c,&cfg.id,&message)?;runtime.polling.insert(cfg.id.clone(),Polling{revision:cfg.revision,next:Instant::now()});
+  crate::diagnostics::record("warn","watch.polling",&message,None);
+ }
+ sql(c.execute("UPDATE source_watch SET status='polling',message=?2 WHERE root_id=?1 AND revision=?3",params![cfg.id,message,cfg.revision]))?;Ok(())
+}
 pub struct Service{stop:Arc<AtomicBool>,join:Option<thread::JoinHandle<()>>}
 impl Service{pub fn request_stop(&self){self.stop.store(true,Ordering::SeqCst);}}
 impl Drop for Service{fn drop(&mut self){self.request_stop();if let Some(j)=self.join.take(){let _=j.join();}}}
 pub fn start(app:App)->R<Service>{
  {let c=app.db.lock().map_err(|e|e.to_string())?;ensure(&c)?;sql(c.execute("UPDATE source_watch SET status='starting',needs_scan=1,gap_after=(SELECT coalesce(max(rowid),0) FROM jobs),message='Core restarted. Scan to cover changes while it was offline.' WHERE enabled=1",[]))?;}
- let stop=Arc::new(AtomicBool::new(false));let worker_stop=stop.clone();let join=thread::Builder::new().name("galroon-source-watch".into()).spawn(move||{
-  let mut attached=BTreeMap::new();let mut retries=BTreeMap::new();while !worker_stop.load(Ordering::SeqCst){if let Err(error)=tick(&app,&worker_stop,&mut attached,&mut retries){eprintln!("Source watcher: {error}");}thread::sleep(Duration::from_millis(500));}
+ let options=Options::environment();let stop=Arc::new(AtomicBool::new(false));let worker_stop=stop.clone();let join=thread::Builder::new().name("galroon-source-watch".into()).spawn(move||{
+  let mut runtime=Runtime::new();while !worker_stop.load(Ordering::SeqCst){if let Err(error)=tick(&app,&worker_stop,&mut runtime,&options,&mut attach::<notify::RecommendedWatcher>){eprintln!("Source watcher: {error}");}thread::sleep(Duration::from_millis(500));}
  }).map_err(|e|e.to_string())?;Ok(Service{stop,join:Some(join)})
 }
-fn tick(app:&App,stop:&AtomicBool,attached:&mut BTreeMap<String,Attached>,retries:&mut BTreeMap<String,(i64,std::time::Instant)>)->R<()>{
+fn tick<W:Watcher>(app:&App,stop:&AtomicBool,runtime:&mut Runtime<W>,options:&Options,create:&mut impl FnMut(&Config)->notify::Result<Attached<W>>)->R<()>{
  let configs={let c=app.db.lock().map_err(|e|e.to_string())?;ensure(&c)?;
   sql(c.execute("UPDATE source_watch SET path=(SELECT path FROM roots WHERE id=root_id),pending='[]',job_id=NULL,revision=revision+1,needs_scan=1,status='starting' WHERE path!=(SELECT path FROM roots WHERE id=root_id)",[]))?;
   let mut s=sql(c.prepare("SELECT root_id,path,enabled,exclude,revision FROM source_watch ORDER BY last_event,root_id"))?;let rows=sql(sql(s.query_map([],|r|Ok(Config{id:r.get(0)?,path:r.get(1)?,enabled:r.get(2)?,exclude:serde_json::from_str(&r.get::<_,String>(3)?).unwrap_or_default(),revision:r.get(4)?})))?.collect::<rusqlite::Result<Vec<_>>>())?;rows};
+ runtime.attached.retain(|id,_|configs.iter().any(|c|&c.id==id));runtime.retries.retain(|id,_|configs.iter().any(|c|&c.id==id));runtime.polling.retain(|id,_|configs.iter().any(|c|&c.id==id));
  for cfg in configs{
   if stop.load(Ordering::SeqCst){break;}
-  if !cfg.enabled{attached.remove(&cfg.id);retries.remove(&cfg.id);let c=app.db.lock().map_err(|e|e.to_string())?;sql(c.execute("UPDATE source_watch SET status='disabled' WHERE root_id=?1",[&cfg.id]))?;continue;}
-  let root=Path::new(&cfg.path);if !root.is_dir()||plans::validate_chain(root).is_err(){let was=attached.remove(&cfg.id).is_some();let c=app.db.lock().map_err(|e|e.to_string())?;if was{gap(&c,&cfg.id,"Source went offline. Reconnect it and scan to reconcile missed changes.")?;}sql(c.execute("UPDATE source_watch SET status='offline',needs_scan=1 WHERE root_id=?1",[&cfg.id]))?;continue;}
-  if attached.get(&cfg.id).is_some_and(|a|a.path!=cfg.path||a.revision!=cfg.revision){attached.remove(&cfg.id);}
-  if !attached.contains_key(&cfg.id){
-   if retries.get(&cfg.id).is_some_and(|(rev,until)|*rev==cfg.revision&&std::time::Instant::now()<*until){continue;}
-   let (tx,rx)=mpsc::sync_channel(256);let overflow=Arc::new(AtomicBool::new(false));let full=overflow.clone();let watcher=notify::recommended_watcher(move|event:notify::Result<notify::Event>|{if matches!(&event,Ok(e)if matches!(e.kind,EventKind::Access(_))){return;}if tx.try_send(event).is_err(){full.store(true,Ordering::SeqCst);}});
-   let result=watcher.and_then(|mut watcher|{watcher.watch(root,RecursiveMode::Recursive)?;Ok(watcher)});
-   let c=app.db.lock().map_err(|e|e.to_string())?;gap(&c,&cfg.id,"Scan to cover changes before watching began.")?;
-   match result{Ok(watcher)=>{retries.remove(&cfg.id);attached.insert(cfg.id.clone(),Attached{_watcher:watcher,rx,overflow,revision:cfg.revision,path:cfg.path.clone()});sql(c.execute("UPDATE source_watch SET status='watching' WHERE root_id=?1",[&cfg.id]))?;},Err(e)=>{retries.insert(cfg.id.clone(),(cfg.revision,std::time::Instant::now()+Duration::from_secs(30)));sql(c.execute("UPDATE source_watch SET status='error',message=?2 WHERE root_id=?1",params![cfg.id,format!("Watching unavailable: {e}. Use manual scanning.")]))?;continue;}}
+  if !cfg.enabled{runtime.attached.remove(&cfg.id);runtime.retries.remove(&cfg.id);runtime.polling.remove(&cfg.id);let c=app.db.lock().map_err(|e|e.to_string())?;sql(c.execute("UPDATE source_watch SET status='disabled' WHERE root_id=?1",[&cfg.id]))?;continue;}
+  let root=Path::new(&cfg.path);if !root.is_dir()||plans::validate_chain(root).is_err(){let was=runtime.attached.remove(&cfg.id).is_some();runtime.polling.remove(&cfg.id);let c=app.db.lock().map_err(|e|e.to_string())?;if was{gap(&c,&cfg.id,"Source went offline. Reconnect it and scan to reconcile missed changes.")?;}sql(c.execute("UPDATE source_watch SET status='offline',needs_scan=1 WHERE root_id=?1",[&cfg.id]))?;continue;}
+  if runtime.attached.get(&cfg.id).is_some_and(|a|a.path!=cfg.path||a.revision!=cfg.revision){runtime.attached.remove(&cfg.id);}
+  if options.force_polling{
+   runtime.attached.remove(&cfg.id);polling(app,&cfg,runtime,options,"GALROON_WATCH_FORCE_POLLING=1")?;
+  }else if !runtime.attached.contains_key(&cfg.id)&&!runtime.retries.get(&cfg.id).is_some_and(|(rev,until)|*rev==cfg.revision&&Instant::now()<*until){
+   match create(&cfg){Ok(watcher)=>{
+    runtime.retries.remove(&cfg.id);runtime.polling.remove(&cfg.id);runtime.attached.insert(cfg.id.clone(),watcher);
+    let c=app.db.lock().map_err(|e|e.to_string())?;gap(&c,&cfg.id,"Scan to cover changes before watching began.")?;sql(c.execute("UPDATE source_watch SET status='watching' WHERE root_id=?1 AND revision=?2",params![cfg.id,cfg.revision]))?;
+   },Err(e)=>{runtime.retries.insert(cfg.id.clone(),(cfg.revision,Instant::now()+options.retry_interval));polling(app,&cfg,runtime,options,&e.to_string())?;}}
   }
-  let a=&attached[&cfg.id];let mut changed=Vec::new();let mut missed=a.overflow.swap(false,Ordering::SeqCst);let mut backend_failed=false;
-  for result in a.rx.try_iter().take(256){match result{Ok(e)=>{if e.need_rescan()||e.paths.is_empty(){missed=true;}for hint in hints(root,&e.paths,&cfg.exclude,&app.state_dir){merge(&mut changed,hint);}},Err(_)=>{missed=true;backend_failed=true;}}}
-  {let c=app.db.lock().map_err(|e|e.to_string())?;if missed{gap(&c,&cfg.id,"Some file notifications were missed. Run a manual scan.")?;}save_hints(&c,&cfg,changed)?;
+  if let Some(a)=runtime.attached.get(&cfg.id){
+   let mut changed=Vec::new();let mut missed=a.overflow.swap(false,Ordering::SeqCst);let mut backend_failed=None;
+   for result in a.rx.try_iter().take(256){match result{Ok(e)=>{if e.need_rescan()||e.paths.is_empty(){missed=true;}for hint in hints(root,&e.paths,&cfg.exclude,&app.state_dir){merge(&mut changed,hint);}},Err(e)=>{missed=true;backend_failed=Some(e.to_string());}}}
+   {let c=app.db.lock().map_err(|e|e.to_string())?;if missed{gap(&c,&cfg.id,"Some file notifications were missed. Run a manual scan.")?;}save_hints(&c,&cfg,changed)?;}
+   if let Some(reason)=backend_failed{runtime.attached.remove(&cfg.id);runtime.retries.insert(cfg.id.clone(),(cfg.revision,Instant::now()+options.retry_interval));polling(app,&cfg,runtime,options,&reason)?;}
+  }
+  {let c=app.db.lock().map_err(|e|e.to_string())?;
    // Only a later successful full scan with the same exclusions closes a notification gap.
    let baseline:Option<String>=sql(c.query_row("SELECT j.spec FROM jobs j JOIN source_watch w ON w.root_id=?1 WHERE j.rowid>w.gap_after AND j.kind='scan' AND j.state='completed' AND j.errors=0 AND json_extract(j.spec,'$.root_id')=?1 AND json_extract(j.spec,'$.scope')='' AND coalesce(json_extract(j.spec,'$.recursive'),1)=1 ORDER BY j.rowid DESC LIMIT 1",[&cfg.id],|r|r.get(0)).optional())?;
-   if let Some(s)=baseline{let spec:scan::ScanSpec=serde_json::from_str(&s).map_err(|e|e.to_string())?;if spec.exclude==cfg.exclude||spec.exclude==exclusions(app,&cfg){sql(c.execute("UPDATE source_watch SET needs_scan=0,message='' WHERE root_id=?1",[&cfg.id]))?;}}
+   if let Some(s)=baseline{let spec:scan::ScanSpec=serde_json::from_str(&s).map_err(|e|e.to_string())?;if spec.exclude==cfg.exclude||spec.exclude==exclusions(app,&cfg){sql(c.execute("UPDATE source_watch SET needs_scan=0,message=CASE WHEN status='polling' THEN message ELSE '' END WHERE root_id=?1",[&cfg.id]))?;}}
   }
-  if backend_failed{attached.remove(&cfg.id);retries.insert(cfg.id.clone(),(cfg.revision,std::time::Instant::now()+Duration::from_secs(30)));let c=app.db.lock().map_err(|e|e.to_string())?;sql(c.execute("UPDATE source_watch SET status='error',message='File watcher disconnected. Retrying; manual scanning remains available.' WHERE root_id=?1",[&cfg.id]))?;continue;}
+  let full=runtime.polling.get(&cfg.id).is_some_and(|p|Instant::now()>=p.next);
   // Share admission with manual scans, transfer/file plans and Core shutdown.
-  if !stop.load(Ordering::SeqCst){if let Some(job)=enqueue(app,&cfg,stop)?{scan::run(app.db.clone(),job);}}
+  if (full||runtime.attached.contains_key(&cfg.id))&&!stop.load(Ordering::SeqCst){if let Some(job)=enqueue(app,&cfg,stop,full)?{
+   scan::run(app.db.clone(),job);
+   // A busy admission leaves the deadline due. Retrying native watching never resets it.
+   if let Some(p)=runtime.polling.get_mut(&cfg.id){p.next=Instant::now()+options.poll_interval;}
+  }}
  }Ok(())
 }
 
 #[cfg(test)]mod tests{
  use super::*;
+ fn short_options(force:bool)->Options{Options{force_polling:force,poll_interval:Duration::from_millis(10),retry_interval:Duration::from_secs(30)}}
+ fn scans(app:&App)->i64{app.db.lock().unwrap().query_row("SELECT count(*) FROM jobs WHERE kind='scan'",[],|r|r.get(0)).unwrap()}
+ #[test]fn polling_environment_defaults_and_minimum(){
+  let default=Options::from_values(None,None);assert!(!default.force_polling);assert_eq!(default.poll_interval,Duration::from_secs(900));
+  assert_eq!(Options::from_values(Some("1"),Some("2")).poll_interval,Duration::from_secs(60));assert!(Options::from_values(Some("1"),None).force_polling);
+  assert!(!Options::from_values(Some("true"),None).force_polling);assert_eq!(Options::from_values(None,Some("1800")).poll_interval,Duration::from_secs(1800));assert_eq!(Options::from_values(None,Some("invalid")).poll_interval,default.poll_interval);
+ }
+ #[test]fn forced_polling_never_attaches_and_next_scan_finds_new_folder(){
+  let(_t,app,cfg)=fixture();let mut runtime=Runtime::<notify::NullWatcher>::new();let options=short_options(true);let stop=AtomicBool::new(false);
+  let mut never=|_:&Config|->notify::Result<Attached<notify::NullWatcher>>{panic!("Forced polling must not create a watcher")};
+  tick(&app,&stop,&mut runtime,&options,&mut never).unwrap();let count=scans(&app);
+  {let c=app.db.lock().unwrap();let s=status(&c,&cfg.id).unwrap();assert_eq!(s["status"],"polling");assert!(s["message"].as_str().unwrap().contains("GALROON_WATCH_FORCE_POLLING=1"));}
+  let folder=Path::new(&cfg.path).join("New Game");std::fs::create_dir(&folder).unwrap();std::fs::write(folder.join("game.bin"),b"new").unwrap();
+  // Keep the first check independent of machine speed, then exercise the real timer.
+  runtime.polling.get_mut(&cfg.id).unwrap().next=Instant::now()+Duration::from_secs(60);
+  tick(&app,&stop,&mut runtime,&options,&mut never).unwrap();assert_eq!(scans(&app),count);runtime.polling.get_mut(&cfg.id).unwrap().next=Instant::now()+options.poll_interval;thread::sleep(Duration::from_millis(20));
+  tick(&app,&stop,&mut runtime,&options,&mut never).unwrap();assert_eq!(scans(&app),count+1);
+  let c=app.db.lock().unwrap();assert_eq!(c.query_row("SELECT count(*) FROM files WHERE relative_path=?1",[Path::new("New Game").join("game.bin").to_str().unwrap()],|r|r.get::<_,i64>(0)).unwrap(),1);
+  assert_eq!(c.query_row("SELECT count(*) FROM resources WHERE relative_path='New Game'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+  let spec:String=c.query_row("SELECT spec FROM jobs ORDER BY rowid DESC LIMIT 1",[],|r|r.get(0)).unwrap();let spec:Value=serde_json::from_str(&spec).unwrap();assert_eq!(spec["scope"],"");assert_eq!(spec["recursive"],true);assert_eq!(spec["automatic"],true);
+  assert_eq!(status(&c,&cfg.id).unwrap()["status"],"polling");assert!(status(&c,&cfg.id).unwrap()["message"].as_str().unwrap().contains("GALROON_WATCH_FORCE_POLLING=1"));
+ }
+ #[test]fn attachment_quota_failure_polls_without_resetting_deadline_and_recovers(){
+  let(_t,app,cfg)=fixture();let mut runtime=Runtime::<notify::NullWatcher>::new();let options=short_options(false);let stop=AtomicBool::new(false);let mut attempts=0;
+  let mut create=|cfg:&Config|{attempts+=1;if attempts<3{Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch))}else{attach::<notify::NullWatcher>(cfg)}};
+  tick(&app,&stop,&mut runtime,&options,&mut create).unwrap();let deadline=runtime.polling[&cfg.id].next;
+  {let c=app.db.lock().unwrap();let s=status(&c,&cfg.id).unwrap();assert_eq!(s["status"],"polling");assert!(s["message"].as_str().unwrap().contains(&notify::Error::new(notify::ErrorKind::MaxFilesWatch).to_string()));}
+  runtime.retries.clear();runtime.polling.get_mut(&cfg.id).unwrap().next=Instant::now()+Duration::from_secs(300);let future=runtime.polling[&cfg.id].next;
+  tick(&app,&stop,&mut runtime,&options,&mut create).unwrap();assert_eq!(runtime.polling[&cfg.id].next,future);assert!(future>deadline);
+  runtime.retries.clear();tick(&app,&stop,&mut runtime,&options,&mut create).unwrap();assert!(runtime.polling.is_empty());assert_eq!(attempts,3);
+  assert_eq!(status(&app.db.lock().unwrap(),&cfg.id).unwrap()["status"],"watching");
+ }
+ #[test]fn backend_failure_enters_polling_with_reason(){
+  let(_t,app,cfg)=fixture();let mut runtime=Runtime::<notify::NullWatcher>::new();let options=short_options(false);let stop=AtomicBool::new(false);
+  let mut create=|cfg:&Config|{let mut a=attach::<notify::NullWatcher>(cfg)?;let(tx,rx)=mpsc::channel();tx.send(Err(notify::Error::generic("backend disconnected"))).unwrap();a.rx=rx;Ok(a)};
+  tick(&app,&stop,&mut runtime,&options,&mut create).unwrap();assert!(runtime.attached.is_empty());assert_eq!(scans(&app),2);
+  let c=app.db.lock().unwrap();let s=status(&c,&cfg.id).unwrap();assert_eq!(s["status"],"polling");assert!(s["message"].as_str().unwrap().contains("backend disconnected"));
+ }
+ #[test]fn polling_shares_manual_plan_and_shutdown_admission(){
+  let(_t,app,cfg)=fixture();let mut runtime=Runtime::<notify::NullWatcher>::new();let options=short_options(true);let stop=AtomicBool::new(false);
+  let manual=scan::create(&app.db,scan::ScanSpec{root_id:cfg.id.clone(),scope:String::new(),exclude:vec![]}).unwrap();let count=scans(&app);
+  tick(&app,&stop,&mut runtime,&options,&mut attach::<notify::NullWatcher>).unwrap();assert_eq!(scans(&app),count);
+  assert!(enqueue(&app,&cfg,&stop,true).unwrap().is_none());
+  app.db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&manual]).unwrap();assert!(enqueue(&app,&cfg,&stop,true).unwrap().is_none());
+  app.db.lock().unwrap().execute("UPDATE jobs SET state='queued' WHERE id=?1",[&manual]).unwrap();scan::run(app.db.clone(),manual);
+  let auto=enqueue(&app,&cfg,&stop,true).unwrap().unwrap();assert!(enqueue(&app,&cfg,&stop,true).unwrap().is_none());assert!(scan::create(&app.db,scan::ScanSpec{root_id:cfg.id.clone(),scope:String::new(),exclude:vec![]}).is_err());scan::run(app.db.clone(),auto);
+  assert!(enqueue(&app,&cfg,&AtomicBool::new(true),true).unwrap().is_none());
+  app.db.lock().unwrap().execute("INSERT INTO plans(id,kind,state,items,digest,created) VALUES('busy','organize','executing','[]','test',1)",[]).unwrap();
+  assert!(enqueue(&app,&cfg,&stop,true).unwrap().is_none());
+ }
  #[test]fn enabled_intake_reconciles_initial_and_missed_changes_without_manual_scan(){
   let(_t,app,cfg)=fixture();{let c=app.db.lock().unwrap();c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('auto_match_enabled','1')",[]).unwrap();gap(&c,&cfg.id,"Test gap").unwrap();c.execute("UPDATE source_watch SET status='watching'",[]).unwrap();}
-  let job=enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().unwrap();scan::run(app.db.clone(),job.clone());
+  let job=enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().unwrap();scan::run(app.db.clone(),job.clone());
   let c=app.db.lock().unwrap();let spec:String=c.query_row("SELECT spec FROM jobs WHERE id=?1",[&job],|r|r.get(0)).unwrap();let value:Value=serde_json::from_str(&spec).unwrap();assert_eq!(value["scope"],"");assert_eq!(value["automatic"],true);assert_eq!(value["recursive"],true);
   // The same resources are not announced again by reconciliation scans.
   let notices:i64=c.query_row("SELECT count(*) FROM events WHERE code='resource.discovered'",[],|r|r.get(0)).unwrap();assert_eq!(notices,2);
-  c.execute("UPDATE jobs SET errors=1 WHERE id=?1",[&job]).unwrap();drop(c);assert!(enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().is_none());
+  c.execute("UPDATE jobs SET errors=1 WHERE id=?1",[&job]).unwrap();drop(c);assert!(enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().is_none());
  }
  fn fixture()->(tempfile::TempDir,App,Config){let t=tempfile::tempdir().unwrap();let source=t.path().join("source");std::fs::create_dir_all(source.join("A/nested")).unwrap();std::fs::create_dir_all(source.join("B")).unwrap();for p in ["A/a.bin","A/nested/b.bin","B/outside.bin"]{std::fs::write(source.join(p),p.as_bytes()).unwrap();}let app=crate::initialize(t.path().join("state")).unwrap();app.db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();let source=source.canonicalize().unwrap();{let c=app.db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'Watch fixture')",[source.to_str().unwrap()]).unwrap();ensure(&c).unwrap();}let cfg=Config{id:"r".into(),path:source.to_string_lossy().into(),enabled:true,exclude:vec![],revision:1};let j=scan::create(&app.db,scan::ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();scan::run(app.db.clone(),j);(t,app,cfg)}
  fn pending(app:&App,cfg:&Config,changes:Vec<Change>){let c=app.db.lock().unwrap();save_hints(&c,cfg,changes).unwrap();c.execute("UPDATE source_watch SET last_event=0,status='watching'",[]).unwrap();}
  #[test]fn notifications_are_scoped_coalesced_and_exclude_internal_paths(){let(_t,app,mut cfg)=fixture();let root=Path::new(&cfg.path);cfg.exclude=vec!["B".into()];let paths=vec![root.join("A/nested/new.bin"),root.join("A/nested"),root.join("B/outside.bin"),root.join(".galroon-copy/files/a.bin")];let changes=hints(root,&paths,&cfg.exclude,&app.state_dir);assert!(changes.contains(&Change{scope:"A".into(),recursive:false}));assert!(changes.iter().any(|c|Path::new(&c.scope)==Path::new("A/nested")&&c.recursive));assert_eq!(changes.len(),2);let mut combined=changes;merge(&mut combined,Change{scope:"A".into(),recursive:true});assert_eq!(combined,vec![Change{scope:"A".into(),recursive:true}]);assert!(!valid_scope("../escape"));assert!(!valid_scope("C:\\escape"));}
- #[test]fn incremental_scan_does_not_visit_siblings_and_deletion_is_proven_by_parent(){let(_t,app,cfg)=fixture();let root=Path::new(&cfg.path);std::fs::remove_file(root.join("A/nested/b.bin")).unwrap();std::fs::remove_dir(root.join("A/nested")).unwrap();std::fs::write(root.join("A/new.bin"),b"new").unwrap();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:false}]);let j=enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().unwrap();scan::run(app.db.clone(),j.clone());let c=app.db.lock().unwrap();let n:i64=c.query_row("SELECT count(*) FROM observations WHERE job_id=?1",[&j],|r|r.get(0)).unwrap();assert_eq!(n,2);let missing:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%b.bin'",[],|r|r.get(0)).unwrap();assert_eq!(missing,"missing");let outside:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%outside.bin'",[],|r|r.get(0)).unwrap();assert_eq!(outside,"present");assert_eq!(std::fs::read(root.join("B/outside.bin")).unwrap(),b"B/outside.bin");}
- #[test]fn queue_survives_reopen_and_respects_pause_cancel_and_shutdown(){let(t,app,cfg)=fixture();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:true}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(true)).unwrap().is_none());drop(app);let app=crate::initialize(t.path().join("state")).unwrap();let j=enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().unwrap();app.db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&j]).unwrap();pending(&app,&cfg,vec![Change{scope:"B".into(),recursive:false}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().is_none());app.db.lock().unwrap().execute("UPDATE jobs SET state='cancelled' WHERE id=?1",[&j]).unwrap();assert!(enqueue(&app,&cfg,&AtomicBool::new(false)).unwrap().is_none());let s=status(&app.db.lock().unwrap(),"r").unwrap();assert_eq!(s["enabled"],false);let enabled=configure(&app.db,"r",Edit{revision:s["revision"].as_i64().unwrap(),enabled:true,exclude:vec![]}).unwrap();assert_eq!(enabled["job_id"],Value::Null);}
+ #[test]fn incremental_scan_does_not_visit_siblings_and_deletion_is_proven_by_parent(){let(_t,app,cfg)=fixture();let root=Path::new(&cfg.path);std::fs::remove_file(root.join("A/nested/b.bin")).unwrap();std::fs::remove_dir(root.join("A/nested")).unwrap();std::fs::write(root.join("A/new.bin"),b"new").unwrap();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:false}]);let j=enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().unwrap();scan::run(app.db.clone(),j.clone());let c=app.db.lock().unwrap();let n:i64=c.query_row("SELECT count(*) FROM observations WHERE job_id=?1",[&j],|r|r.get(0)).unwrap();assert_eq!(n,2);let missing:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%b.bin'",[],|r|r.get(0)).unwrap();assert_eq!(missing,"missing");let outside:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%outside.bin'",[],|r|r.get(0)).unwrap();assert_eq!(outside,"present");assert_eq!(std::fs::read(root.join("B/outside.bin")).unwrap(),b"B/outside.bin");}
+ #[test]fn queue_survives_reopen_and_respects_pause_cancel_and_shutdown(){let(t,app,cfg)=fixture();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:true}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(true),false).unwrap().is_none());drop(app);let app=crate::initialize(t.path().join("state")).unwrap();let j=enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().unwrap();app.db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&j]).unwrap();pending(&app,&cfg,vec![Change{scope:"B".into(),recursive:false}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().is_none());app.db.lock().unwrap().execute("UPDATE jobs SET state='cancelled' WHERE id=?1",[&j]).unwrap();assert!(enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().is_none());let s=status(&app.db.lock().unwrap(),"r").unwrap();assert_eq!(s["enabled"],false);let enabled=configure(&app.db,"r",Edit{revision:s["revision"].as_i64().unwrap(),enabled:true,exclude:vec![]}).unwrap();assert_eq!(enabled["job_id"],Value::Null);}
  #[test]fn overflow_requires_manual_scan_and_stale_settings_are_rejected(){let(_t,app,cfg)=fixture();let c=app.db.lock().unwrap();save_hints(&c,&cfg,(0..129).map(|i|Change{scope:format!("folder-{i}"),recursive:false}).collect()).unwrap();let s=status(&c,"r").unwrap();assert_eq!(s["pending"],0);assert_eq!(s["needs_scan"],true);drop(c);configure(&app.db,"r",Edit{revision:1,enabled:false,exclude:vec![]}).unwrap();assert!(configure(&app.db,"r",Edit{revision:1,enabled:true,exclude:vec![]}).is_err());assert!(configure(&app.db,"r",Edit{revision:2,enabled:true,exclude:vec!["../escape".into()]}).is_err());}
 }

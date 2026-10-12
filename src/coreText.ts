@@ -22,7 +22,7 @@ const exact:Record<string,string>={
  'Collection or filters changed. Reload before continuing.':'coreText_collectionChanged',
  'Collection or filters changed. Reload before selecting works.':'coreText_collectionChanged',
 };
-const prefixed:[string,string][]=[['A different source name needs review: ','coreText_otherSourceName'],['VNDB returned ','coreText_vndbStatus']];
+const prefixed:[string,string][]=[['A different source name needs review: ','coreText_otherSourceName'],['File name is not valid UTF-8 and was skipped: ','coreText_nonUtf8Skipped'],['VNDB returned ','coreText_vndbStatus']];
 export function coreText(t:TFunction,message:string|null|undefined):string{
  if(!message)return '';
  const key=exact[message];if(key)return t(key,{defaultValue:message});

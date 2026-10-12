@@ -13,7 +13,17 @@ pub fn helper()->Option<PathBuf>{
     if let Some(v)=std::env::var_os("GALROON_7ZIP"){let p=PathBuf::from(v);if p.is_file(){return Some(p);}}
     let mut candidates=vec![PathBuf::from("tools/7zip/runtime/7z.exe")];
     if let Ok(e)=std::env::current_exe(){if let Some(p)=e.parent(){candidates.push(p.join("runtime/7z.exe"));candidates.push(p.join("resources/runtime/7z.exe"));}}
-    candidates.into_iter().find(|p|p.is_file()).and_then(|p|p.canonicalize().ok())
+    if let Some(p)=candidates.into_iter().find(|p|p.is_file()).and_then(|p|p.canonicalize().ok()){return Some(p);}
+    #[cfg(not(windows))]
+    if let Some(paths)=std::env::var_os("PATH"){
+        for name in ["7zz","7z"]{for dir in std::env::split_paths(&paths){let p=dir.join(name);if executable(&p){return Some(p);}}}
+    }
+    None
+}
+#[cfg(not(windows))]
+fn executable(p:&Path)->bool{
+    #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;fs::metadata(p).is_ok_and(|m|m.is_file()&&m.permissions().mode()&0o111!=0)}
+    #[cfg(not(unix))]{let _=p;false}
 }
 pub fn capability()->Value{json!({"available":helper().is_some(),"formats":["zip","7z","rar","iso"],"password_transport":"stdin only","extraction_resume":"Restart the current archive in its staging folder; file copy resumes by offset"})}
 fn hidden_command(p:&Path)->Command{let mut c=Command::new(p);#[cfg(windows)]{use std::os::windows::process::CommandExt;c.creation_flags(0x08000000);}c}
@@ -329,3 +339,22 @@ fn verify_volume_group(db:&Db,jid:&str,path:&Path,password:Option<&str>)->R<()>{
 }
 
 
+
+#[cfg(all(test,unix))]mod helper_tests{
+ use super::*;
+ use std::{ffi::OsString,os::unix::fs::PermissionsExt,sync::Mutex};
+ static SERIAL:Mutex<()>=Mutex::new(());
+ struct Environment(Vec<(&'static str,Option<OsString>)>);
+ impl Drop for Environment{fn drop(&mut self){for(key,value)in &self.0{match value{Some(v)=>std::env::set_var(key,v),None=>std::env::remove_var(key)}}}}
+ #[test]fn path_helpers_require_executable_files_and_prefer_7zz_then_path_order(){
+  let _serial=SERIAL.lock().unwrap();let _env=Environment(["PATH","GALROON_7ZIP"].into_iter().map(|k|(k,std::env::var_os(k))).collect());
+  let t=tempfile::tempdir().unwrap();let first=t.path().join("first");let second=t.path().join("second");fs::create_dir(&first).unwrap();fs::create_dir(&second).unwrap();
+  std::env::set_var("PATH",std::env::join_paths([&first,&second]).unwrap());std::env::remove_var("GALROON_7ZIP");
+  let make=|p:&Path,mode|{fs::write(p,b"#!/bin/sh\nexit 0\n").unwrap();fs::set_permissions(p,fs::Permissions::from_mode(mode)).unwrap();};
+  assert!(helper().is_none());assert_eq!(capability()["available"],false);
+  make(&first.join("7z"),0o755);make(&first.join("7zz"),0o644);fs::create_dir(second.join("7zz")).unwrap();assert_eq!(helper(),Some(first.join("7z")));
+  fs::remove_dir(second.join("7zz")).unwrap();make(&second.join("7zz"),0o755);assert_eq!(helper(),Some(second.join("7zz")));
+  make(&first.join("7zz"),0o755);assert_eq!(helper(),Some(first.join("7zz")));assert_eq!(capability()["available"],true);
+  let override_path=t.path().join("override");make(&override_path,0o755);std::env::set_var("GALROON_7ZIP",&override_path);assert_eq!(helper(),Some(override_path));
+ }
+}
