@@ -57,6 +57,13 @@ async function changeSavedConnection(command:string,args:Record<string,unknown>)
  try{await invoke(command,args);window.location.reload();}
  catch(error){changing=false;epoch++;stopRequested=false;phase(previous.phase,previous.error);if(previous.phase==='offline')scheduleReconnect();throw error;}
 }
+export class ApiRequestError extends Error {constructor(message:string,public status:number){super(message);}}
+export async function webAccessTransport(url:string,signal:AbortSignal):Promise<string|undefined>{
+ const status=await fetch(`${url}/api/access/status`,{credentials:'include',signal});
+ if(status.ok){const value=await status.json();if(value.transport)return value.transport;}
+ const context=await fetch(`${url}/api/context`,{credentials:'include',signal});return context.ok?(await context.json()).core?.transport:undefined;
+}
+export async function webPair(url:string,code:string){setSession({url,token:''});await api('/access/pair-web',{code});}
 export async function webLogin(url:string,password:string,name:string){setSession({url,token:''});await api('/access/login',{password,name});}
 export async function signOut(){try{await api('/access/logout',{});}finally{session=undefined;epoch++;}}
 export function collectionStorageKey(name:string){return `galroon.${session?.library_id||'unidentified'}.${session?.device_id||'browser'}.${name}`; }
@@ -100,7 +107,7 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
  if((library&&current.library_id&&library!==current.library_id)||(device&&current.device_id&&device!==current.device_id)){collectionChanged();throw readOnly?new CollectionChangedError():new UncertainOperationError();}
  if(library)current.library_id=library;if(device)current.device_id=device;
  if(response.status===401){if(isDesktop){lostConnection();throw new ConnectionLostError();}throw new AuthenticationError();}
- if(!response.ok)throw new Error(data.error||`Request failed (${response.status})`);return data as T;
+ if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status);return data as T;
 }
 export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};

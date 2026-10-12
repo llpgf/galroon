@@ -6,7 +6,7 @@ use std::{net::SocketAddr,time::Duration};
 const PASSWORD:&str="Generated LAN fixture password";
 fn fixture()->(tempfile::TempDir,App,String,String){
  let t=tempfile::tempdir().unwrap();let mut app=crate::initialize(t.path().join("state")).unwrap();app.network=Some(NetworkSettings::for_test("192.168.50.154".parse().unwrap(),14830));setup(&app.db,PASSWORD,false).unwrap();
- let code=create_pair(&app.db,"LAN desktop").unwrap();let session=redeem(&app.db,code["code"].as_str().unwrap()).unwrap();let desktop=session["token"].as_str().unwrap().to_owned();
+ let code=create_pair(&app.db,"LAN desktop","desktop").unwrap();let session=redeem(&app.db,code["code"].as_str().unwrap()).unwrap();let desktop=session["token"].as_str().unwrap().to_owned();
  let (token,_)=login(&app.db,PASSWORD,"Browser").unwrap();let cookie=format!("{}={token}",cookie_name(&app));(t,app,desktop,cookie)
 }
 #[tokio::test]async fn role_transport_endpoint_matrix(){
@@ -64,7 +64,7 @@ fn fixture()->(tempfile::TempDir,App,String,String){
  assert_eq!(client.post(format!("{base}/api/access/login")).header("Origin",&base).json(&json!({"password":PASSWORD})).send().await.unwrap().status(),403);
  assert_eq!(client.get(format!("{base}/api/health")).header("Host","evil.local").send().await.unwrap().status(),403);
  let context=client.get(format!("{base}/api/context")).bearer_auth(&desktop).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(context["core"]["transport"],"lan");
- let code=create_pair(&app.db,"HTTPS redeemed").unwrap();let paired=client.post(format!("{base}/api/access/pair")).header("Origin",&base).json(&json!({"code":code["code"]})).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(paired["role"],"desktop");
+ let code=create_pair(&app.db,"HTTPS redeemed","desktop").unwrap();let paired=client.post(format!("{base}/api/access/pair")).header("Origin",&base).json(&json!({"code":code["code"]})).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(paired["role"],"desktop");
  assert_eq!(client.get(format!("http://{plain_addr}/api/context")).bearer_auth(&app.token).send().await.unwrap().json::<Value>().await.unwrap()["core"]["transport"],"loopback");
  let tcp=tokio::net::TcpStream::connect(lan_addr).await.unwrap();let name=rustls::pki_types::ServerName::IpAddress(lan_addr.ip().into());let tls_stream=connector.connect(name,tcp).await.unwrap();let plain_stream=tokio::net::TcpStream::connect(plain_addr).await.unwrap();
  trait Stream:tokio::io::AsyncRead+tokio::io::AsyncWrite+Unpin+Send{}impl<T:tokio::io::AsyncRead+tokio::io::AsyncWrite+Unpin+Send> Stream for T{}
