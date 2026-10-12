@@ -15,6 +15,7 @@ RUN chmod 0755 /opt/galroon/galroon-core \
 ENV GALROON_7ZIP=/usr/bin/7z
 # Runtime uid/gid MUST be supplied by compose's user:, not baked into the image.
 ENTRYPOINT ["/opt/galroon/galroon-core"]
-# The control socket lives in the tmpfs compose mounts at /run/galroon: Synology ACL
-# shares cannot hold the 0700 directory the socket requires.
-CMD ["serve", "--data-dir", "/data", "--control-dir", "/run/galroon"]
+# The control socket lives under the tmpfs compose mounts at /run/galroon: Synology ACL
+# shares cannot hold the 0700 directory the socket requires. Core creates the control/
+# subdirectory itself, because Docker 24 does not reapply the tmpfs mode=0700 on restart.
+CMD ["serve", "--data-dir", "/data", "--control-dir", "/run/galroon/control"]

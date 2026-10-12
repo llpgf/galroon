@@ -25,13 +25,13 @@ NAS 需要 Container Manager 的 `/usr/local/bin/docker` 與 `docker compose` pl
 | NAS 路徑 | 用途 |
 | --- | --- |
 | `/volume1/docker/galroon/data` | 持久資料、裝置身分、資料庫 |
-| `/run/galroon`（container 內的 tmpfs） | owner 控制通道 `core.sock` |
+| `/run/galroon/control`（container 內 tmpfs 的子目錄） | owner 控制通道 `core.sock` |
 | `/volume1/docker/galroon/compose.yaml`、`.env` | 最近一次部署的 compose 與非機密設定 |
 | `/volume1/docker/galroon/release.*` | 每次上傳的獨立 build context，保留供檢查 |
 | `/volume1/docker/galroon/previous-image-id` | 更新前 container 的 image ID（若存在） |
 | `/volume1/Backup/Galgame` | 唯讀收藏，同路徑掛入 container |
 
-`/data` 必須位於 NAS 本機磁碟；N1a 拒絕 NFS、CIFS/SMB、FUSE。控制通道放在 container 內的 tmpfs `/run/galroon`（0700，擁有者為 container 的 uid），socket 為 0600。不放在 `/data` 底下，是因為 Synology 共用資料夾的 ACL 會讓目錄權限固定為 777（第一次實機部署時因此重啟迴圈），Core 與 owner CLI 皆用相同非 root uid，雙向驗證 peer uid。此目錄不可分享給其他 container；信任能存取 socket 的同 uid 程序，並不防護 NAS root 或 Docker 管理員。
+`/data` 必須位於 NAS 本機磁碟；N1a 拒絕 NFS、CIFS/SMB、FUSE。控制通道放在 container 內 tmpfs 的子目錄 `/run/galroon/control`，由 Core 啟動時自行以 0700 建立（Docker 24 在 container 重新啟動時不會重新套用 tmpfs 的 `mode=0700`，實測會變成 755），socket 為 0600。不放在 `/data` 底下，是因為 Synology 共用資料夾的 ACL 會讓目錄權限固定為 777（第一次實機部署時因此重啟迴圈），Core 與 owner CLI 皆用相同非 root uid，雙向驗證 peer uid。此目錄不可分享給其他 container；信任能存取 socket 的同 uid 程序，並不防護 NAS root 或 Docker 管理員。
 
 Dockerfile 未設定固定 `USER`，因此**一律透過 compose 執行**；若手動 `docker run` 必須自行指定非 root `--user`。部署腳本拒絕 root uid/gid。
 

@@ -16,7 +16,8 @@ services:
     mem_limit: 1g
     # Required via .env (deploy defaults 1032:100); never run Core as root.
     user: "${GALROON_UID}:${GALROON_GID}"
-    # Private 0700 tmpfs for the owner control socket; ACL shares cannot be 0700.
+    # tmpfs for the owner control socket (ACL shares cannot be 0700). Core creates the
+    # 0700 control/ subdirectory itself: Docker 24 drops mode=0700 when the container restarts.
     tmpfs:
       - "/run/galroon:mode=0700,uid=${GALROON_UID},gid=${GALROON_GID}"
     volumes:

@@ -12,7 +12,7 @@ if [[ "$1" == setup ]]; then
     [[ $# == 1 ]] || nas_die 'Usage: owner.sh setup (password via stdin only)'
     command+=(-i)
 fi
-command+=(galroon /opt/galroon/galroon-core owner "$@" --data-dir /data --control-dir /run/galroon)
+command+=(galroon /opt/galroon/galroon-core owner "$@" --data-dir /data --control-dir /run/galroon/control)
 remote=$(nas_quote "${command[@]}")
 if [[ "$1" == setup && -t 0 ]]; then
     IFS= read -r -s -p 'Owner password: ' secret
