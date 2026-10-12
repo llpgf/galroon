@@ -1,8 +1,8 @@
 import {useState,type ReactNode} from 'react';
 import {useTranslation} from 'react-i18next';
-import {Palette,LibraryBig,Users,Archive} from 'lucide-react';
+import {Palette,LibraryBig,Users,Archive,Info} from 'lucide-react';
 
-export function SettingsLayout({appearance,collection,account,backup}:{appearance:ReactNode;collection:ReactNode;account:ReactNode;backup:ReactNode}){
+export function SettingsLayout({appearance,collection,account,backup,about}:{appearance:ReactNode;collection:ReactNode;account:ReactNode;backup:ReactNode;about:ReactNode}){
  const {t}=useTranslation();
  const [selected,setSelected]=useState('appearance');
  const sections=[
@@ -10,6 +10,7 @@ export function SettingsLayout({appearance,collection,account,backup}:{appearanc
   {id:'collection',icon:LibraryBig,content:collection},
   {id:'account',icon:Users,content:account},
   {id:'backup',icon:Archive,content:backup},
+  {id:'about',icon:Info,content:about},
  ].filter(section=>section.content);
  const active=sections.some(section=>section.id===selected)?selected:sections[0]?.id;
  return <div className="settings-layout">

@@ -1124,3 +1124,12 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
  .duplicate-panel .resource-row .checkbox-label{grid-column:1/-1;width:100%}
  .error-banner{margin:12px var(--content-pad) 0}
 }
+
+/* Release notices stay readable on narrow clients and render notes as plain text. */
+.update-banner{margin-left:var(--sidebar-w);padding:18px 24px;border-bottom:1px solid var(--line);background:var(--surface);overflow-wrap:anywhere}
+.update-banner p{margin:6px 0}.update-banner details{margin:12px 0}.update-banner summary{cursor:pointer}
+.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px;max-height:24rem;overflow:auto}
+.update-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:12px}.version-mismatch{font-size:13px;color:var(--muted)}
+.about-panel{min-width:0;overflow-wrap:anywhere}.about-panel dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 20px}.about-panel dd{margin:0}.about-panel .settings-row{margin-top:20px}
+@media(max-width:700px){.update-banner{margin-left:0}}
+@media(max-width:600px){.update-banner{padding:14px 16px}.about-panel dl{grid-template-columns:minmax(0,1fr)}.about-panel dd{margin-bottom:8px}}

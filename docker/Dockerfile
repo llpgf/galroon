@@ -13,6 +13,7 @@ RUN chmod 0755 /opt/galroon/galroon-core \
     && chmod -R a+rX /opt/galroon/web
 # Ubuntu 24.04's 7zip package (7-Zip 23.01) installs the full 7-Zip as /usr/bin/7z, not 7zz.
 ENV GALROON_7ZIP=/usr/bin/7z
+ENV GALROON_INSTALL_KIND=docker
 # Runtime uid/gid MUST be supplied by compose's user:, not baked into the image.
 ENTRYPOINT ["/opt/galroon/galroon-core"]
 # The control socket lives under the tmpfs compose mounts at /run/galroon: Synology ACL

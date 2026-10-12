@@ -79,3 +79,9 @@ In the desktop Activity timeline, file-plan, individual-move and transfer entrie
 
 ### Task summaries
 Activity shows saved entity totals for new scan and matching tasks. These survive pause, cancellation, restart and catalog restore. Scanning and matching have separate summaries; file totals are never presented as work totals. Earlier tasks explicitly show that totals were not recorded. Encountered-error totals retain entries that failed even if retry succeeds; inspect task messages for the current result.
+
+## Check for Galroon updates
+
+Open **Settings → About** to see Core and client versions, the last check and any available full release. Automatic checks are on by default; the owner or a paired desktop can turn off **Automatically check for updates** or use **Check now**. Browser sessions can view the result. Core contacts GitHub daily while enabled; GitHub sees its IP address and Galroon version, but no collection data is sent.
+
+Use **Open download page** in the notice to install a release yourself, or **Skip this version** to hide it on this client. Docker users should update the Core container image. If the app and Core versions differ, update both. Galroon does not automatically download or install updates. See [Release update notices](../features/UPDATES.md) for details.
