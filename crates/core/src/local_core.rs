@@ -59,14 +59,14 @@ pub async fn run_with_device(dir:PathBuf,device_dir:PathBuf)->R<()>{
  let library=crate::context::library(&*app.db.lock().map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;
  let session=Session{library_id:library.id,device_id:app.device.id.clone(),api_min:1,api_max:1,url:format!("http://127.0.0.1:{}",listener.local_addr().map_err(|e|e.to_string())?.port()),token:app.token.clone(),instance_id:app.instance_id.clone(),pid:std::process::id()};
  let name=pipe_name(&app.state_dir)?;let mut next_pipe=secure_pipe(&name,true)?;let db=app.db.clone();let _lifetime_lock=app.process_lock.clone();let (stop_tx,stop_rx)=tokio::sync::oneshot::channel::<()>();
- let watching=crate::watching::start(app.clone())?;let _matching=crate::automatch::start(app.db.clone());let mut _smart=crate::smart_updates::start(app.db.clone());let mutation_gate=app.mutation_lock.clone();
- let http=tokio::spawn(async move{axum::serve(listener,crate::router(app)).with_graceful_shutdown(async{let _=stop_rx.await;}).await.map_err(|e|e.to_string())});
+ let mut services=crate::Services::start(app.clone())?;let mutation_gate=app.mutation_lock.clone();
+ let http=tokio::spawn(async move{crate::serve_listeners(app,vec![(listener,crate::Transport::Loopback)],async{let _=stop_rx.await;}).await});
  loop{next_pipe.connect().await.map_err(|e|e.to_string())?;let mut pipe=next_pipe;next_pipe=secure_pipe(&name,false)?;
   let read=async{let mut bytes=Vec::new();loop{let b=pipe.read_u8().await?;if b==b'\n'{break;}bytes.push(b);if bytes.len()>32{return Err(std::io::Error::other("Invalid request"));}}Ok(String::from_utf8_lossy(&bytes).to_string())};
   let action=tokio::time::timeout(Duration::from_secs(3),read).await;let mut stopping=false;
   let response=match action{Ok(Ok(a))if a=="session"=>serde_json::to_value(&session).unwrap(),Ok(Ok(a))if a=="stop"=>{
-   _smart.request_stop();let _gate=mutation_gate.lock().map_err(|e|e.to_string())?;let c=db.lock().map_err(|e|e.to_string())?;let active:i64=c.query_row("SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
-   if active>0{_smart=crate::smart_updates::start(db.clone());serde_json::json!({"error":"Pause running tasks before stopping Core"})}else{watching.request_stop();_matching.request_stop();_smart.request_stop();stopping=true;serde_json::json!({"stopped":true})}
+   services.stop_smart_updates();let _gate=mutation_gate.lock().map_err(|e|e.to_string())?;let c=db.lock().map_err(|e|e.to_string())?;let active:i64=c.query_row("SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+   if active>0{services.restart_smart_updates(db.clone());serde_json::json!({"error":"Pause running tasks before stopping Core"})}else{services.request_stop();stopping=true;serde_json::json!({"stopped":true})}
   },Ok(Ok(a))=>serde_json::json!({"error":format!("Unknown control command ({} bytes)",a.len())}),Ok(Err(e))=>serde_json::json!({"error":format!("Control read failed: {e}")}),Err(_)=>serde_json::json!({"error":"Control request timed out"})};
   let payload=format!("{response}\n");let _=tokio::time::timeout(Duration::from_secs(3),pipe.write_all(payload.as_bytes())).await;
   let _=tokio::time::timeout(Duration::from_secs(3),pipe.read_u8()).await;
