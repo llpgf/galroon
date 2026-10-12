@@ -33,6 +33,22 @@ The printed and JSON summary includes actual matched/replay strong totals, gaine
 
 Replay only sees candidates stored in the earlier run. Changes that would send different VNDB queries need a live run to confirm. Keep real-library reports and answer keys private, outside version control (normally under `~/GalroonTestData/`; the gitignored `test-output/replay/` is used for sandbox handoff). Automatically generated answers record prior outcomes, not individual owner verification.
 
+## Live requery
+
+Evaluate new queries against VNDB for a recorded review category:
+
+```sh
+cargo run -p galroon-core --example live_requery -- \
+  test-output/replay/nas/library.sqlite --reason "No VNDB candidate found." \
+  --out test-output/replay/live-requery-nas.json
+```
+
+Optional `--limit N` selects the first N resources in path/id order (`0` validates the read-only/report workflow without requests). Selection uses the latest match job's stored `decision.reason`. The database opens read-only; the tool shares automatch's catalog input builder and final replay decision, and searches sequentially with the normal VNDB request spacing and budget. It never binds a resource or writes the catalog.
+
+Each row includes the path, old searched queries, new planned queries, actual searched queries, top candidate id/title/strength/reason, final decision and full response for inspection. Summary categories are exclusive: **strong** means final admission, **review** means candidates or incomplete evidence still need review, and **no_candidate** means a completed search found none. Request/input errors are counted separately and cause exit status 1; setup errors exit 2. Reports are atomically checkpointed after each resource; `complete` is false until the run finishes. Reports contain private catalog names and stay outside version control.
+
+Algorithm 11 adds query-only variants for parenthesized readings/translations, distribution/DLC suffixes and work titles in bonus names. The best variant precedes the original within the existing three-work-query cap and receives the existing single release lookup. Ranking titles, ranking rules and admission rules remain unchanged, including numbered-pack and competing-source guards. The version advances from 10 so previously reviewed resources can be searched again; offline replay cannot measure retrieval gains.
+
 ## Algorithm v4 — acceptance stories (2026-10-11)
 
 Driven by docs/acceptance/USER_STORIES.md and the reviewed answer key tests/e2e/golden/sandbox_data.json (37/37 correct, zero false matches on sandbox_data).

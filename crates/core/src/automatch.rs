@@ -3,6 +3,7 @@ use crate::{db::{self,Db},editions,matching};
 use rusqlite::{Connection,OptionalExtension,params};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
+use unicode_normalization::UnicodeNormalization;
 type R<T>=Result<T,String>;
 fn sql<T>(v:rusqlite::Result<T>)->R<T>{v.map_err(|e|e.to_string())}
 pub fn migrate(c:&Connection)->R<()> {
@@ -69,20 +70,27 @@ struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
     catalog_snapshot(c,rid,false)
 }
+fn member_hints(paths:Vec<String>)->Vec<String>{
+    let mut paths:Vec<String>=paths.into_iter().map(|p|p.nfc().collect()).collect();
+    paths.sort_by_cached_key(|p|(std::cmp::Reverse(p.chars().count()),p.clone()));paths.truncate(31);paths
+}
 fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if !include_bound&&(primary.is_some()||!editions::bindings(c,rid)?.is_empty()){return Ok(None);}
     // Catalogs scanned before system entries were skipped can still hold macOS metadata such as ._DAV.
     if std::path::Path::new(&path).components().any(|p|crate::scan::system_entry(&p.as_os_str().to_string_lossy())){return Ok(None);}
     let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
+    let path:String=path.nfc().collect();let title:String=title.nfc().collect();
     // A bundle member (scan split "Bundle/child") is named by the child, never by the collection folder.
     let parent=std::path::Path::new(&path).parent().map(|p|p.to_string_lossy().to_string()).filter(|p|!p.is_empty());
     let local=|p:&str|parent.as_deref().and_then(|top|std::path::Path::new(p).strip_prefix(top).ok()).map(|p|p.to_string_lossy().to_string()).unwrap_or_else(||p.to_string());
     let mut hints=vec![local(&path)];
     let mut s=sql(c.prepare("SELECT f.id,f.relative_path,f.size,f.mtime FROM files f JOIN resource_files rf ON rf.file_id=f.id WHERE rf.resource_id=?1 ORDER BY length(f.relative_path) DESC,f.relative_path,f.id"))?;
-    let mut rows=sql(s.query([rid]))?;let mut n=0;
-    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());if n<31{hints.push(local(&path));}n+=1;}
-    if n==0{return Ok(None);}Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
+    // Preserve the raw SQL order and values for existing listing fingerprints. Hint selection is NFC-only.
+    let mut rows=sql(s.query([rid]))?;let mut members=Vec::new();
+    while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());members.push(path);}
+    if members.is_empty(){return Ok(None);}hints.extend(member_hints(members).iter().map(|p|local(p)));
+    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{
@@ -99,6 +107,7 @@ pub fn review_reason(response:&Value)->Option<String>{
     if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
     let known=matching::candidate_names(candidate);let mut names=known.clone();names.extend(titles.first().and_then(Value::as_str));
+    let mut fallback=None;
     for (index,title) in titles.iter().filter_map(Value::as_str).enumerate(){
         // Bonus, crack and artwork members of the matched work file into its card. The resource's own name only
         // passes as a VNDB name plus such words, never as a code name or bonus words alone.
@@ -106,7 +115,33 @@ pub fn review_reason(response:&Value)->Option<String>{
         let Ok(mut input)=matching::prepare(title,&[])else{return Some("Source title cannot be interpreted.".into());};
         // Re-ranking one cleaned title keeps the resource's own brand/date corroboration.
         input.brands=strings(&response["brands"]);input.dates=strings(&response["dates"]);let row=matching::rank(&input,vec![candidate.clone()]);let reason=row[0]["match"]["reason"].as_str().unwrap_or("");
-        if !["exact_brand_title","exact_title","exact_alias","exact_release","direct_id","confirmed_title","exact_main_title"].contains(&reason)&&!matching::corroborates_filename(title,candidate){return Some(format!("A different source name needs review: {title}"));}
+        if !["exact_brand_title","exact_title","exact_alias","exact_release","direct_id","confirmed_title","exact_main_title"].contains(&reason)&&!matching::corroborates_filename(title,candidate){
+            let (fallback_names,brands,additional_names)=fallback.get_or_insert_with(||{
+                let mut brands:Vec<&str>=response["brands"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                for maker in candidate["developers"].as_array().into_iter().flatten(){brands.extend(["name","original"].iter().filter_map(|k|maker[*k].as_str()));}
+                let mut additional_names=Vec::new();
+                // A release spelling is evidence only when it names this folder, not another
+                // bundled release of the same VNDB work.
+                for release in candidate["release_matches"].as_array().into_iter().flatten(){
+                    for key in ["title","alttitle"]{if let Some(name)=release[key].as_str(){
+                        if titles.first().and_then(Value::as_str).is_some_and(|folder|matching::normalized(folder)==matching::normalized(name)){additional_names.push(name);}
+                    }}
+                }
+                let mut fallback_names=names.clone();
+                // Quoted bonus labels sometimes omit the subtitle. Reuse the existing corroborated-main-title
+                // rule rather than letting an arbitrary shortened name vouch for itself.
+                for name in &known{
+                    let main=matching::main_title(name);if main==*name||matching::normalized(main).chars().count()<4{continue;}
+                    let Ok(mut input)=matching::prepare(main,&[])else{continue;};input.brands=strings(&response["brands"]);input.dates=strings(&response["dates"]);
+                    let row=matching::rank(&input,vec![candidate.clone()]);if row[0]["match"]["reason"]=="exact_main_title"&&row[0]["match"]["strength"]=="strong"{fallback_names.push(main);additional_names.push(main);}
+                }
+                (fallback_names,brands,additional_names)
+            });
+            if matching::title_anchored_member(title,if index==0{&known}else{fallback_names},brands)||matching::title_anchored_member(title,additional_names,brands){continue;}
+            if index>0&&matching::corroborated_member(title,candidate,response["results"].as_array().unwrap()){continue;}
+            if index>0&&matching::fan_release_member(title,candidate){continue;}
+            return Some(format!("A different source name needs review: {title}"));
+        }
     }None
 }
 fn brand(path:&str)->String{
@@ -132,6 +167,8 @@ fn with_confirmation(c:&Connection,rid:&str,input:&matching::Input,response:&Val
     result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
 }
 pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapshot(c,rid)?.ok_or("Resource already matched")?;with_confirmation(c,rid,&snap.input,response)}
+/// Read-only input for live diagnostics, including bound resources; shares automatch's catalog builder.
+pub fn catalog_input(c:&Connection,rid:&str)->R<Option<matching::Input>>{Ok(catalog_snapshot(c,rid,true)?.map(|s|s.input))}
 /// Re-evaluate recorded candidates, including bound resources, using catalog evidence only. Never writes.
 pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     let Some(snap)=catalog_snapshot(c,rid,true)?else{return Ok(None);};let mut stored=response.clone();
@@ -163,6 +200,44 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     fn response(input:matching::Input,rows:Vec<Value>)->Value {json!({"results":matching::rank(&input,rows),"titles":input.titles,"incomplete":false})}
     fn exact(input:matching::Input)->Value{response(input,vec![json!({"id":"v4","title":"Clannad"})])}
     fn scalar(db:&Db,query:&str)->i64{db.lock().unwrap().query_row(query,[],|r|r.get(0)).unwrap()}
+    #[test]fn catalog_inputs_and_hint_order_are_unicode_independent_but_fingerprints_stay_raw(){
+        let title="[240101][ブランド] サンプルタイトル";let path=format!("親ブランド/{title}");
+        let members:Vec<String>=(0..40).map(|i|format!("{path}/[メーカー{i:02}] {}{i:02}.rar",if i%2==0{"カキクケコカ"}else{"ガギグゲゴ"})).collect();
+        let nfd=|s:&str|s.nfd().collect::<String>();let hints=member_hints(members.clone());
+        assert_eq!(hints,member_hints(members.iter().rev().map(|p|nfd(p)).collect()));assert_eq!(hints.len(),31);
+        assert!(hints.windows(2).all(|p|p[0].chars().count()>p[1].chars().count()||(p[0].chars().count()==p[1].chars().count()&&p[0]<=p[1])));
+        let(_t,db)=fixture(&[title]);let c=db.lock().unwrap();c.execute("DELETE FROM resource_files",[]).unwrap();c.execute("DELETE FROM files",[]).unwrap();
+        for (i,p) in members.iter().enumerate(){let id=format!("f{i:02}");
+            c.execute("INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES(?1,'root',?2,?2,16,'1','rar','fixture')",params![id,p]).unwrap();
+            c.execute("INSERT INTO resource_files(resource_id,file_id) VALUES('r0',?1)",[&id]).unwrap();
+        }
+        let mut inputs=Vec::new();let mut fingerprints=Vec::new();
+        for decomposed in [false,true]{
+            let form=|s:&str|if decomposed{nfd(s)}else{s.to_string()};let raw_path=form(&path);
+            c.execute("UPDATE resources SET relative_path=?1,title=?2 WHERE id='r0'",params![raw_path,form(title)]).unwrap();
+            for (i,p) in members.iter().enumerate(){c.execute("UPDATE files SET relative_path=?1 WHERE id=?2",params![form(p),format!("f{i:02}")]).unwrap();}
+            let snap=snapshot(&c,"r0").unwrap().unwrap();let mut hash=Sha256::new();hash.update(raw_path.as_bytes());hash.update(snap.revision.to_le_bytes());
+            let mut s=c.prepare("SELECT id,relative_path,size,mtime FROM files ORDER BY length(relative_path) DESC,relative_path,id").unwrap();
+            for row in s.query_map([],|r|Ok(json!([r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?]))).unwrap(){hash.update(row.unwrap().to_string().as_bytes());}
+            assert_eq!(snap.fingerprint,hex::encode(hash.finalize()));fingerprints.push(snap.fingerprint);
+            let input=snap.input;inputs.push(json!({"titles":input.titles,"queries":input.queries,"brands":input.brands,"dates":input.dates,"direct_id":input.direct_id}));
+        }
+        assert_eq!(inputs[0],inputs[1]);assert_ne!(fingerprints[0],fingerprints[1]);assert_eq!(inputs[0]["titles"][0],"サンプルタイトル");
+        assert!(!inputs[0]["titles"].as_array().unwrap().iter().any(|t|t=="親ブランド"));
+    }
+    #[test]fn exact_title_file_stems_are_ancillary_with_any_short_extension(){
+        let title="女装お嬢様への異常な愛情";let candidate=json!({"id":"v13508","title":title});
+        for ext in ["cf","exe","ini","cfg","dat","a","X1234"]{
+            let member=format!("{title}.{ext}");assert!(matching::title_anchored_member(&member,&[title],&[]));
+            assert_eq!(review_reason(&response(matching::prepare(title,&[format!("RJ119660/{member}")]).unwrap(),vec![candidate.clone()])),None);
+        }
+        let folder="[Key] CLANNAD";let input=matching::prepare(folder,&[format!("{folder}.cf")]).unwrap();
+        assert_eq!(review_reason(&response(input,vec![json!({"id":"v4","title":"CLANNAD","developers":[{"name":"Key"}]})])),None);
+        for member in [format!("{title}2.cf"),format!("{title}別作品.cf"),format!("{title}.abcdef"),format!("{title}.a-b"),"別の作品タイトル.cf".into()]{
+            assert!(!matching::title_anchored_member(&member,&[title],&[]),"{member}");
+            assert!(review_reason(&response(matching::prepare(title,&[member.clone()]).unwrap(),vec![candidate.clone()])).is_some(),"{member}");
+        }
+    }
     #[test]fn replay_includes_bound_resources_and_shares_live_decisions_without_writes(){
         let(_t,db)=fixture(&["Clannad","Unknown title","Clannad Anniversary Collection"]);
         db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('w','Clannad','Clannad','v4')",[]).unwrap();
@@ -212,6 +287,380 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         assert_eq!(review_reason(&response(&["Bonus","エッチな皇女バニーのご奉仕"])),Some("A different source name needs review: エッチな皇女バニーのご奉仕".into()));
         // A bonus-only folder name never vouches for itself.
         let bonus=json!({"results":ranked,"titles":["Bonus","アマツツミ"],"incomplete":false});assert!(review_reason(&bonus).is_some());
+    }
+    #[test]fn legacy_quoted_bonus_members_still_file_into_the_matched_card(){
+        for (title,member) in [
+            ("宿りし乙女の誓いと魔法","宿りし乙女の誓いと魔法 豪華版特典「オリジナルサウンドトラック」"),
+            ("アマカノ3","アマカノ3 FANZA特典「恋人メイドのご奉仕お目覚めボイス」"),
+            ("トリノライン","トリノライン 豪華版 サウンドトラック 「feathered」"),
+            ("SPIRAL!!-Limited Edition-","SPIRAL!!-Limited Edition- 同梱特典 『SHUFFLE!』本編"),
+            ("奴隷姫騎士と奴隷侍女とのスローライフ","[241025][1305021][WAFFLE] 奴隷姫騎士と奴隷侍女とのスローライフ アニメ追加版 オフィシャル通販特典 「奴隷たちとの畑づくり」 (files).rar"),
+            ("人間不信の錬金術師と元兵士のホムンクルス","[241025][1305022][WAFFLE] 人間不信の錬金術師と元兵士のホムンクルス アニメ追加版 オフィシャル通販特典 「錬金術師の過去」 (files).rar"),
+            ("恋愛弱者な幼馴染少女と恋愛強者な彼女","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 Webアンケート特典 (files).rar"),
+            ("恋愛弱者な幼馴染少女と恋愛強者な彼女","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 エッチな音声データ (ogg).rar"),
+            ("恋愛弱者な幼馴染少女と恋愛強者な彼女","[241025][1297034][WAFFLE] 恋愛弱者な幼馴染少女と恋愛強者な彼女 オフィシャル通販特典 (files).rar"),
+        ]{
+            assert_eq!(matching::clean_name(member),title,"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+            // Archive labels reach admission after clean_name; bare member labels also pass directly.
+            for name in [member.to_string(),matching::clean_name(member)].into_iter().filter(|n|!n.starts_with('[')){
+                assert!(matching::names_with_extras(&name,&[title]),"{member}");
+                assert!(matching::ancillary_member(&name,&[title]),"{member}");
+                for titles in [json!([title,name]),json!([name,title])]{
+                    assert_eq!(review_reason(&json!({"results":ranked,"titles":titles,"incomplete":false})),None,"{member}");
+                }
+            }
+        }
+    }
+    #[test]fn legacy_irotoridori_hd_compilation_1181108_stays_accepted(){
+        let title="いろとりどりのセカイ HD Re:GENERATION";
+        let hints:Vec<String>=["いろとりどりのセカイHD","いろとりどりのヒカリHD","紅い瞳に映るセカイHD","10th Anniversary メモリアルDIARY"].iter()
+            .map(|bonus|format!("1181108/[220930][1181108][FAVORITE] {title} DL版「{bonus}」 (files).rar")).collect();
+        let input=matching::prepare("1181108",&hints).unwrap();assert_eq!(input.titles,vec![title]);
+        let ranked=matching::rank(&input,vec![json!({"id":"v5834","title":"Irotoridori no Sekai","alttitle":"いろとりどりのセカイ","developers":[{"name":"FAVORITE"}],
+            "release_matches":[{"title":"いろとりどりのセカイ HD Re:GENERATION パッケージ版","released":"2022-09-30"}]})]);
+        assert_eq!(review_reason(&json!({"results":ranked,"titles":input.titles,"brands":input.brands,"dates":input.dates,"incomplete":false})),None);
+    }
+    #[test]fn title_anchored_media_and_distribution_members_are_ancillary(){
+        for (title,member) in [
+            ("千恋*万花","千恋*万花 ドラマCD『「Blue sky」の日』『after』"),
+            ("アマナツ+","アマナツ+ SPECIAL SOUNDTRACK (flac+cue)"),
+            ("アマナツ","アマナツ + SPECIAL SOUNDTRACK (flac+cue)"),
+            ("金色ラブリッチェ","金色ラブリッチェ SPECIAL SOUNDTRACK (flac+cue+rr3)"),
+            ("千恋*万花","千恋*万花 キャラクターソング Vol.4 「Blue sky」/レナ・リヒテナウアー (flac+cue+rr3)"),
+            ("よめがみ My Sweet Goddess!","よめがみ My Sweet Goddess! オープニング主題歌 (flac+cue+rr3)"),
+            ("さくらの雲*スカアレットの恋","さくらの雲*スカアレットの恋 コンプリートサウンドアルバム (flac+cue+rr3)"),
+            ("アインシュタインより愛を込めて","アインシュタインより愛を込めて COMPLETE VOCAL COLLECTION (flac+cue+rr3)"),
+            ("千の刃濤、桃花染の皇姫‐花あかり‐","千の刃濤、桃花染の皇姫‐花あかり‐ マキシシングル feat. Airots"),
+            ("キミと恋するハッピーサマー","キミと恋するハッピーサマー ミニサウンドトラック"),
+            ("将軍様はお年頃ふぁんでぃすく -御三家だヨ! 全員集合-","将軍様はお年頃ふぁんでぃすく -御三家だヨ! 全員集合- 演出強化パッチ"),
+            ("二人と始める打算的なラブコメ","二人と始める打算的なラブコメ PlayDRM認証回避パッチ"),
+            ("MUSICUS!","MUSICUS! R18版演出調整パッチ Ver1.0.1"),
+            ("白昼夢の青写真","白昼夢の青写真 とらのあな特典ドラマCD"),
+            ("出会って5分は俺のもの!時間停止と不可避な運命","出会って5分は俺のもの!時間停止と不可避な運命 特別限定版 オリジナルサウンドトラック"),
+            ("千の刃濤、桃花染の皇姫","千の刃濤、桃花染の皇姫 菜摘テーマファイル"),
+            ("ピュア×コネクト","ピュア×コネクト 凹んだときに聴きたい励ましCD"),
+            ("喫茶ステラと死神の蝶","(PD輸入) (18禁ゲーム) [190927] [ゆずソフト] 喫茶ステラと死神の蝶 キャラクターソング vol.1 (flac+cue)"),
+            ("リアライブ","18禁ゲーム) [190329] [パープルソフトウェア] リアライブ"),
+            ("星織ユメミライ","水樹瞳@568087-[140725] [tone work’s] 星織ユメミライ"),
+            ("恋愛×ロワイアル","ゲーム「恋愛×ロワイアル」オリジナルサウンドトラック"),
+            ("スタディ§ステディ2","ま~まれぇど「スタディ§ステディ2」メロンブックス特典DLC"),
+            ("はじめるセカイの理想論","Whirlpool「はじめるセカイの理想論」メロンブックス特典ボイスドラマDLC「…」"),
+            ("戦国†恋姫EX壱","『戦国†恋姫EX壱』ボイス特典版_龍巳システムボイス"),
+            ("ワールド・エレクション","[Whirlpool]+ワールド・エレクション+10週年スペシャルコンテンツDVD++免认证补丁(認証回避Patch)"),
+            ("ワールド・エレクション","[Whirlpool] ワールド・エレクション 10週年スペシャルコンテンツDVD"),
+        ]{
+            assert!(matching::title_anchored_member(member,&[title],&["ま～まれぇど","Whirlpool"]),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                let r=json!({"results":ranked,"titles":[title,name],"brands":["ま～まれぇど","Whirlpool"],"incomplete":false});assert_eq!(review_reason(&r),None,"{member}");
+            }
+        }
+    }
+    #[test]fn quoted_main_title_members_need_brand_or_date_corroboration(){
+        for (title,member,maker) in [
+            ("戦国†恋姫EX壱～奥州の独眼竜編～","『戦国†恋姫EX壱』ボイス特典版_龍巳システムボイス","BaseSon"),
+            ("はじめるセカイの理想論 -goodbye world index-","Whirlpool「はじめるセカイの理想論」メロンブックス特典ボイスドラマDLC「シスター・ティアの懺悔のお時間」","Whirlpool"),
+        ]{
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title,"developers":[{"name":maker}]})]);
+            let mut r=json!({"results":ranked,"titles":[title,member],"brands":[maker],"incomplete":false});assert_eq!(review_reason(&r),None,"{member}");
+            r["brands"]=json!(["Unrelated maker"]);assert!(review_reason(&r).is_some(),"{member}");
+        }
+    }
+    #[test]fn other_products_and_unlicensed_quotes_still_require_review(){
+        for (title,member) in [
+            ("ハピメア REGRET END","ハピメア REGRET END 「ハピメアFD」"),
+            ("素晴らしき日々 ~不連続存在~ 15th Anniversary edition","素晴らしき日々 ~不連続存在~ 15th Anniversary edition 「終ノ空remake -2025ver-」"),
+            ("アンラベル・トリガー","エッチな皇女バニーのご奉仕"),
+            ("ジュエリー・ハーツ・アカデミア","オリジナルデジタルコンテンツ『美少女探偵アリアンナ ~レインボーダイヤを守り抜け~』"),
+            ("Secret Agent","Secret Agent ミニゲーム3本パック"),
+            ("妻みぐい3","妻みぐい3 スピンオフ 純愛編 (認証回避済) (files) ※自炊"),
+            ("相思相愛ロリータ","(同人音声)[RJ153712][夜のひつじ]安眠添い寝ロリータ(R18)"),
+            ("放課後シンデレラ","放課後シンデレラFD"),
+            ("アマナツ","アマナツ+ SPECIAL SOUNDTRACK (flac+cue)"),("MUSICUS!","MUSICUS!+ SPECIAL SOUNDTRACK (flac+cue)"),
+            ("アマツツミ","アマツツミ2 特典"),("アマツツミ","アマツツミ ファンディスク"),
+            ("アマツツミ","Song of Saya"),("アマツツミ","Boku Sensei Crak"),
+            ("恋する乙女と守護の楯 Reboot The“SHIELD-9”","恋する乙女と守護の楯 Reboot The“SHIELD-9” 「ORIGIN Disk」"),
+            ("アマツツミ","Disk「アマツツミ」"),("アマツツミ","アマツツミ2「アマツツミ」"),("アマツツミ","別の作品「アマツツミ」"),
+        ]{assert_member_review(title,member);}
+        for tail in ["2 特典","FD","ファンディスク","アペンド","スピンオフ","after","外伝","remake","リメイク","ミニゲーム","「別の作品」"]{
+            for title in ["アマツツミ","MUSICUS!"]{assert_member_review(title,&format!("{title} {tail}"));}
+        }
+    }
+    #[test]fn fallback_exclusions_do_not_veto_legacy_bonus_acceptance(){
+        for tail in ["特典 「別の作品」","特典FD","特典 ミニゲーム","特典 remake","特典 スピンオフ","特典 Disk「別の作品」","特典ディスク『別の作品』","(ベータ)"]{
+            let title="アマツツミ";let member=format!("{title} {tail}");
+            assert!(!matching::title_anchored_member(&member,&[title],&[]),"{member}");
+            assert!(matching::ancillary_member(&member,&[title]),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,member],"incomplete":false})),None);
+        }
+    }
+    #[test]fn edition_and_descriptive_bonus_members_are_anchored(){
+        for (title,member) in [
+            ("Eスクールライフ","Eスクールライフ E初回版"),
+            ("どっちのiが好きですか?","どっちのiが好きですか? i初回版"),
+            ("キスから始まるギャルの恋","キスから始まるギャルの恋 プレミアムエディション"),
+            ("プリンセスハートリンク 〜剣姫たちの艶舞〜","プリンセスハートリンク 〜剣姫たちの艶舞〜 プレミアム版"),
+            ("宿星のガールフレンド2 ―the destiny star of girlfriend―","宿星のガールフレンド2 ―the destiny star of girlfriend― パッケージ販売限定版"),
+            ("僕の未来は、恋と課金と。","僕の未来は、恋と課金と。 特別限定版"),
+            ("ウチはもう、延期できない","ウチはもう、延期できない。 特別限定版"),
+            ("響野さん家はエロゲ屋さん!","響野さん家はエロゲ屋さん! 特版 オリジナルサウンドトラック"),
+            ("出会って5分は俺のもの!時間停止と不可避な運命","出会って5分は俺のもの!時間停止と不可避な運命 特別限定版 (iso+mds+マニュアル+rr3)"),
+            ("虜ノ姉妹 ~淫らに弄ばれる運命の迷い子~ if エロパッチ対応豪華版","虜ノ姉妹 ~淫らに弄ばれる運命の迷い子~ if エロパッチ対応豪華版 (SF認証 iso+mds+rr3)"),
+            ("SISTERS","SISTERS ULTRA EDITION"),
+            ("仄暗き時の果てより","仄暗き時の果てより R18"),
+            ("ANIM Mother＆Wife","ANIM Mother&Wife"),
+            ("Princess x Princess","Princess×Princess"),
+            ("堕ちるパート妻 年下男との情事に溺れた果てに…","堕ちるパート妻 年下男との情事に溺れた果てに... [D_280070]"),
+            ("はぴねす!2 Sakura Celebration","はぴねす!2 Sakura Celebration + Digital Art Works"),
+            ("DeepOne -領界侵犯-","DeepOne -領界侵犯- 特別限定版 + Soundtrack + Artwork"),
+            ("ハジラブ -Making*Lovers-","ハジラブ -Making*Lovers-&Making*LoversフルHDリマスター同梱限定セット版 (OST & Maxi & スケパッチ付)"),
+            ("千恋*万花","千恋*万花 ほこほこぬくぬくあったまろCD (flac+cue+rr3)"),
+            ("桜ひとひら恋もよう","桜ひとひら恋もよう げっちゅ屋店舗特典ヂスク (flac+cue+rr3)"),
+            ("まほ×ろば","まほ×ろば 衣服が透けちゃうマジックROM"),
+            ("かりぐらし恋愛","かりぐらし恋愛 ASa Project 同梱10周年ドラマCD"),
+            ("恋はそっと咲く花のように","恋はそっと咲く花のように ずっと兄さまに寄り添っていたいパッチ"),
+            ("若葉色のカルテット","若葉色のカルテット OP/EDフルコーラスマキシシングルCD (flac+cue+rr3)"),
+            ("俺の姿が、透明に!?不可視の薬と数奇な運命","俺の姿が、透明に!?不可視の薬(インビジブル)と数奇な運命 全店舗特典ドラマCD"),
+            ("ガラス姫と鏡の従者","ガラス姫と鏡の従者 サンドリヨン学園公式ボーカルソングCD (wav+cue+log)"),
+            ("カスタムオーダーメイド3D2","カスタムオーダーメイド3D2 カスタムメイド3D2互換アップデートパッチ(純真・ツンデレ・クーデレ)"),
+            ("ゆらめく心に満ちた世界で、君の夢と欲望は叶うか","ゆらめく心に満ちた世界で、君の夢と欲望は叶うか 「クロ&シロ」 エッチ解放パッチ"),
+            ("虜ノ鎖 ~処女たちを穢す淫らな楔~","虜ノ鎖 ~処女たちを穢す淫らな楔~ 期間限定パッチDLC 「処女にかる男たちパッチ」& 「從順な堕女にされる処女パッチ」"),
+            ("乙女が彩る恋のエッセンス","乙女が彩る恋のエッセンス DLC02 サイト内コンテンツボイス集その1&スティックポスターデータ&メッセージペーパー"),
+            ("その花びらにくちづけを 初めて出逢ったあの日から","その花びらにくちづけを 初めて出逢ったあの日から Getchu屋特典ドラマCD 「その花びらにくちづけを いれかえまいんど」 (mdf+mds)※自炊"),
+            ("オトメ*ドメイン","オトメ*ドメイン メディオ!特典ドラマCD 「柚子さんの裸エプロンは新妻の特訓です!」 (mds+mdf) ※自炊"),
+            ("未来ラジオと人工鳩","未来ラジオと人工鳩 とらのあな限定 「未来ラジオラジオ特別編」 水月編"),
+            ("キュリオディーラー","キュリオディーラー カウントダウン漫画&ボイス"),
+            ("見上げてごらん、夜空の星を FINE DAYS","見上げてごらん夜空の星をFINEDAYSminiSoundtrack「and Little Planets」"),
+            ("制服カノジョ3","制服カノジョ3 めいか初恋BOX同梱特典ボイスドラマCD「ある日のカノジョ」"),
+        ]{
+            assert!(matching::title_anchored_member(member,&[title],&[]),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name],"incomplete":false})),None,"{member}");
+            }
+        }
+        for (title,alias,member) in [
+            ("アオイトリ","AOITORI","アオイトリ -AOITORI-"),
+            ("ノラと皇女と野良猫ハート2","Nora, Princess, and Crying Cat. 2","ノラと皇女と野良猫ハート2 -Nora,Princess,and Crying Cat.-"),
+        ]{
+            assert!(matching::title_anchored_member(member,&[title,alias],&[]),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title,"aliases":[alias]})]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":[member,title]})),None);
+            assert!(!matching::title_anchored_member(member,&[title],&[]),"unknown translation: {member}");
+        }
+    }
+    #[test]fn edition_labels_do_not_license_other_games(){
+        for (title,member) in [
+            ("恋する乙女と守護の楯 Reboot The“SHIELD-9”","恋する乙女と守護の楯 Reboot The“SHIELD-9” 「ORIGIN Disk」"),
+            ("放課後シンデレラ","放課後シンデレラ 20周年記念初回豪華版 SPECIAL DISC"),
+            ("百千の定にかわたれし剋","百千の定にかわたれし剋 AP01 「もしもその時出会っていたならDATA」"),
+            ("抜きゲーみたいな島に住んでる貧乳(わたし)はどうすりゃいいですか?","抜きゲーみたいな島に住んでる貧乳(わたし)はどうすりゃいいですか? 1+2 Remaster + Append"),
+            ("虜ノ焔~淫欲の炎に満ちた地下闘技場~","虜ノ焔~淫欲の炎に満ちた地下闘技場~ if エロパッチ"),
+            ("Secret Agent","Secret Agent ミニゲーム3本パック"),
+            ("妻みぐい3","妻みぐい3 スピンオフ 純愛編"),
+            ("放課後シンデレラ","放課後シンデレラFD"),
+            ("ハピメア REGRET END","ハピメア REGRET END 「ハピメアFD」"),
+            ("アンラベル・トリガー","エッチな皇女バニーのご奉仕"),
+            ("ジュエリー・ハーツ・アカデミア","オリジナルデジタルコンテンツ『美少女探偵アリアンナ…』"),
+            ("まおかつ!","Maokatsu Crk"),("ぼくと先生の乳淫せいかつ","Boku Sensei Crak"),
+            ("星の乙女と六華の姉妹","hoshioto_new stage2"),("蒼の彼方のフォーリズム","4rhythm WP & 4koma"),
+            ("アマツツミ","OP主題歌『ずっとそばで...』short ver"),
+        ]{assert_member_review(title,member);}
+        for tail in ["Disk","DISC","ディスク","ヂスク","SPECIAL DISC","別作品 DISC","2 ドラマCD","2 特典CD","if 特典CD","FD ドラマCD","スピンオフ ドラマCD","SPECIAL DISC 特典CD"]{
+            assert_member_review("アマツツミ",&format!("アマツツミ {tail}"));
+        }
+        // An if folder may vouch for its own patch; the real 1330597 folder is the base work.
+        let title="虜ノ焔~淫欲の炎に満ちた地下闘技場~ if";
+        assert!(matching::title_anchored_member(&format!("{title} エロパッチ"),&[title],&[]));
+    }
+    #[test]fn folder_identity_does_not_vouch_for_a_maker_or_an_unknown_subtitle(){
+        assert_eq!(matching::normalized("ANIM Mother&Wife"),matching::normalized("ANIM Mother＆Wife"));
+        for (folder,title) in [
+            ("ANIM Mother&Wife","いつまでも息子のままじゃいられない!6 ~巨乳でクールな母さんのおっぱいに抱かれながらたっぷり甘えたいっ!~"),
+            ("DeepOne -領界侵犯- 特別限定版 + Soundtrack + Artwork","Deep One -ディープワン-"),
+        ]{
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":[folder,title]})),Some(format!("A different source name needs review: {folder}")));
+        }
+    }
+    #[test]fn edition_fallback_uses_work_titles_and_the_folders_release(){
+        for (folder,member,title,maker,release) in [
+            ("SISTERS~夏の最後の日~ Ultra Edition","SISTERS ULTRA EDITION","SISTERS ～夏の最後の日～","Jellyfish","SISTERS ～夏の最後の日～ Ultra Edition"),
+            ("虜ノ姉妹 ~淫らに弄ばれる運命の迷い子~ if エロパッチ対応豪華版","虜ノ姉妹 ~淫らに弄ばれる運命の迷い子~ if エロパッチ対応豪華版 (SF認証 iso+mds+rr3)","虜ノ姉妹 ～淫らに弄ばれる運命の迷い子～","Guilty","虜ノ姉妹 ～淫らに弄ばれる運命の迷い子～ if エロパッチ対応豪華版"),
+            ("僕の未来は、恋と課金と。 特別限定版","僕の未来は、恋と課金と。~Charge To The Future~ 特別限定版","僕の未来は、恋と課金と。～Charge To The Future～","Sonora","僕の未来は、恋と課金と。～Charge To The Future～ 特別限定版"),
+            ("プリンセスハートリンク","プリンセスハートリンク 〜剣姫たちの艶舞〜 プレミアム版","プリンセスハートリンク 〜剣姫たちの艶舞〜","裸足少女",""),
+            ("キスから始まるギャルの恋 〜くるみのウワサとホントのキモチ〜","キスから始まるギャルの恋 プレミアムエディション","キスから始まるギャルの恋 〜くるみのウワサとホントのキモチ〜","プレカノ",""),
+        ]{
+            let mut input=matching::prepare(folder,&[]).unwrap();input.titles.push(member.into());input.brands.push(maker.into());
+            let ranked=matching::rank(&input,vec![json!({"id":"v1","title":title,"developers":[{"name":maker}],"release_matches":[{"title":release}]})]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":input.titles,"brands":input.brands})),None,"{member}");
+        }
+        // Merely knowing about an if release cannot make the base folder its if edition.
+        let title="虜ノ焔~淫欲の炎に満ちた地下闘技場~";let member=format!("{title} if エロパッチ");
+        let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v56239","title":title,"release_matches":[{"title":format!("{title} if")}]})]);
+        assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,member]})),Some(format!("A different source name needs review: {member}")));
+        for (title,alias,member) in [
+            ("ゆびきり婚約ロリイタ","与你拉钩起誓的婚约","ゆびきり婚約ロリイタ-与你拉钩起誓的婚约"),
+            ("相思相愛ロリータの生活","与小萝莉相思相爱的生活","相思相愛ロリータの生活-与小萝莉相思相爱的生活"),
+            ("お泊まり恋人ロリータ","お泊まり恋人ロリータ","お泊まり恋人ロリータ-お泊まり恋人ロリータ"),
+            ("愛欲姉妹ロリータ","愛欲姉妹ロリータ","愛欲姉妹ロリータ-愛欲姉妹ロリータ"),
+        ]{
+            assert!(!matching::title_anchored_member(member,&[title,alias],&[]),"{member}");
+        }
+        // Admitting the named bundle label does not admit a separate bundled game.
+        let title="ハジラブ -Making*Lovers-";let other="Making*LoversフルHDリマスター";
+        let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v30456","title":title})]);
+        assert_eq!(review_reason(&json!({"results":ranked,"titles":["ハジラブ -Making*Lovers-&Making*LoversフルHDリマスター同梱限定セット版 (OST & Maxi & スケパッチ付)",title,other]})),Some(format!("A different source name needs review: {other}")));
+    }
+    #[test]fn candidate_owned_chinese_and_fan_release_members(){
+        for (id,title,translation,member) in [
+            ("v10569","孤独に効く百合","孤独少女的百合物语","PSP 孤独少女的百合物语"),
+            ("v10568","恋妻くずし","恋妻くずし","【脸肿汉化组】《恋妻くずし》汉化补丁v1.0"),
+            ("v24202","堕落ロイヤル聖処女","堕落皇家聖處女","【變態協會漢化組】[ADV][夜のひつじ]墮落皇家聖處女 漢化補丁 V1.0"),
+            ("v22436","ハーレム双子ロリータ","双子洛丽塔后宫","双子洛丽塔后宫KRKR版"),
+            ("v18874","ゆびきり婚約ロリイタ","与你拉钩起誓的婚约","ゆびきり婚約ロリイタ-与你拉钩起誓的婚约"),
+            ("v19771","相思相愛ロリータの生活","与小萝莉相思相爱的生活","相思相愛ロリータの生活-与小萝莉相思相爱的生活"),
+            ("v20624","お泊まり恋人ロリータ","同居恋人洛丽塔","お泊まり恋人ロリータ-お泊まり恋人ロリータ"),
+            ("v25127","愛欲姉妹ロリータ","爱欲姐妹洛丽塔","愛欲姉妹ロリータ-愛欲姉妹ロリータ"),
+            ("v14850","妹「お姉ちゃんクソビッチなんで私にしませんか」","妹「お姉ちゃんクソビッチなんで私にしませんか」","お姉ちゃんクソビッチなんで私にしませんか"),
+            ("v15976","幼馴染の心が読めたらどうするか?","幼馴染の心が読めたらどうするか?","(C86) (同人ゲーム) [140906] [夜のひつじ] 幼馴染の心が読めたらどうするか? [RJ140827]"),
+            ("v27389","誘惑なまいきロリータ","诱惑、自大、洛丽塔","誘惑なまいきロリータ [RJ275492]"),
+        ]{
+            // Exercise both VNDB title fields and aliases without adding any folder/release spellings.
+            for field in ["titles","aliases"]{
+                let mut candidate=json!({"id":id,"title":title,"developers":[{"name":"Yoru no Hitsuji","original":"夜のひつじ"}]});
+                candidate[field]=if field=="titles"{json!([{"title":translation}])}else{json!([translation])};
+                let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+                for name in [member.to_string(),matching::clean_name(member)]{
+                    assert!(matching::fan_release_member(&name,&candidate),"{id}: {name}");
+                    assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),None,"{id}: {member}");
+                }
+                assert_eq!(review_reason(&response(matching::prepare(title,&[member.into()]).unwrap(),vec![candidate])),None,"{id}: prepared member");
+            }
+        }
+        // These observed forms survive NFKC and therefore need the explicit local map.
+        assert_ne!(matching::normalized("墮落皇家聖處女"),matching::normalized("堕落皇家聖処女"));
+        let candidate=json!({"id":"v24202","title":"堕落ロイヤル聖処女","titles":[{"title":"堕落皇家聖處女"}]});
+        assert!(matching::fan_release_member("墮落皇家聖処女 漢化版",&candidate));
+        let candidate=json!({"id":"v10569","title":"孤独に効く百合","titles":[{"title":"孤独少女的百合物语"}]});
+        for platform in ["PSP","PSV","NS","Switch","Android","KRKR版","吉里吉里版"]{
+            assert!(matching::fan_release_member(&format!("{platform} 孤独少女的百合物语"),&candidate));
+            assert!(matching::fan_release_member(&format!("孤独少女的百合物语 {platform}"),&candidate));
+        }
+        for group in ["【脸肿汉化组】","【變態協會漢化組】","【翻译社】"]{
+            for tail in ["汉化","漢化","汉化补丁","漢化補丁","汉化版","漢化版"]{
+                assert!(matching::fan_release_member(&format!("{group}[AVG]《孤独少女的百合物语》{tail} Ver.1.0"),&candidate));
+            }
+        }
+    }
+    #[test]fn fan_release_members_require_a_complete_own_title(){
+        for (id,title,member) in [
+            ("v16626","相思相愛ロリータ","(同人音声)[RJ153712][夜のひつじ]安眠添い寝ロリータ(R18)"),
+            ("v24279","世界の始まりゴッコ","世界の始まりゴッコ worldbegin_v1.0.0_win"),
+            ("v18874","ゆびきり婚約ロリイタ","ゆびきり婚約ロリイタ-与小萝莉相思相爱的生活"),
+            ("v18874","ゆびきり婚約ロリイタ","与小萝莉相思相爱的生活-ゆびきり婚約ロリイタ"),
+            ("v14850","妹「お姉ちゃんクソビッチなんで私にしませんか」","お姉ちゃん"),
+            ("v10568","恋妻くずし","【脸肿汉化组】"),
+            ("v10568","恋妻くずし","【脸肿汉化组】汉化补丁v1.0"),
+            ("v10568","恋妻くずし","【脸肿汉化组】《恋妻くずし2》汉化补丁v1.0"),
+            ("v10568","恋妻くずし","【脸肿汉化组】《恋妻くずし》未知补丁v1.0"),
+        ]{
+            let candidate=json!({"id":id,"title":title,"developers":[{"original":"夜のひつじ"}]});
+            assert!(!matching::fan_release_member(member,&candidate),"{member}");
+            let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),Some(format!("A different source name needs review: {name}")));
+            }
+        }
+        // Synthetic boundary variants of the real quoted title isolate the eight-character guard.
+        for (body,allowed) in [("お姉ちゃんクソ",false),("お姉ちゃんクソビ",true)]{
+            let candidate=json!({"id":"v14850","title":format!("妹「{body}」")});
+            assert_eq!(matching::fan_release_member(body,&candidate),allowed,"{body}");
+        }
+        let own=json!({"id":"v10568","title":"恋妻くずし"});
+        let other=json!({"id":"v10569","title":"孤独に効く百合","titles":[{"title":"孤独少女的百合物语"}]});
+        for member in ["PSP 孤独少女的百合物语","恋妻くずし-孤独少女的百合物语"]{
+            let ranked=matching::rank(&matching::prepare("恋妻くずし",&[]).unwrap(),vec![own.clone(),other.clone()]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":["恋妻くずし",member]})),Some(format!("A different source name needs review: {member}")));
+        }
+        let mut release=own.clone();release["release_matches"]=json!([{"title":"孤独少女的百合物语"}]);
+        assert!(!matching::fan_release_member("PSP 孤独少女的百合物语",&release));
+    }
+    #[test]fn candidate_corroborated_code_and_generic_members(){
+        for (candidate,member) in [
+            (json!({"id":"v27365","title":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~","alttitle":"まおかつ！ ～魔王と勇者のアイドル生活～"}),"Maokatsu Crk"),
+            (json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","alttitle":"星の乙女と六華の姉妹","aliases":["Hoshioto","星乙"]}),"hoshioto_new stage2"),
+            (json!({"id":"v12849","title":"Ao no Kanata no Four Rhythm","alttitle":"蒼の彼方のフォーリズム","aliases":["Beyond the sky, into the firmament.","あおかな","Four Rhythm Across the Blue","苍彼","4Rhythm","Aokana","아오카나"]}),"4rhythm WP & 4koma"),
+            (json!({"id":"v28131","title":"Boku to Sensei no Nyuuin Seikatsu","alttitle":"ぼくと先生の乳淫せいかつ","aliases":["ぼくと先生の乳淫生活","nyuuin","bokunyuu","ぼく乳"]}),"Boku Sensei Crak"),
+            (json!({"id":"v21529","title":"Motto! Haramase! Honoo no Oppai Isekai Ero Mahou Gakuen!","alttitle":"もっと！孕ませ！炎のおっぱい異世界エロ魔法学園！"}),"全CG存档"),
+            (json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより"}),"仄暗き時の果てより 中文"),
+            (json!({"id":"v26410","title":"Dansei o Iyashi Nuku Kikai","alttitle":"男性を癒やし抜く機械","developers":[{"name":"Yoru no Hitsuji","original":"夜のひつじ"}]}),"cg[190829][夜のひつじ]男性を癒やし抜く機械"),
+        ]{
+            assert!(matching::corroborated_member(member,&candidate,&[]),"{member}");
+            let title=candidate["alttitle"].as_str().unwrap();let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),None,"{member}");
+            }
+        }
+        let candidate=json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより"});
+        for word in ["全CG存档","存档","存檔","CG","中文","中文版","汉化","漢化","补丁","補丁"]{
+            for member in [word.to_string(),format!("仄暗き時の果てより {word}")]{assert!(matching::corroborated_member(&member,&candidate,&[]),"{member}");}
+        }
+        // All suffix spellings stay local to this rule, including versions and separators.
+        let candidate=json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","aliases":["Hoshioto"]});
+        for suffix in ["crack","crk","crak","patch","new","stage2","1.0","v1.0.0","win","wp","4koma","cg","save","dlc"]{
+            assert!(matching::corroborated_member(&format!("Hoshioto_{suffix}"),&candidate,&[]),"{suffix}");
+        }
+        let latin=json!({"id":"v27365","titles":[{"title":"まおかつ！ ～魔王と勇者のアイドル生活～","latin":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~"}]});
+        assert!(matching::corroborated_member("Maokatsu Crk",&latin,&[]));
+    }
+    #[test]fn uncorroborated_codes_and_chinese_titles_stay_review(){
+        for (candidate,members) in [
+            (json!({"id":"v24279","title":"Sekai no Hajimari Gokko","alttitle":"世界の始まりゴッコ"}),vec!["worldbegin_v1.0.0_win","世界の始まりゴッコ worldbegin_v1.0.0_win"]),
+            (json!({"id":"v18852","title":"Amatsutsumi","alttitle":"アマツツミ"}),vec!["Boku Sensei Crak","Song of Saya"]),
+            (json!({"id":"v28131","title":"Boku to Sensei no Nyuuin Seikatsu","alttitle":"ぼくと先生の乳淫せいかつ","aliases":["nyuuin","bokunyuu"]}),vec!["Sensei Crk","Bok Crk","Sensei Boku Crk","Boku Sens Crk","Boku to Crk","Boku Sensei mystery","Boku new Sensei Crk"]),
+            (json!({"id":"v10569","title":"Kodoku ni Kiku Yuri","alttitle":"孤独に効く百合","aliases":["こどゆり","kodoyuri"]}),vec!["PSP 孤独少女的百合物语","PSP 孤独少女的百合物语 汉化补丁"]),
+            (json!({"id":"v22436","title":"Harem Futago Lolita","alttitle":"ハーレム双子ロリータ","aliases":["The Harem of Lolita Twins","lol4"]}),vec!["双子洛丽塔后宫KRKR版"]),
+            (json!({"id":"v10568","title":"Koi Tsuma Kuzushi","alttitle":"恋妻くずし","aliases":["Love Wife Demolish"]}),vec!["cg[脸肿汉化组]恋妻くずし 汉化补丁"]),
+            (json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより","titles":[{"title":"来自昏暗的时间尽头","latin":"Laizi Hun'an de Shijian Jintou"}]}),vec!["来自昏暗的时间尽头 中文","仄暗き時の果てより 中文2","仄暗き時の果てより+ 中文"]),
+        ]{
+            let title=candidate["alttitle"].as_str().unwrap();let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+            for member in members{
+                assert!(!matching::corroborated_member(member,&candidate,&[]),"{member}");
+                // The old ASCII-only code path already admits bare worldbegin; do not veto it.
+                if member=="worldbegin_v1.0.0_win"{assert!(matching::ancillary_member(member,&[title]));continue;}
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,member]})),Some(format!("A different source name needs review: {member}")));
+            }
+        }
+    }
+    #[test]fn code_corroboration_cannot_come_from_folders_or_other_candidates(){
+        let own=json!({"id":"v27365","title":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~","alttitle":"まおかつ！ ～魔王と勇者のアイドル生活～"});
+        let other=json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","alttitle":"星の乙女と六華の姉妹","aliases":["Hoshioto"]});
+        assert!(!matching::corroborated_member("hoshioto_new stage2",&own,&[other.clone()]));
+        // Collisions are synthetic additions to real VNDB candidates; only this new path is vetoed.
+        for key in ["aliases","title","titles"]{
+            let mut collision=other.clone();collision[key]=match key{"aliases"=>json!(["Maokatsu"]),"titles"=>json!([{"title":"Maokatsu"}]),_=>json!("Maokatsu")};
+            assert!(!matching::corroborated_member("Maokatsu Crk",&own,&[collision.clone()]));
+            let ranked=matching::rank(&matching::prepare(own["alttitle"].as_str().unwrap(),&[]).unwrap(),vec![own.clone(),collision]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":[own["alttitle"],"Maokatsu Crk"]})),Some("A different source name needs review: Maokatsu Crk".into()));
+        }
+        assert!(matching::corroborated_member("Maokatsu Crk",&own,&[own.clone()]));
+        let ranked=matching::rank(&matching::prepare(own["alttitle"].as_str().unwrap(),&[]).unwrap(),vec![own.clone(),other]);
+        assert_eq!(review_reason(&json!({"results":ranked,"titles":["hoshioto",own["alttitle"],"hoshioto_new stage2"]})),Some("A different source name needs review: hoshioto".into()));
+        // Generic-only and code labels never supply the resource's own identity.
+        for folder in ["全CG存档","Maokatsu Crk"]{assert!(review_reason(&json!({"results":ranked,"titles":[folder,own["alttitle"]]})).is_some());}
+        let short=json!({"id":"v12849","title":"Ao no Kanata no Four Rhythm","aliases":["Ao"]});
+        assert!(!matching::corroborated_member("Ao Crk",&short,&[]));
+    }
+    fn assert_member_review(title:&str,member:&str){
+        assert!(!matching::title_anchored_member(member,&[title],&[]),"{member}");
+        let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v1","title":title})]);
+        for name in [member.to_string(),matching::clean_name(member)]{
+            let r=json!({"results":ranked,"titles":[title,name],"incomplete":false});
+            assert_eq!(review_reason(&r),Some(format!("A different source name needs review: {name}")),"{member}");
+        }
     }
     #[tokio::test]async fn resource_without_a_usable_title_is_left_for_review(){
         let(_t,db)=fixture(&["","Clannad"]);let job=kick(&db,true).unwrap().unwrap();
