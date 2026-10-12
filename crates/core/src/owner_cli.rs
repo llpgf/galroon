@@ -6,20 +6,21 @@ use axum::{extract::{State,Path},http::{HeaderMap,header},Json};
 type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]#[serde(tag="command",rename_all="lowercase",deny_unknown_fields)]
 pub(crate) enum OwnerCommand{Setup{password:String},Pair{name:String,role:String},Devices,Revoke{id:String},Session}
-pub enum Command{Serve{dir:PathBuf,device_dir:PathBuf,port:u16},Owner{dir:PathBuf,action:OwnerAction}}
+pub enum Command{Serve{dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16},Owner{dir:PathBuf,control_dir:PathBuf,action:OwnerAction}}
 pub struct OwnerAction(OwnerCommand);
-const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--loopback-port <1-65535>] | galroon-core owner <setup|pair --name <name> [--role desktop]|devices|revoke <id>|session> [--data-dir <dir> (default /data)]";
+const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--control-dir <dir> (default <data-dir>/control)] [--loopback-port <1-65535>] | galroon-core owner <setup|pair --name <name> [--role desktop]|devices|revoke <id>|session> [--data-dir <dir> (default /data)] [--control-dir <dir> (default <data-dir>/control)]";
 pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
  let mut args=args.into_iter();let mode=args.next().ok_or(USAGE)?;let mut rest:Vec<OsString>=args.collect();
- let mut dir=None;let mut device_dir=None;let mut port=None;let mut name=None;let mut role=None;let mut positional=Vec::new();let mut i=0;
+ let mut dir=None;let mut device_dir=None;let mut control_dir=None;let mut port=None;let mut name=None;let mut role=None;let mut positional=Vec::new();let mut i=0;
  while i<rest.len(){
-  let slot=match rest[i].to_str(){Some("--data-dir")=>Some(&mut dir),Some("--device-dir")if mode=="serve"=>Some(&mut device_dir),Some("--loopback-port")if mode=="serve"=>Some(&mut port),Some("--name")if mode=="owner"=>Some(&mut name),Some("--role")if mode=="owner"=>Some(&mut role),_=>None};
+  let slot=match rest[i].to_str(){Some("--data-dir")=>Some(&mut dir),Some("--control-dir")=>Some(&mut control_dir),Some("--device-dir")if mode=="serve"=>Some(&mut device_dir),Some("--loopback-port")if mode=="serve"=>Some(&mut port),Some("--name")if mode=="owner"=>Some(&mut name),Some("--role")if mode=="owner"=>Some(&mut role),_=>None};
   if let Some(slot)=slot{if slot.is_some()||i+1==rest.len(){return Err(USAGE.into());}*slot=Some(std::mem::take(&mut rest[i+1]));i+=2;}else{if rest[i].to_str().is_some_and(|v|v.starts_with('-')){return Err(USAGE.into());}positional.push(std::mem::take(&mut rest[i]));i+=1;}
  }
  if mode=="serve"{
   if !positional.is_empty(){return Err(USAGE.into());}let dir=PathBuf::from(dir.ok_or(USAGE)?);let device_dir=device_dir.map(PathBuf::from).unwrap_or_else(||dir.clone());
   let port=match port{Some(v)=>v.to_str().and_then(|s|s.parse::<u16>().ok()).filter(|p|*p!=0).ok_or("Loopback port must be between 1 and 65535")?,None=>14800};
-  return Ok(Command::Serve{dir,device_dir,port});
+  let control_dir=control_dir.map(PathBuf::from).unwrap_or_else(||dir.join("control"));
+  return Ok(Command::Serve{dir,device_dir,control_dir,port});
  }
  if mode!="owner"{return Err(USAGE.into());}
  let verb=positional.first().and_then(|v|v.to_str()).ok_or(USAGE)?;
@@ -30,7 +31,8 @@ pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
   ("pair",1)=>{let name=name.and_then(|n|n.into_string().ok()).ok_or("Pair requires --name")?;let role=match role{Some(r)=>r.into_string().map_err(|_|"Invalid role")?,None=>"desktop".into()};if role!="desktop"{return Err("Only the desktop role is supported".into());}OwnerCommand::Pair{name,role}},
   _=>return Err(USAGE.into())
  };
- Ok(Command::Owner{dir:dir.map(PathBuf::from).unwrap_or_else(||PathBuf::from("/data")),action:OwnerAction(action)})
+ let dir=dir.map(PathBuf::from).unwrap_or_else(||PathBuf::from("/data"));let control_dir=control_dir.map(PathBuf::from).unwrap_or_else(||dir.join("control"));
+ Ok(Command::Owner{dir,control_dir,action:OwnerAction(action)})
 }
 fn action_line(action:OwnerAction,input:&mut impl BufRead)->R<String>{
  let mut command=action.0;
@@ -44,10 +46,10 @@ fn action_line(action:OwnerAction,input:&mut impl BufRead)->R<String>{
 }
 pub async fn run(command:Command)->R<()>{
  match command{
-  Command::Serve{dir,device_dir,port}=>crate::unix_core::run(dir,device_dir,port).await,
-  Command::Owner{dir,action}=>{
+  Command::Serve{dir,device_dir,control_dir,port}=>crate::unix_core::run(dir,device_dir,control_dir,port).await,
+  Command::Owner{control_dir,action,..}=>{
    let line=action_line(action,&mut std::io::stdin().lock())?;
-   let value=crate::unix_core::request(&dir,&line).await?;
+   let value=crate::unix_core::request(&control_dir,&line).await?;
    // Owner results (including session tokens and pairing codes) go only to stdout.
    println!("{value}");Ok(())
   }
@@ -70,11 +72,19 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
  fn parsed(args:&[&str])->R<Command>{parse(args.iter().map(OsString::from))}
  fn line(args:&[&str],stdin:&str)->String{let Command::Owner{action,..}=parsed(args).unwrap()else{panic!("owner expected")};action_line(action,&mut std::io::Cursor::new(stdin)).unwrap()}
  #[test]fn serve_arguments_and_owner_scope(){
-  let Command::Serve{dir,device_dir,port}=parsed(&["serve","--data-dir","collection"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(device_dir,dir);assert_eq!(port,14800);
+  let Command::Serve{dir,device_dir,control_dir,port}=parsed(&["serve","--data-dir","collection"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(device_dir,dir);assert_eq!(control_dir,dir.join("control"));assert_eq!(port,14800);
   let Command::Serve{device_dir,port,..}=parsed(&["serve","--data-dir","collection","--device-dir","device","--loopback-port","14801"]).unwrap()else{panic!()};assert_eq!(device_dir,PathBuf::from("device"));assert_eq!(port,14801);
   for args in [vec!["serve","--data-dir","d","--loopback-port","0"],vec!["serve","--data-dir","d","--loopback-port","65536"],vec!["owner","pair","--name","n","--role","web"],vec!["owner","setup","password-in-argv"],vec!["owner","setup","--password","secret"],vec!["owner","session","--name","n"],vec!["restore"],vec!["serve"]]{assert!(parsed(&args).is_err(),"{args:?}");}
-  let Command::Owner{dir,..}=parsed(&["owner","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("/data"));
-  let Command::Owner{dir,..}=parsed(&["owner","--data-dir","custom","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("custom"));
+  let Command::Owner{dir,control_dir,..}=parsed(&["owner","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("/data"));assert_eq!(control_dir,dir.join("control"));
+  let Command::Owner{dir,control_dir,..}=parsed(&["owner","--data-dir","custom","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("custom"));assert_eq!(control_dir,dir.join("control"));
+ }
+ #[test]fn control_directory_arguments_for_serve_and_every_owner_command(){
+  let Command::Serve{dir,control_dir,..}=parsed(&["serve","--control-dir","runtime","--data-dir","collection"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(control_dir,PathBuf::from("runtime"));
+  for verb in [vec!["setup"],vec!["pair","--name","desktop"],vec!["devices"],vec!["revoke","device-id"],vec!["session"]]{
+   let mut args=vec!["owner","--control-dir","runtime"];args.extend(verb);args.extend(["--data-dir","collection"]);
+   let Command::Owner{dir,control_dir,..}=parsed(&args).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(control_dir,PathBuf::from("runtime"));
+  }
+  for args in [vec!["serve","--data-dir","d","--control-dir"],vec!["owner","session","--control-dir"],vec!["serve","--data-dir","d","--control-dir","a","--control-dir","b"],vec!["owner","session","--control-dir","a","--control-dir","b"]]{assert!(parsed(&args).is_err(),"{args:?}");}
  }
  #[test]fn setup_reads_password_only_from_bounded_stdin(){
   let value:Value=serde_json::from_str(&line(&["owner","setup"]," leading spaces stay \r\n")).unwrap();assert_eq!(value["password"]," leading spaces stay ");

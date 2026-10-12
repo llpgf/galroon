@@ -9,10 +9,10 @@ type R<T>=Result<T,String>;
 const REQUEST_LIMIT:usize=8192;
 const RESPONSE_LIMIT:usize=65536; // devices can exceed a single session's 4096 bytes.
 fn euid()->u32{unsafe{libc::geteuid()}}
-fn socket_path(dir:&Path)->PathBuf{dir.join("control").join("core.sock")}
+fn socket_path(dir:&Path)->PathBuf{dir.join("core.sock")}
 fn private_metadata(path:&Path,directory:bool)->R<std::fs::Metadata>{
- let m=std::fs::symlink_metadata(path).map_err(|e|e.to_string())?;let allowed=if directory{0o700}else{0o600};
- if m.uid()!=euid()||m.mode()&0o7777&!allowed!=0||if directory{!m.is_dir()}else{!m.file_type().is_socket()}{return Err("Control endpoint has an unsafe owner, type or permissions".into());}Ok(m)
+ let m=std::fs::symlink_metadata(path).map_err(|e|format!("Control endpoint {}: {e}",path.display()))?;let allowed=if directory{0o700}else{0o600};
+ if m.uid()!=euid()||m.mode()&0o7777&!allowed!=0||if directory{!m.is_dir()}else{!m.file_type().is_socket()}{return Err(format!("Control endpoint {} has an unsafe owner, type or permissions; on a Synology/ACL share, use --control-dir with a non-ACL location (for example a tmpfs)",path.display()));}Ok(m)
 }
 fn verify_peer(stream:&UnixStream)->R<()>{
  // Both client and server call this before reading or writing any application data.
@@ -20,9 +20,9 @@ fn verify_peer(stream:&UnixStream)->R<()>{
 }
 struct Control{listener:UnixListener,path:PathBuf,identity:(u64,u64)}
 impl Control{
- fn bind(app:&App)->R<Self>{
+ fn bind(_app:&App,dir:&Path)->R<Self>{
   // An initialized App holds core.lock. Never unlink a socket before initialize succeeds.
-  let path=socket_path(&app.state_dir);let parent=path.parent().unwrap();
+  let path=socket_path(dir);let parent=path.parent().unwrap();
   match std::fs::DirBuilder::new().mode(0o700).create(parent){Ok(())=>{},Err(e)if e.kind()==std::io::ErrorKind::AlreadyExists=>{},Err(e)=>return Err(e.to_string())}
   private_metadata(parent,true)?;
   match std::fs::symlink_metadata(&path){
@@ -71,13 +71,13 @@ async fn handle(mut stream:UnixStream,app:&App,session:&Session)->R<()>{
  tokio::time::timeout(Duration::from_secs(3),stream.write_all(payload.as_bytes())).await.map_err(|_|"Control write timed out")?.map_err(|e|e.to_string())?;
  let _=tokio::time::timeout(Duration::from_secs(3),stream.read_u8()).await;Ok(())
 }
-pub async fn run(dir:PathBuf,device_dir:PathBuf,port:u16)->R<()>{
+pub async fn run(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16)->R<()>{
  if port==0{return Err("Loopback port must be between 1 and 65535".into());}
  check_data_filesystem(&dir)?;let _=crate::diagnostics::init(&dir);
  let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e|e.to_string())?;
  let mut interrupt=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e|e.to_string())?;
  let (host,listener)=CoreHost::initialize(dir,&device_dir,port).await?;
- let control=Control::bind(&host.app)?;let app=host.app.clone();let session=host.session.clone();let core=host.start(listener)?;
+ let control=Control::bind(&host.app,&control_dir)?;let app=host.app.clone();let session=host.session.clone();let core=host.start(listener)?;
  let result=loop{tokio::select!{biased;
   _=terminate.recv()=>break Ok(()),_=interrupt.recv()=>break Ok(()),
   accepted=control.listener.accept()=>match accepted{
@@ -112,41 +112,64 @@ pub fn check_data_filesystem(dir:&Path)->R<()>{
   let session=Session{library_id:"library".into(),device_id:app.device.id.clone(),api_min:1,api_max:1,url:"http://127.0.0.1:14800".into(),token:app.token.clone(),instance_id:app.instance_id.clone(),pid:std::process::id()};(t,app,session)
  }
  #[tokio::test]async fn same_uid_session_and_private_permissions(){
-  let (_t,app,session)=fixture();let control=Control::bind(&app).unwrap();
+  let (_t,app,session)=fixture();let control=Control::bind(&app,&app.state_dir.join("control")).unwrap();
   assert_eq!(std::fs::metadata(control.path.parent().unwrap()).unwrap().mode()&0o777,0o700);assert_eq!(std::fs::metadata(&control.path).unwrap().mode()&0o777,0o600);
-  let client=request(&app.state_dir,"session");let server=async{let (stream,_)=control.listener.accept().await.unwrap();handle(stream,&app,&session).await.unwrap();};
+  let dir=app.state_dir.join("control");let client=request(&dir,"session");let server=async{let (stream,_)=control.listener.accept().await.unwrap();handle(stream,&app,&session).await.unwrap();};
   let (value,())=tokio::join!(client,server);assert_eq!(value.unwrap(),serde_json::to_value(&session).unwrap());
  }
  #[tokio::test]async fn client_rejects_wide_directory_or_socket_before_connect(){
-  let (_t,app,_)=fixture();let control=Control::bind(&app).unwrap();
+  let (_t,app,_)=fixture();let control=Control::bind(&app,&app.state_dir.join("control")).unwrap();
   for (path,mode) in [(control.path.parent().unwrap(),0o711),(control.path.as_path(),0o644)]{
-   std::fs::set_permissions(path,std::fs::Permissions::from_mode(mode)).unwrap();assert!(request(&app.state_dir,"session").await.unwrap_err().contains("unsafe"));
+   std::fs::set_permissions(path,std::fs::Permissions::from_mode(mode)).unwrap();assert!(request(&app.state_dir.join("control"),"session").await.unwrap_err().contains("unsafe"));
    assert!(tokio::time::timeout(Duration::from_millis(30),control.listener.accept()).await.is_err());
    std::fs::set_permissions(path,std::fs::Permissions::from_mode(if mode==0o711{0o700}else{0o600})).unwrap();
   }
  }
+ #[tokio::test]async fn custom_control_directory_is_used_by_serve_and_owner(){
+  use crate::owner_cli::{parse,Command};use std::ffi::OsString;
+  let t=tempfile::tempdir_in("/tmp").unwrap();let data=t.path().join("data");let runtime=t.path().join("runtime");
+  let Command::Serve{dir,device_dir,control_dir,..}=parse([OsString::from("serve"),"--data-dir".into(),data.clone().into(),"--control-dir".into(),runtime.clone().into()]).unwrap()else{panic!()};
+  let (host,_listener)=CoreHost::initialize(dir,&device_dir,0).await.unwrap();let control=Control::bind(&host.app,&control_dir).unwrap();
+  assert_eq!(control.path,runtime.join("core.sock"));assert!(!data.join("control").exists());
+  assert_eq!(std::fs::metadata(&runtime).unwrap().mode()&0o777,0o700);assert_eq!(std::fs::metadata(&control.path).unwrap().mode()&0o777,0o600);
+  // An unrelated owner data directory must not affect the explicit socket location.
+  let owner=parse([OsString::from("owner"),"session".into(),"--data-dir".into(),t.path().join("other").into(),"--control-dir".into(),runtime.into()]).unwrap();
+  let exchange=async{tokio::join!(crate::owner_cli::run(owner),async{let(stream,_)=control.listener.accept().await.unwrap();handle(stream,&host.app,&host.session).await.unwrap();})};
+  let (value,())=tokio::time::timeout(Duration::from_secs(5),exchange).await.unwrap();value.unwrap();
+ }
+ #[tokio::test]async fn rejects_wide_control_directory_with_path_and_acl_hint(){
+  let t=tempfile::tempdir_in("/tmp").unwrap();let data=t.path().join("data");let runtime=t.path().join("runtime");std::fs::create_dir(&runtime).unwrap();
+  std::fs::set_permissions(&runtime,std::fs::Permissions::from_mode(0o777)).unwrap();
+  let app=crate::initialize(data).unwrap();let error=Control::bind(&app,&runtime).err().expect("Wide permissions must fail");
+  for error in [error,request(&runtime,"session").await.unwrap_err()]{
+   assert!(error.contains(&runtime.display().to_string()),"{error}");for expected in ["unsafe","Synology/ACL","--control-dir","non-ACL","tmpfs"]{assert!(error.contains(expected),"{error}");}
+  }
+  assert_eq!(std::fs::metadata(&runtime).unwrap().mode()&0o777,0o777);assert!(!runtime.join("core.sock").exists());
+ }
  #[tokio::test]async fn stale_socket_rebuilt_only_after_lock_is_acquired(){
-  let (_t,app,session)=fixture();let path=socket_path(&app.state_dir);std::fs::DirBuilder::new().mode(0o700).create(path.parent().unwrap()).unwrap();
+  for custom in [false,true]{
+  let (t,app,session)=fixture();let control_dir=if custom{t.path().join("runtime")}else{app.state_dir.join("control")};let path=socket_path(&control_dir);std::fs::DirBuilder::new().mode(0o700).create(path.parent().unwrap()).unwrap();
   let stale=UnixListener::bind(&path).unwrap();drop(stale);let old=std::fs::symlink_metadata(&path).unwrap();
   // This is also the startup order in run: initialize must succeed before Control::bind.
-  let blocked=crate::initialize(app.state_dir.clone()).and_then(|other|Control::bind(&other));assert!(blocked.is_err());
+  let blocked=crate::initialize(app.state_dir.clone()).and_then(|other|Control::bind(&other,&control_dir));assert!(blocked.is_err());
   assert_eq!(std::fs::symlink_metadata(&path).unwrap().ino(),old.ino());
-  let dir=app.state_dir.clone();drop(app);let app=crate::initialize(dir).unwrap();let control=Control::bind(&app).unwrap();
-  let (value,())=tokio::join!(request(&app.state_dir,"session"),async{let(stream,_)=control.listener.accept().await.unwrap();handle(stream,&app,&session).await.unwrap();});assert!(value.is_ok());
+  let dir=app.state_dir.clone();drop(app);let app=crate::initialize(dir).unwrap();let control=Control::bind(&app,&control_dir).unwrap();
+  let (value,())=tokio::join!(request(&control_dir,"session"),async{let(stream,_)=control.listener.accept().await.unwrap();handle(stream,&app,&session).await.unwrap();});assert!(value.is_ok());
   drop(control);assert!(!path.exists());
+  }
  }
  #[tokio::test]async fn refuses_symlinks_and_non_socket_stale_paths(){
-  let (_t,app,_)=fixture();let path=socket_path(&app.state_dir);std::fs::DirBuilder::new().mode(0o700).create(path.parent().unwrap()).unwrap();std::fs::write(&path,b"keep").unwrap();
-  assert!(Control::bind(&app).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"keep");std::fs::remove_file(&path).unwrap();
-  std::os::unix::fs::symlink(app.state_dir.join("core.lock"),&path).unwrap();assert!(Control::bind(&app).is_err());assert!(request(&app.state_dir,"session").await.is_err());
+  let (_t,app,_)=fixture();let path=socket_path(&app.state_dir.join("control"));std::fs::DirBuilder::new().mode(0o700).create(path.parent().unwrap()).unwrap();std::fs::write(&path,b"keep").unwrap();
+  assert!(Control::bind(&app,&app.state_dir.join("control")).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"keep");std::fs::remove_file(&path).unwrap();
+  std::os::unix::fs::symlink(app.state_dir.join("core.lock"),&path).unwrap();assert!(Control::bind(&app,&app.state_dir.join("control")).is_err());assert!(request(&app.state_dir.join("control"),"session").await.is_err());
  }
  #[tokio::test]async fn bounded_protocol_rejects_oversized_and_malformed_requests(){
-  let (_t,app,session)=fixture();let control=Control::bind(&app).unwrap();
+  let (_t,app,session)=fixture();let control=Control::bind(&app,&app.state_dir.join("control")).unwrap();
   for action in ["x".repeat(REQUEST_LIMIT+1),"{\"password\":\"do-not-echo-this-secret\"}".into()]{
    let client=async{let mut stream=UnixStream::connect(&control.path).await.unwrap();stream.write_all(format!("{action}\n").as_bytes()).await.unwrap();let bytes=read_line(&mut stream,RESPONSE_LIMIT).await.unwrap();let _=stream.write_all(b"!").await;serde_json::from_slice::<Value>(&bytes).unwrap()};
    let (value,())=tokio::join!(client,async{let(stream,_)=control.listener.accept().await.unwrap();handle(stream,&app,&session).await.unwrap();});assert!(value["error"].is_string());assert!(!value.to_string().contains("do-not-echo"));
   }
-  assert!(request(&app.state_dir,"session\nignored").await.is_err());
+  assert!(request(&app.state_dir.join("control"),"session\nignored").await.is_err());
  }
  #[test]fn injected_filesystem_types_reject_network_and_fuse(){
   for kind in [0x6969,0xff534d42,0xfe534d42,0x517b,0x65735546]{assert!(rejected_magic(kind));}for kind in [0xef53,0x9123683e,0x58465342,0x794c7630]{assert!(!rejected_magic(kind));}
