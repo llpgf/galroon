@@ -67,6 +67,12 @@ Planned by Claude Code and executed by Codex. Do one phase per PR, in order. Do 
 
 ---
 
+## Phase 1b: cross-database replay comparison — done
+
+The replay tool now compares fresh scans with different resource ids by NFC-normalized root and relative path, with repeatable longest-prefix `--root-map` translations for Mac SMB versus native NAS paths. It retains ID comparison for the same resources, rejects path collisions, and lists added/removed resources. Separate actual stored-outcome and replay-decision sections include answer checks and unreviewed matches; `--fail-on` selects regression gates. This supports Phase 2 and LAN Core milestone N1 without changing the matcher. See [Replay](../features/MATCHING.md#replay) for the NAS command and report format.
+
+---
+
 ## Phase 2: live NAS re-run and AI suggestion pilot (read-only)
 
 **Needs:** the NAS mounted at `/Volumes/Backup/Galgame`. If it is not mounted, do step 2 on a copy of the v6 data directory instead, and say so in the report.
