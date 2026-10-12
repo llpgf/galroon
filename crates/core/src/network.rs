@@ -32,6 +32,24 @@ impl NetworkSettings{
  }
  #[cfg(test)]pub(crate) fn for_test(address:IpAddr,port:u16)->Self{Self{version:1,enabled:true,address,port,hostnames:vec!["nas.local".into()]}}
 }
+#[derive(Deserialize,Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkEdit{pub address:IpAddr,#[serde(default="default_port")]pub port:u16,#[serde(default)]pub hostnames:Vec<String>,pub enabled:Option<bool>}
+fn default_port()->u16{14830}
+pub fn show(device_dir:&Path)->R<serde_json::Value>{
+ let settings=NetworkSettings::load(device_dir)?;let mut value=serde_json::json!({"settings":settings,"status":if settings.is_some(){"configured"}else{"not configured"}});
+ if let Some((spki,certificate))=crate::lan_tls::existing_fingerprints(device_dir)?{value["spki_fingerprint"]=serde_json::json!(spki);value["certificate_sha256"]=serde_json::json!(certificate);}Ok(value)
+}
+pub fn save(device_dir:&Path,edit:NetworkEdit)->R<NetworkSettings>{
+ let previous=NetworkSettings::load(device_dir)?;
+ let settings=NetworkSettings{version:1,enabled:edit.enabled.unwrap_or_else(||previous.as_ref().is_some_and(|n|n.enabled)),address:edit.address,port:edit.port,hostnames:edit.hostnames};settings.validate()?;
+ let path=device_dir.join("network.json");crate::plans::validate_chain(&path)?;
+ let temp=device_dir.join(format!(".network-{}.tmp",crate::db::id()));
+ let result=(||{use std::io::Write;let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e|e.to_string())?;
+  file.write_all(&serde_json::to_vec_pretty(&settings).map_err(|e|e.to_string())?).and_then(|_|file.sync_all()).map_err(|e|e.to_string())?;drop(file);
+  fs::rename(&temp,&path).map_err(|e|e.to_string())
+ })();if result.is_err(){let _=fs::remove_file(&temp);}result?;Ok(settings)
+}
 pub fn validate_address(address:IpAddr)->R<()>{
  let reason=if address.is_unspecified(){"wildcard addresses are not allowed"}else if address.is_loopback(){"loopback addresses are not allowed"}else if address.is_multicast(){"multicast addresses are not allowed"}else{match address{
   IpAddr::V4(ip)=>{let b=ip.octets();if ip.is_private()||(b[0]==100&&(64..128).contains(&b[1])){return Ok(());}

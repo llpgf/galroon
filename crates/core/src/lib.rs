@@ -65,6 +65,7 @@ pub mod hashing;
 pub mod watching;
 pub mod access;
 pub mod network;
+pub mod pairing;
 pub mod lan_tls;
 mod services;
 pub use services::Services;
@@ -80,7 +81,7 @@ use tower_http::cors::{CorsLayer,AllowOrigin};
 
 #[derive(Clone)] pub struct App {pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
 pub struct ApiError(pub String);
-impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
+impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
 impl From<String> for ApiError {fn from(e:String)->Self{Self(e)}}
 type Result<T> = std::result::Result<Json<T>,ApiError>;
@@ -113,6 +114,9 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/access/setup",post(access::configure)).route("/api/access/password",post(access::change_password))
     .route("/api/access/login",post(access::web_login_from)).route("/api/access/logout",post(access::logout))
     .route("/api/access/pairing",post(access::pairing)).route("/api/access/pair",post(access::pair_from))
+    .route("/api/access/pair-web",post(access::pair_web))
+    .route("/api/access/pairing-codes",get(access::pairing_codes)).route("/api/access/pairing-codes/{id}/revoke",post(access::revoke_pairing_code))
+    .route("/api/access/network",get(access::network_show).post(access::network_set))
     .route("/api/access/devices",get(access::devices)).route("/api/access/devices/{id}/revoke",post(access::revoke))
     .route("/api/dashboard",get(dashboard)).route("/api/roots",get(roots).post(add_root))
     .route("/api/roots/{id}/watch",get(watch_status).post(configure_watch))

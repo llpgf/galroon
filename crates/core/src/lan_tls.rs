@@ -32,6 +32,11 @@ impl LanTls{
   Ok(Self{cert_der,config:Arc::new(config)})
  }
 }
+pub fn existing_fingerprints(device_dir:&Path)->R<Option<(String,String)>>{
+ let path=device_dir.join("lan-cert.pem");crate::plans::validate_chain(&path)?;let Some(bytes)=read_existing(&path)?else{return Ok(None)};
+ let cert=CertificateDer::from_pem_slice(&bytes).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;ParsedCertificate::try_from(&cert).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
+ Ok(Some((format_spki_fingerprint(&spki_fingerprint(&cert)),certificate_fingerprint(&cert))))
+}
 fn read_existing(path:&Path)->R<Option<Vec<u8>>>{if fs::symlink_metadata(path).is_ok_and(|m|m.file_type().is_symlink()){return Err(format!("TLS identity must not be a symbolic link: {}",path.display()));}match fs::read(path){Ok(v)=>Ok(Some(v)),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(format!("Cannot read {}: {e}",path.display()))}}
 fn write_new(path:&Path,bytes:&[u8],private:bool)->R<()>{
  let mut options=fs::OpenOptions::new();options.create_new(true).write(true);

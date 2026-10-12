@@ -1,5 +1,8 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
+webPairHint:'輸入 Core 擁有者產生的瀏覽器配對碼。瀏覽器僅提供唯讀存取。',
+webPairSignIn:'使用配對碼登入',
+webPairRequired:'此連線需要瀏覽器配對碼，請向 Core 擁有者索取。',
 coreText_searchIncomplete:'搜尋未完成。VNDB 恢復連線後請重新整理。',
 coreText_tooManyResults:'VNDB 上同名的作品太多，無法確定是哪一部。請手動選擇作品。',
 coreText_noTitle:'這個資源裡找不到可用的作品標題。',
