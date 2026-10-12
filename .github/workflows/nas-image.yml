@@ -1,0 +1,44 @@
+name: NAS artifact
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'scripts/nas/**'
+      - '.github/workflows/nas-image.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build Linux x86_64 Core
+        run: cargo build --release -p galroon-core --bin galroon-core
+      - name: Build Web UI
+        run: npm ci && npm run build
+      - name: Assemble runtime files and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/nas/web
+          cp target/release/galroon-core target/nas/galroon-core
+          cp -a dist/. target/nas/web/
+          git rev-parse HEAD > target/nas/BUILD_SHA
+          cd target/nas
+          find galroon-core web BUILD_SHA -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galroon-nas-x86_64
+          path: target/nas/
+          if-no-files-found: error
+          retention-days: 30

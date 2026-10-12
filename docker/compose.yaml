@@ -1,0 +1,27 @@
+# Dedicated project and explicit service selection keep other NAS services untouched.
+name: galroon
+services:
+  galroon:
+    # Locally built only; GALROON_IMAGE also permits rollback to a retained SHA tag.
+    image: "${GALROON_IMAGE:-galroon:local}"
+    pull_policy: never
+    container_name: galroon
+    # N1a binds NAS loopback :14800; no port publishing or LAN listener is added.
+    network_mode: host
+    # Restart after a crash/NAS boot, except when explicitly stopped by the operator.
+    restart: unless-stopped
+    # Allow SIGTERM to pause jobs, drain HTTP and checkpoint before SIGKILL.
+    stop_grace_period: 60s
+    # Hard ceiling; N1 separately measures a provisional 600 MiB peak budget.
+    mem_limit: 1g
+    # Required via .env (deploy defaults 1032:100); never run Core as root.
+    user: "${GALROON_UID}:${GALROON_GID}"
+    volumes:
+      # NAS-local writable state, precreated by its owner; no SMB/NFS database.
+      - "${GALROON_DATA:-/volume1/docker/galroon/data}:/data"
+      # Identical NAS/container path; library remains read-only throughout N1.
+      - "${GALROON_LIBRARY:-/volume1/Backup/Galgame}:${GALROON_LIBRARY:-/volume1/Backup/Galgame}:ro"
+    environment:
+      # N1c testing switches; empty means ordinary watcher behavior.
+      GALROON_WATCH_FORCE_POLLING: "${GALROON_WATCH_FORCE_POLLING:-}"
+      GALROON_WATCH_POLL_SECONDS: "${GALROON_WATCH_POLL_SECONDS:-}"
