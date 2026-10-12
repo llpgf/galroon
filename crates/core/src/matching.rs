@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=9;
+pub const ALGORITHM_VERSION:i64=10;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -20,11 +20,11 @@ fn useful(text: &str) -> bool {
     !n.is_empty() && !n.chars().all(|c| c.is_ascii_digit()) &&
         !Regex::new(r"(?i)^(?:rj|vj|dmm)\d+$").unwrap().is_match(&n) &&
         !Regex::new(r"^[A-Z]{2,5}[0-9]{3,6}$").unwrap().is_match(text) &&
-        !["files","game","data","setup","disc","disk","update","patch","crack","soundtrack","metadata","readme","sofmap","ソフマップ","wave","wav","mp3","ogg","flac","voice","sound","bgm","se","html","images","image","plugin","plugins","system","save","savedata","config","log","logs","sjisext","ysbin","updchk","movie","movies","manual","特典","音声特典","バイノーラルドラマ"].contains(&n.as_str()) &&
+        !["files","game","data","setup","disc","disk","update","patch","crack","soundtrack","metadata","readme","sofmap","ソフマップ","wave","wav","mp3","ogg","flac","voice","sound","bgm","se","html","images","image","plugin","plugins","system","save","savedata","config","log","logs","sjisext","ysbin","updchk","rio","movie","movies","manual","特典","音声特典","バイノーラルドラマ"].contains(&n.as_str()) &&
         !Regex::new(r"^(?:\d+[. _-]*)?(?:(?:バイノーラル|ボイス|音声)ドラマ|主題歌音源)$").unwrap().is_match(text)
 }
 fn technical_directory(text:&str)->bool{
-    ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
+    ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","rio","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
 }
 /// One " + …" part of a release name that lists bundled extras ("Drama CD", "OST", "Update 1.01", "Tokuten x6", "予約特典").
 fn extras_segment(part: &str) -> bool {
@@ -221,6 +221,10 @@ fn edition_bonus_tail(tail:&str)->bool{
 /// Additive fallback for title-anchored media, editions and distribution/quoted wrappers.
 /// Product exclusions belong only here; legacy bonus admission is unchanged.
 pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
+    // A file named exactly for this work/folder is ancillary regardless of its runtime extension.
+    if let Some((stem,ext))=member.rsplit_once('.'){
+        if (1..=5).contains(&ext.len())&&ext.bytes().all(|c|c.is_ascii_alphanumeric())&&!normalized(stem).is_empty()&&names.iter().any(|n|normalized(stem)==normalized(n)){return true;}
+    }
     if let Some((tail,title_plus))=member_tail(member,names,brands){
         if !title_plus&&!competing_tail(&tail)&&media_tail(&tail){return true;}
     }
@@ -375,7 +379,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         for part in parts {
             labels(part, &mut brands, &mut dates);
             // Runtime files and media tracks are not competing work identities.
-            if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
+            if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|arc|ws2|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
             let title = clean_name(part);
             if useful(&title) && seen.insert(normalized(&title)) { titles.push(title); }
         }
@@ -391,6 +395,19 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     }
     queries.truncate(3);
     Ok(Input { titles, queries, direct_id: None, brands, dates })
+}
+#[test]fn shiina_rio_members_are_technical_and_do_not_trip_the_short_guard(){
+    for member in ["Rio","SysGraphic1.arc","add01.ws2","Graphic2.ARC","Script.arc","Rio/内部タイトル/readme.txt"]{
+        assert!(prepare(member,&[member.into()]).unwrap().titles.is_empty(),"{member}");
+        if !member.contains('/'){assert!(prepare(member,&[]).unwrap().titles.is_empty(),"{member}");}
+    }
+    let title="虜ノ歪 ～音大卒の元歌姫が響かせる淫らな啼き声～";
+    let hints=["SysGraphic1.arc","add01.ws2","Rio","Graphic2.arc","Script.arc","Rio/内部タイトル/readme.txt"].map(|p|format!("{title}/{p}"));
+    let input=prepare(title,&hints).unwrap();assert_eq!(input.titles,vec![clean_name(title)]);
+    assert_eq!(rank(&input,vec![json!({"id":"v22600","title":title})])[0]["match"]["strength"],"strong");
+    for (source,name) in [("善悪","善悪"),("[Key] AIR","AIR")]{
+        let input=prepare(source,&[]).unwrap();assert_eq!(rank(&input,vec![json!({"id":"v1","title":name,"developers":[{"name":"Key"}]})])[0]["match"]["strength"],"review");
+    }
 }
 fn numbers(text: &str) -> Vec<String> {
     let s: String = text.nfkc().collect();
