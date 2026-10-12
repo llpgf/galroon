@@ -1,7 +1,7 @@
 // US-5.1 AI suggests; a person confirms. US-5.2 one physical resource on several work pages.
 import { test, expect, type Page } from '@playwright/test';
 import { openApp, nav, T, resourceRow, card, openWork } from './support/app';
-import { startCore, SNAPSHOTS, type Core } from './support/core';
+import { startCore, SNAPSHOTS, waitFor, type Core } from './support/core';
 import { grade } from './support/golden';
 import type { Resource, MatchSuggestion, Work } from '../../src/api';
 
@@ -99,7 +99,16 @@ test('US-5.1 略過建議，不建立綁定', async ({ page }) => {
   expect((await current(r.id)).bindings).toHaveLength(0);
 });
 
+// Regrouping is refused while scans, matching or file operations run; the previous story's rescan may still be busy.
+async function settle() {
+  await waitFor('background tasks and matching idle', async () => {
+    const jobs: any = await core.api('/jobs'); const list: any[] = Array.isArray(jobs) ? jobs : (jobs.items || jobs.jobs || []);
+    const matching: any = await core.api('/matching');
+    return !list.some(j => ['queued', 'running', 'pending', 'pausing', 'cancelling'].includes(j.state)) && !matching.waiting;
+  }, 120_000, 1_000);
+}
 async function regroup(sourceId: string, fileIds: string[], targetId: string | null, title: string) {
+  await settle();
   const source = await core.api(`/resources/${sourceId}/members`);
   const target = targetId ? await core.api(`/resources/${targetId}/members`) : null;
   const selection = { revision: source.revision, file_ids: fileIds, target_id: targetId, target_revision: target?.revision ?? null, title };
