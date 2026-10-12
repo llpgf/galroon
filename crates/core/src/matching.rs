@@ -268,10 +268,17 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
             if mismatch { score = score.min(42.0); why = "number_conflict"; }
             if score > best { best = score; reason = why; matched = name.clone(); conflict = mismatch; }
         } }
+        let mut primary = false;
         if let Some(releases) = candidate["release_matches"].as_array() {
             for release in releases { if let Some(title) = release["title"].as_str() {
-                if input.titles.iter().any(|q| normalized(q)==normalized(&clean_name(title))) && best < 99.0 {
-                    best=99.0; reason="exact_release"; matched=title.into(); conflict=false;
+                if input.titles.iter().any(|q| normalized(q)==normalized(&clean_name(title))) && best < 100.0 {
+                    // A compilation named after one of its works ("君が望む永遠 ～Enhanced Edition R～") belongs to that work.
+                    // The rest of the name must not start with a number ("Foo 2 Box" is not an edition of "Foo"),
+                    // except an anniversary ("10th Anniversary edition", "15周年").
+                    let nr = normalized(&clean_name(title)); let anniversary = Regex::new(r"^\d+(?:st|nd|rd|th|周年)").unwrap();
+                    let lead = names.iter().filter(|(_, alias)| !alias).map(|(n, _)| normalized(n)).any(|nn| nn.chars().count() >= 4 && nr.strip_prefix(nn.as_str()).is_some_and(|rest|
+                        !rest.is_empty() && (!rest.starts_with(|c: char| c.is_ascii_digit()) || anniversary.is_match(rest))));
+                    if best < 99.0 || lead { best = if lead { 100.0 } else { 99.0 }; reason="exact_release"; matched=title.into(); conflict=false; primary = lead; }
                 }
             } }
         }
@@ -282,12 +289,16 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
         // A person's own confirmation or an explicit VNDB id outweighs folder labels.
         if best >= 90.0 && !matches!(reason, "confirmed_title" | "direct_id") && contradicted(input, &candidate) { best = 90.0; reason = "release_conflict"; }
         candidate["match"] = json!({"score":best.round(),"reason":reason,"matched_title":matched,"number_conflict":conflict,"strength":"review"});
+        if primary && reason == "exact_release" { candidate["match"]["primary"] = json!(true); }
         ranked.push(candidate);
     }
     ranked.sort_by(|a,b| b["match"]["score"].as_f64().unwrap().total_cmp(&a["match"]["score"].as_f64().unwrap()));
     // An exact title outranks another work matched only through its main title (e.g. the sequel "X -Prelude to War-").
     let exact_first = ranked.first().is_some_and(|c| c["match"]["reason"].as_str().is_some_and(|r| r.starts_with("exact") && r != "exact_main_title"));
-    let runner_up = ranked.iter().skip(1).filter(|c| !(exact_first && c["match"]["reason"] == "exact_main_title")).find_map(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
+    // The work a compilation is named after outranks the other works on that same release.
+    let primary_first = ranked.first().is_some_and(|c| c["match"]["primary"] == true);
+    let sibling = |c: &Value| primary_first && c["match"]["reason"] == "exact_release" && c["match"]["primary"] != true;
+    let runner_up = ranked.iter().skip(1).filter(|c| !(exact_first && c["match"]["reason"] == "exact_main_title") && !sibling(c)).find_map(|c| c["match"]["score"].as_f64()).unwrap_or(0.0);
     if let Some(first) = ranked.first_mut() {
         let score = first["match"]["score"].as_f64().unwrap();
         let short = input.titles.iter().any(|t| normalized(&branded(t).map(|(_,tail)|tail).unwrap_or_else(||t.clone())).chars().count() < 4);
@@ -526,6 +537,18 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let p=prepare("アンラベル・トリガー -Prelude to War-", &[]).unwrap();let r=rank(&p,vec![candidate("v1","アンラベル・トリガー")]);assert_eq!(r[0]["match"]["strength"],"review");assert_eq!(r[0]["match"]["reason"],"different_subtitle");
         let p=prepare("Same title", &[]).unwrap();let r=rank(&p,vec![candidate("v1","Same title"),candidate("v2","Same title"),candidate("v1","Same title")]);assert_eq!(r.len(),2);assert_eq!(r[0]["match"]["ambiguous"],true);assert_eq!(r[0]["match"]["strength"],"review");
         let p=prepare("AIR", &[]).unwrap();assert_eq!(rank(&p,vec![candidate("v36","Air")])[0]["match"]["strength"],"review");
+    }
+    #[test] fn a_compilation_named_after_one_of_its_works_belongs_to_that_work(){
+        let on=|id:&str,title:&str,release:&str|json!({"id":id,"title":title,"release_matches":[{"id":"r141029","title":release}]});
+        let release="君が望む永遠 ～Enhanced Edition R～ - 初回生産版";let input=prepare("君が望む永遠 ～Enhanced Edition R～ 初回生産版 + Tokuten",&[]).unwrap();
+        let r=rank(&input,vec![on("v358","君が望む永遠 ～special FanDisk～",release),on("v94","君が望む永遠",release),on("v28307","君が望む永遠 another episode 悲しみは風のように",release)]);
+        assert_eq!(r[0]["id"],"v94");assert_eq!(r[0]["match"]["strength"],"strong");assert_eq!(r[0]["match"]["reason"],"exact_release");
+        // A pure box set names none of its works, and "Foo 2 Box" is not an edition of "Foo".
+        let r=rank(&prepare("キスイロ",&[]).unwrap(),vec![on("v10641","キスベル","キスイロ"),on("v13632","キスアト","キスイロ")]);assert_eq!(r[0]["match"]["strength"],"review");assert_eq!(r[0]["match"]["ambiguous"],true);
+        let r=rank(&prepare("Sample Title 2 Twin Box",&[]).unwrap(),vec![on("v1","Sample Title","Sample Title 2 Twin Box"),on("v2","Other Work","Sample Title 2 Twin Box")]);assert_eq!(r[0]["match"]["strength"],"review");
+        let r=rank(&prepare("サクラノ詩－櫻の森の上を舞う－10th Anniversary edition",&[]).unwrap(),vec![on("v562","サクラノ詩－櫻の森の上を舞う－","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition"),on("v60562","サクラノ詩 Re:Graphic アペンドディスク","サクラノ詩－櫻の森の上を舞う－10th Anniversary edition")]);assert_eq!(r[0]["id"],"v562");assert_eq!(r[0]["match"]["strength"],"strong");
+        // Two works that both lead the name leave the choice to the person.
+        let r=rank(&prepare("Sample Title Plus Complete",&[]).unwrap(),vec![on("v1","Sample Title","Sample Title Plus Complete"),on("v2","Sample Title Plus","Sample Title Plus Complete")]);assert_eq!(r[0]["match"]["strength"],"review");
     }
     #[tokio::test] async fn release_identity_is_followed_and_compilations_stay_ambiguous() {
         use axum::{routing::post,Json,Router};
