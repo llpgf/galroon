@@ -208,6 +208,10 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;drop(a);assert_eq!(waiting.await.unwrap(),Ok(()));
         let full=OnceLock::new();let _held=(admit(&full,"busy").await.map_err(|e|e.0).unwrap(),admit(&full,"busy").await.map_err(|e|e.0).unwrap());assert_eq!(admit(&full,"busy").await.err().map(|e|e.0),Some("busy".into()));drop(b);
     }
+    #[test] fn busy_refusals_answer_service_unavailable_so_the_browser_does_not_log_a_bad_request(){
+        use axum::response::IntoResponse;let status=|m:&str|ApiError(m.into()).into_response().status();
+        assert_eq!(status("Other collection queries are running. Retry in a moment."),axum::http::StatusCode::SERVICE_UNAVAILABLE);assert_eq!(status("Invalid cursor"),axum::http::StatusCode::BAD_REQUEST);
+    }
     fn read(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>)->Value {page(c,roots,q,before).unwrap_or_else(|e|panic!("{}",e.0))}
     #[test] fn filtering_and_counts_cover_the_whole_collection_and_cursors_bind_view_and_sources() {
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
