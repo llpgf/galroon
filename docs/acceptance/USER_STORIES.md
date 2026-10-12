@@ -277,6 +277,7 @@
 |---|---|
 | US-1.1 | `tests/e2e/us1-intake.spec.ts`（同時產生其他測試共用的 intake 快照） |
 | US-1.2、1.3、1.9、2.4 | `tests/e2e/us1-features.spec.ts` |
+| US-5.1、5.2 | `tests/e2e/us5-suggestions.spec.ts` |
 | US-1.5、1.6 | `tests/e2e/us1-manual.spec.ts` |
 | US-1.7、1.8 | `tests/e2e/us1-faults.spec.ts`（VNDB 故障以 `GALROON_VNDB_API` 指向測試用代理注入） |
 | US-2.1～2.3 | `tests/e2e/us2-browse.spec.ts` |

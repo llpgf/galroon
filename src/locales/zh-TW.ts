@@ -1,5 +1,19 @@
 // Traditional Chinese (Taiwan). Keys missing here fall back to English.
 export const zhTW:Record<string,string>={
+suggestionBadge:'AI 建議',
+suggestionVerified:'已驗證',
+suggestionUnverified:'未驗證',
+suggestionRationale:'建議理由',
+suggestionConfirm:'確認',
+suggestionDismiss:'略過',
+suggestionConfirmVerified:'確認所有已驗證建議',
+suggestionVerifiedCount:'{{count}} 筆已驗證建議',
+suggestionConflict:'建議或資源已變更，列表已重新載入。請重新檢視。',
+suggestionResults:'確認結果',
+suggestionConfirmed:'已確認',
+suggestionFailed:'未確認：{{error}}',
+resourceCollection:'合集',
+
 settings_about:"關於",
 settings_about_hint:"此 Core 與用戶端的版本及發行更新。",
 updateAvailable:"Galroon {{version}} 已推出",

@@ -1133,3 +1133,15 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
 .about-panel{min-width:0;overflow-wrap:anywhere}.about-panel dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 20px}.about-panel dd{margin:0}.about-panel .settings-row{margin-top:20px}
 @media(max-width:700px){.update-banner{margin-left:0}}
 @media(max-width:600px){.update-banner{padding:14px 16px}.about-panel dl{grid-template-columns:minmax(0,1fr)}.about-panel dd{margin-bottom:8px}}
+
+.match-suggestion{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:8px;max-width:640px;white-space:normal}
+.suggestion-badge.verified{color:var(--ok);background:var(--ok-soft)}
+.suggestion-badge.unverified{color:var(--warn);background:var(--warn-soft)}
+.suggestion-works{padding-left:20px;margin:8px 0}
+.match-suggestion summary{cursor:pointer;font-size:13px}
+.suggestion-rationale{white-space:pre-wrap;overflow-wrap:anywhere}
+.match-suggestion>.inline{margin-top:10px}
+.suggestion-actions:empty{display:none}
+.suggestion-actions{margin-bottom:14px}
+.suggestion-results{padding:12px;border:1px solid var(--line);border-radius:8px}
+.collection-resource{margin-left:6px}
