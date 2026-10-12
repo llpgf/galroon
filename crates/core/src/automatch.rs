@@ -130,6 +130,7 @@ pub fn review_reason(response:&Value)->Option<String>{
                 (fallback_names,brands,additional_names)
             });
             if matching::title_anchored_member(title,if index==0{&known}else{fallback_names},brands)||matching::title_anchored_member(title,additional_names,brands){continue;}
+            if index>0&&matching::corroborated_member(title,candidate,response["results"].as_array().unwrap()){continue;}
             return Some(format!("A different source name needs review: {title}"));
         }
     }None
@@ -416,7 +417,6 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
             ("ジュエリー・ハーツ・アカデミア","オリジナルデジタルコンテンツ『美少女探偵アリアンナ…』"),
             ("まおかつ!","Maokatsu Crk"),("ぼくと先生の乳淫せいかつ","Boku Sensei Crak"),
             ("星の乙女と六華の姉妹","hoshioto_new stage2"),("蒼の彼方のフォーリズム","4rhythm WP & 4koma"),
-            ("もっと!孕ませ!炎のおっぱい異世界エロ魔法学園!","全CG存档"),
             ("アマツツミ","OP主題歌『ずっとそばで...』short ver"),
         ]{assert_member_review(title,member);}
         for tail in ["Disk","DISC","ディスク","ヂスク","SPECIAL DISC","別作品 DISC","2 ドラマCD","2 特典CD","if 特典CD","FD ドラマCD","スピンオフ ドラマCD","SPECIAL DISC 特典CD"]{
@@ -464,6 +464,72 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         let title="ハジラブ -Making*Lovers-";let other="Making*LoversフルHDリマスター";
         let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![json!({"id":"v30456","title":title})]);
         assert_eq!(review_reason(&json!({"results":ranked,"titles":["ハジラブ -Making*Lovers-&Making*LoversフルHDリマスター同梱限定セット版 (OST & Maxi & スケパッチ付)",title,other]})),Some(format!("A different source name needs review: {other}")));
+    }
+    #[test]fn candidate_corroborated_code_and_generic_members(){
+        for (candidate,member) in [
+            (json!({"id":"v27365","title":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~","alttitle":"まおかつ！ ～魔王と勇者のアイドル生活～"}),"Maokatsu Crk"),
+            (json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","alttitle":"星の乙女と六華の姉妹","aliases":["Hoshioto","星乙"]}),"hoshioto_new stage2"),
+            (json!({"id":"v12849","title":"Ao no Kanata no Four Rhythm","alttitle":"蒼の彼方のフォーリズム","aliases":["Beyond the sky, into the firmament.","あおかな","Four Rhythm Across the Blue","苍彼","4Rhythm","Aokana","아오카나"]}),"4rhythm WP & 4koma"),
+            (json!({"id":"v28131","title":"Boku to Sensei no Nyuuin Seikatsu","alttitle":"ぼくと先生の乳淫せいかつ","aliases":["ぼくと先生の乳淫生活","nyuuin","bokunyuu","ぼく乳"]}),"Boku Sensei Crak"),
+            (json!({"id":"v21529","title":"Motto! Haramase! Honoo no Oppai Isekai Ero Mahou Gakuen!","alttitle":"もっと！孕ませ！炎のおっぱい異世界エロ魔法学園！"}),"全CG存档"),
+            (json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより"}),"仄暗き時の果てより 中文"),
+            (json!({"id":"v26410","title":"Dansei o Iyashi Nuku Kikai","alttitle":"男性を癒やし抜く機械","developers":[{"name":"Yoru no Hitsuji","original":"夜のひつじ"}]}),"cg[190829][夜のひつじ]男性を癒やし抜く機械"),
+        ]{
+            assert!(matching::corroborated_member(member,&candidate,&[]),"{member}");
+            let title=candidate["alttitle"].as_str().unwrap();let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+            for name in [member.to_string(),matching::clean_name(member)]{
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,name]})),None,"{member}");
+            }
+        }
+        let candidate=json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより"});
+        for word in ["全CG存档","存档","存檔","CG","中文","中文版","汉化","漢化","补丁","補丁"]{
+            for member in [word.to_string(),format!("仄暗き時の果てより {word}")]{assert!(matching::corroborated_member(&member,&candidate,&[]),"{member}");}
+        }
+        // All suffix spellings stay local to this rule, including versions and separators.
+        let candidate=json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","aliases":["Hoshioto"]});
+        for suffix in ["crack","crk","crak","patch","new","stage2","1.0","v1.0.0","win","wp","4koma","cg","save","dlc"]{
+            assert!(matching::corroborated_member(&format!("Hoshioto_{suffix}"),&candidate,&[]),"{suffix}");
+        }
+        let latin=json!({"id":"v27365","titles":[{"title":"まおかつ！ ～魔王と勇者のアイドル生活～","latin":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~"}]});
+        assert!(matching::corroborated_member("Maokatsu Crk",&latin,&[]));
+    }
+    #[test]fn uncorroborated_codes_and_chinese_titles_stay_review(){
+        for (candidate,members) in [
+            (json!({"id":"v24279","title":"Sekai no Hajimari Gokko","alttitle":"世界の始まりゴッコ"}),vec!["worldbegin_v1.0.0_win","世界の始まりゴッコ worldbegin_v1.0.0_win"]),
+            (json!({"id":"v18852","title":"Amatsutsumi","alttitle":"アマツツミ"}),vec!["Boku Sensei Crak","Song of Saya"]),
+            (json!({"id":"v28131","title":"Boku to Sensei no Nyuuin Seikatsu","alttitle":"ぼくと先生の乳淫せいかつ","aliases":["nyuuin","bokunyuu"]}),vec!["Sensei Crk","Bok Crk","Sensei Boku Crk","Boku Sens Crk","Boku to Crk","Boku Sensei mystery","Boku new Sensei Crk"]),
+            (json!({"id":"v10569","title":"Kodoku ni Kiku Yuri","alttitle":"孤独に効く百合","aliases":["こどゆり","kodoyuri"]}),vec!["PSP 孤独少女的百合物语","PSP 孤独少女的百合物语 汉化补丁"]),
+            (json!({"id":"v22436","title":"Harem Futago Lolita","alttitle":"ハーレム双子ロリータ","aliases":["The Harem of Lolita Twins","lol4"]}),vec!["双子洛丽塔后宫KRKR版"]),
+            (json!({"id":"v10568","title":"Koi Tsuma Kuzushi","alttitle":"恋妻くずし","aliases":["Love Wife Demolish"]}),vec!["【脸肿汉化组】《恋妻くずし》汉化补丁v1.0","cg[脸肿汉化组]恋妻くずし 汉化补丁"]),
+            (json!({"id":"v19974","title":"Honoguraki Toki no Hate Yori","alttitle":"仄暗き時の果てより","titles":[{"title":"来自昏暗的时间尽头","latin":"Laizi Hun'an de Shijian Jintou"}]}),vec!["来自昏暗的时间尽头 中文","仄暗き時の果てより 中文2","仄暗き時の果てより+ 中文"]),
+        ]{
+            let title=candidate["alttitle"].as_str().unwrap();let ranked=matching::rank(&matching::prepare(title,&[]).unwrap(),vec![candidate.clone()]);
+            for member in members{
+                assert!(!matching::corroborated_member(member,&candidate,&[]),"{member}");
+                // The old ASCII-only code path already admits bare worldbegin; do not veto it.
+                if member=="worldbegin_v1.0.0_win"{assert!(matching::ancillary_member(member,&[title]));continue;}
+                assert_eq!(review_reason(&json!({"results":ranked,"titles":[title,member]})),Some(format!("A different source name needs review: {member}")));
+            }
+        }
+    }
+    #[test]fn code_corroboration_cannot_come_from_folders_or_other_candidates(){
+        let own=json!({"id":"v27365","title":"Maokatsu! ~Maou to Yuusha no Idol Seikatsu~","alttitle":"まおかつ！ ～魔王と勇者のアイドル生活～"});
+        let other=json!({"id":"v31700","title":"Hoshi no Otome to Rikka no Shimai","alttitle":"星の乙女と六華の姉妹","aliases":["Hoshioto"]});
+        assert!(!matching::corroborated_member("hoshioto_new stage2",&own,&[other.clone()]));
+        // Collisions are synthetic additions to real VNDB candidates; only this new path is vetoed.
+        for key in ["aliases","title","titles"]{
+            let mut collision=other.clone();collision[key]=match key{"aliases"=>json!(["Maokatsu"]),"titles"=>json!([{"title":"Maokatsu"}]),_=>json!("Maokatsu")};
+            assert!(!matching::corroborated_member("Maokatsu Crk",&own,&[collision.clone()]));
+            let ranked=matching::rank(&matching::prepare(own["alttitle"].as_str().unwrap(),&[]).unwrap(),vec![own.clone(),collision]);
+            assert_eq!(review_reason(&json!({"results":ranked,"titles":[own["alttitle"],"Maokatsu Crk"]})),Some("A different source name needs review: Maokatsu Crk".into()));
+        }
+        assert!(matching::corroborated_member("Maokatsu Crk",&own,&[own.clone()]));
+        let ranked=matching::rank(&matching::prepare(own["alttitle"].as_str().unwrap(),&[]).unwrap(),vec![own.clone(),other]);
+        assert_eq!(review_reason(&json!({"results":ranked,"titles":["hoshioto",own["alttitle"],"hoshioto_new stage2"]})),Some("A different source name needs review: hoshioto".into()));
+        // Generic-only and code labels never supply the resource's own identity.
+        for folder in ["全CG存档","Maokatsu Crk"]{assert!(review_reason(&json!({"results":ranked,"titles":[folder,own["alttitle"]]})).is_some());}
+        let short=json!({"id":"v12849","title":"Ao no Kanata no Four Rhythm","aliases":["Ao"]});
+        assert!(!matching::corroborated_member("Ao Crk",&short,&[]));
     }
     fn assert_member_review(title:&str,member:&str){
         assert!(!matching::title_anchored_member(member,&[title],&[]),"{member}");

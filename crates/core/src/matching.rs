@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=8;
+pub const ALGORITHM_VERSION:i64=9;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -250,6 +250,53 @@ pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
         let Some(number)=digits.find(&key)else{return false;};
         key[..number.start()]==tail_key&&names.iter().any(|anchor|normalized(anchor).ends_with(number.as_str())&&member_tail(&member,&[*anchor],brands).is_some())
     })
+}
+/// Candidate-only extension of the member fallback. Never feed it folder or release spellings.
+pub fn corroborated_member(member:&str,candidate:&Value,others:&[Value])->bool{
+    let names=candidate_names(candidate);
+    if generic_member(member,&names,candidate){return true;}
+    if member.is_ascii(){
+        static SUFFIX:OnceLock<Regex>=OnceLock::new();
+        let suffix=SUFFIX.get_or_init(||Regex::new(r"(?i)^(?:crack|crk|crak|patch|new|stage\d+|v?\d+(?:\.\d+)*|win|wp|4koma|cg|save|dlc)$").unwrap());
+        let mut tokens:Vec<&str>=member.split(|c:char|matches!(c,'_'|'-'|'&'|' ')).filter(|s|!s.is_empty()).collect();let count=tokens.len();
+        // A bare sequel number (Clannad 2) is not a code/release suffix by itself.
+        let labelled=tokens.iter().rev().take_while(|s|suffix.is_match(s)).any(|s|!s.chars().all(|c|c.is_ascii_digit()));if !labelled{return false;}
+        while tokens.last().is_some_and(|s|suffix.is_match(s)){tokens.pop();}
+        if tokens.is_empty()||tokens.len()==count||tokens.iter().any(|s|!s.chars().all(|c|c.is_ascii_alphanumeric())){return false;}
+        let head=normalized(&tokens.join(" "));if head.len()<4{return false;}
+        if others.iter().filter(|c|c["id"]!=candidate["id"]).any(|c|candidate_names(c).iter().any(|n|normalized(n)==head)){return false;}
+        if names.iter().any(|n|normalized(n)==head){return true;}
+        let titles:Vec<&str>=["title","alttitle"].iter().filter_map(|k|candidate[*k].as_str())
+            .chain(candidate["titles"].as_array().into_iter().flatten().flat_map(|t|["title","latin"].iter().filter_map(|k|t[*k].as_str()))).collect();
+        return titles.iter().filter(|n|n.is_ascii()).any(|n|{
+            let words:Vec<_>=n.split(|c:char|!c.is_ascii_alphanumeric()).filter(|s|!s.is_empty()).collect();
+            if tokens.len()==1{return words.first().is_some_and(|w|w.eq_ignore_ascii_case(tokens[0]));}
+            if tokens.iter().any(|t|t.len()<4){return false;}
+            let mut words=words.into_iter();tokens.iter().all(|t|words.any(|w|w.eq_ignore_ascii_case(t)))
+        });
+    }
+    false
+}
+// Consume generic words only at the edges, leaving unknown Chinese titles and group labels intact.
+fn generic_member(member:&str,names:&[&str],candidate:&Value)->bool{
+    static WORDS:OnceLock<(Regex,Regex)>=OnceLock::new();
+    let (prefix,suffix)=WORDS.get_or_init(||(Regex::new(r"(?i)^(?:全CG存档|存档|存檔|中文版|中文|汉化|漢化|补丁|補丁|CG\b)").unwrap(),
+        Regex::new(r"(?i)(?:全CG存档|存档|存檔|中文版|中文|汉化|漢化|补丁|補丁|\bCG)$").unwrap()));
+    let s:String=member.nfkc().collect();let mut s=s.trim();let mut any=false;
+    while let Some(m)=prefix.find(s){s=s[m.end()..].trim_start_matches(|c:char|c.is_whitespace()||matches!(c,'_'|'-'|'&'));any=true;}
+    if s.is_empty(){return any;}
+    // Only dates and this work's developers may wrap a generic-prefixed title.
+    while s.starts_with('['){
+        let Some(end)=s.find(']')else{return false;};let label=&s[1..end];
+        let date=matches!(label.len(),6|8)&&label.chars().all(|c|c.is_ascii_digit());
+        let maker=candidate["developers"].as_array().into_iter().flatten().any(|d|["name","original"].iter().any(|k|d[*k].as_str().is_some_and(|n|normalized(n)==normalized(label))));
+        if !date&&!maker{return false;}s=s[end+1..].trim_start();
+    }
+    let japanese:Vec<&str>=names.iter().copied().filter(|n|n.chars().any(|c|('\u{3041}'..='\u{30fa}').contains(&c))).collect();
+    let Some((tail,title_plus))=member_tail(s,&japanese,&[])else{return false;};if title_plus{return false;}
+    let mut tail=tail.trim();
+    while let Some(m)=suffix.find(tail){tail=tail[..m.start()].trim_end_matches(|c:char|c.is_whitespace()||matches!(c,'_'|'-'|'&'));any=true;}
+    any&&tail.is_empty()
 }
 /// The name is exactly one of `names` followed only by bonus/crack/patch/artwork words.
 pub fn names_with_extras(name: &str, names: &[&str]) -> bool {
