@@ -1,3 +1,13 @@
+## Release update notices (2026-10-12)
+
+All three endpoints return `{current, install_kind, enabled, checking, last_checked, last_error, update_available, latest}`. `current` is the Core version; `install_kind` is `docker`, `desktop` (Windows) or `standalone`. `last_checked` is nullable Unix seconds for the last completed attempt, including failures; `last_error` is nullable text. `checking` indicates an in-flight check. `latest` is null unless a newer full release is available; otherwise it is `{version, name, url, notes, published_at}`, with nullable ISO timestamp `published_at`. Notes are plain text, capped at 20,000 characters; the URL is restricted to the project's GitHub releases pages.
+
+- `GET /api/updates`: any authenticated role, `WebAccess::Unchanged`; reads cached state without contacting GitHub.
+- `POST /api/updates/check`: owner or paired desktop; checks now even when automatic checks are disabled. Concurrent calls share one in-flight request. Calls within 60 seconds return stored state; after a failure, retries wait at least one hour. Check failures are returned in `last_error` while retaining any previously known newer release.
+- `POST /api/updates/settings`: owner or paired desktop; accepts exactly `{enabled: bool}` and rejects unknown fields. Atomically persists device-local preferences, wakes the worker and returns state. Enabling with no recent check triggers an asynchronous check. Settings write failures return an API error.
+
+Web sessions receive 403 for both POST endpoints. A GitHub 404 is a successful check with no update; a 304 retains the cached release. Device-local state is outside catalog backups and schema migrations. Clients read on load and every six hours; they never check GitHub directly. See [UPDATES.md](../features/UPDATES.md) for scheduling, privacy and deployment overrides.
+
 ## Durable task summaries (API 1 / schema 43)
 
 `GET /jobs` (including paged results) and `GET /jobs/:id` expose optional `summary`: null for historical tasks and unsupported kinds, otherwise `{version:1,new_works,new_editions,new_resources,new_files,updated_files,unmatched_resources,needs_review,skipped,failed}`. Only scan/match jobs created after migration record totals. Counters are deduplicated by entity identity within each task and persist across interruption, resume and catalog backup/restore. New files are excluded from updated-existing-file totals within the same task.

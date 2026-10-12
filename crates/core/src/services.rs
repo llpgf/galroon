@@ -1,13 +1,13 @@
 //! Background workers owned once by Core, independently of its HTTP listeners.
 use crate::{App,automatch,smart_updates,watching};
 
-pub struct Services{smart:smart_updates::Worker,matching:automatch::Worker,watching:watching::Service}
+pub struct Services{updates:crate::updates::Worker,smart:smart_updates::Worker,matching:automatch::Worker,watching:watching::Service}
 impl Services{
  pub fn start(app:App)->Result<Self,String>{
   let watching=watching::start(app.clone())?;let matching=automatch::start(app.db.clone());let smart=smart_updates::start(app.db.clone());
-  Ok(Self{watching,matching,smart})
+  let updates=crate::updates::start(app.updates.clone());Ok(Self{watching,matching,smart,updates})
  }
- pub fn request_stop(&self){self.watching.request_stop();self.matching.request_stop();self.smart.request_stop();}
+ pub fn request_stop(&self){self.updates.request_stop();self.watching.request_stop();self.matching.request_stop();self.smart.request_stop();}
  pub(crate) fn stop_smart_updates(&self){self.smart.request_stop();}
  pub(crate) fn restart_smart_updates(&mut self,db:crate::db::Db){self.smart=smart_updates::start(db);}
 }
