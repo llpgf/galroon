@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=6;
+pub const ALGORITHM_VERSION:i64=12;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -20,11 +20,11 @@ fn useful(text: &str) -> bool {
     !n.is_empty() && !n.chars().all(|c| c.is_ascii_digit()) &&
         !Regex::new(r"(?i)^(?:rj|vj|dmm)\d+$").unwrap().is_match(&n) &&
         !Regex::new(r"^[A-Z]{2,5}[0-9]{3,6}$").unwrap().is_match(text) &&
-        !["files","game","data","setup","disc","disk","update","patch","crack","soundtrack","metadata","readme","sofmap","ソフマップ","wave","wav","mp3","ogg","flac","voice","sound","bgm","se","html","images","image","plugin","plugins","system","save","savedata","config","log","logs","sjisext","ysbin","updchk","movie","movies","manual","特典","音声特典","バイノーラルドラマ"].contains(&n.as_str()) &&
+        !["files","game","data","setup","disc","disk","update","patch","crack","soundtrack","metadata","readme","sofmap","ソフマップ","wave","wav","mp3","ogg","flac","voice","sound","bgm","se","html","images","image","plugin","plugins","system","save","savedata","config","log","logs","sjisext","ysbin","updchk","rio","movie","movies","manual","特典","音声特典","バイノーラルドラマ"].contains(&n.as_str()) &&
         !Regex::new(r"^(?:\d+[. _-]*)?(?:(?:バイノーラル|ボイス|音声)ドラマ|主題歌音源)$").unwrap().is_match(text)
 }
 fn technical_directory(text:&str)->bool{
-    ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
+    ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","rio","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
 }
 /// One " + …" part of a release name that lists bundled extras ("Drama CD", "OST", "Update 1.01", "Tokuten x6", "予約特典").
 fn extras_segment(part: &str) -> bool {
@@ -111,6 +111,235 @@ fn extras_split(name: &str) -> (String, String) {
     (head, rest)
 }
 fn ascii_code(text: &str) -> bool { let t = text.trim().trim_matches(|c: char| !c.is_alphanumeric()); !t.is_empty() && t.is_ascii() && !t.contains(char::is_whitespace) && t.len() <= 32 }
+// Match the title before interpreting its tail: bonus words can also occur inside a real title.
+// Do not normalize the tail away; numbers, product suffixes and unlicensed quotations are evidence.
+fn member_tail(name:&str,names:&[&str],brands:&[&str])->Option<(String,bool)>{
+    static WRAPPERS:OnceLock<(Regex,Regex,Regex,Regex,Regex)>=OnceLock::new();
+    let (uploader,distribution,brackets,quoted,reading)=WRAPPERS.get_or_init(||(
+        Regex::new(r"^\s*\S+@\d+-\s*(\[\d{6}\])").unwrap(),Regex::new(r"^\s*(?:\(?(?:PD輸入|FN輸入|18禁ゲーム|18禁|一般ゲーム|同人ゲーム)\)\s*)+").unwrap(),
+        Regex::new(r"^(?:\s*\[[^\]]+\])+\s*").unwrap(),Regex::new(r"^([^\s「『」』]*)[「『]([^「『」』]+)[」』](.*)$").unwrap(),Regex::new(r"\([^)]*\)").unwrap()));
+    let s:String=name.nfkc().collect();let s=uploader.replace(&s,"$1");let s=distribution.replace(&s,"");let bracketed=brackets.is_match(&s);let s=brackets.replace(&s,"");let s=s.trim();
+    let variants:Vec<String>=names.iter().flat_map(|n|{let n:String=n.nfkc().collect();vec![normalized(&n),normalized(&reading.replace_all(&n,""))]}).filter(|n|!n.is_empty()).collect();
+    if let Some(c)=quoted.captures(s){
+        let prefix=&c[1];let maker=prefix.is_empty()||prefix=="ゲーム"||brands.iter().any(|b|normalized(b)==normalized(prefix));
+        if maker&&variants.contains(&normalized(&c[2])){return Some((c[3].to_string(),false));}
+    }
+    // A bracketed maker may use '+' as its separator. A '+' after the title still needs a real tail.
+    let distribution_plus=bracketed&&s.starts_with('+');let s=if distribution_plus{s.trim_start_matches('+')}else{s};
+    let mut ends:Vec<_>=s.char_indices().map(|(i,c)|i+c.len_utf8()).collect();ends.reverse();
+    ends.into_iter().find(|&end|variants.contains(&normalized(&s[..end]))).map(|end|{
+        let tail=&s[end..];let title_plus=tail.starts_with('+')&&!s[..end].ends_with(char::is_whitespace)&&!distribution_plus;
+        (tail.to_string(),title_plus)
+    })
+}
+// Balanced Japanese quotations also occur inside song/drama titles.
+fn quoted_end(s:&str)->Option<usize>{
+    let mut ends=Vec::new();
+    for (i,c) in s.char_indices(){match c{
+        '「'=>ends.push('」'),'『'=>ends.push('』'),'」'|'』'=>{if ends.pop()!=Some(c){return None;}if ends.is_empty(){return Some(i+c.len_utf8());}},_=>{}
+    }}None
+}
+fn media_tail(tail:&str)->bool{
+    static TOKEN:OnceLock<Regex>=OnceLock::new();
+    static NOTE:OnceLock<Regex>=OnceLock::new();
+    let token=TOKEN.get_or_init(||Regex::new(r"(?i)^(?:オープニング|エンディング|キャラクター|コンプリート|ミニ|サウンドトラック|サウンド|特別限定版|全店舗|げっちゅ屋|とらのあな|メロンブックス|ソフマップ|演出強化|演出調整|R18版|PlayDRM|認証回避|免认证补丁|特典版|(?:[\p{Han}]{1,4})?(?:システムボイス|テーマファイル)|凹んだときに聴きたい励ましCD|\d+週年スペシャルコンテンツ|ゲーム作中歌全\d+曲のFull_ver_音源|OP/ED|主題歌|ソング|ドラマ|ボイス|マキシ|シングル|サントラ|サウンドトラック|アルバム|ボーカル|ヴォーカル|パッチ|オリジナル|予約|同梱|店舗|特典|限定|壁紙|ヘッダー|アイコン|音声|データ|DLC|(?:special|complete|original|mini|character|soundtrack|sound|track|album|collection|vocal|song|drama|voice|cd|dvd|bonus|manual|wallpaper|patch|update|tokuten|amazon|sofmap|getchu|gamers|toranoana|melonbooks)(?-u:\b)|(?:ver\.?\s*|v)\d[\d.]*|vol\.\s*\d+)").unwrap());
+    let note=NOTE.get_or_init(||Regex::new(r"(?i)^\((?:flac|tak|wav|mp3|ogg|cue|log|rr\d+|mdf|mds|iso|files)(?:\+(?:flac|tak|wav|mp3|ogg|cue|log|rr\d+|mdf|mds|iso|files))*\)").unwrap());
+    let mut s=tail.trim();let mut audio=false;let mut any=false;
+    while !s.is_empty(){
+        s=s.trim_start_matches(|c:char|c.is_whitespace()||matches!(c,'+'|'_'|'-'|'&'|'!'|'.'));if s.is_empty(){return any;}
+        if s.starts_with("(認証回避Patch)"){s=&s["(認証回避Patch)".len()..];any=true;continue;}
+        if let Some(m)=note.find(s){s=&s[m.end()..];any=true;continue;}
+        if audio&&(s.starts_with('「')||s.starts_with('『')){
+            let Some(end)=quoted_end(s)else{return false;};s=&s[end..];continue;
+        }
+        // Performers and track/drama names are payload only immediately after an audio label.
+        if audio&&s.starts_with('/') {return !s[1..].trim().is_empty()&&!s[1..].contains(['「','『','」','』']);}
+        if audio&&s.to_lowercase().starts_with("feat. "){return !s[6..].trim().is_empty()&&!s[6..].contains(['「','『','」','』']);}
+        let Some(m)=token.find(s)else{return false;};let word=m.as_str().to_lowercase();if competing_tail(&word){return false;}
+        if !word.starts_with("vol.")&&word!="dlc"{audio=word.contains("ソング")||word.contains("主題歌")||word.contains("ドラマ")||word=="シングル"||word.ends_with("cd")||["song","drama","cd"].contains(&word.as_str());}
+        // Edition/modifier words alone are outside this rule; require actual bonus/media content.
+        any|=!["special","complete","original","mini","character","オープニング","エンディング","キャラクター","コンプリート","ミニ","特別限定版","全店舗","げっちゅ屋","とらのあな","メロンブックス","ソフマップ","演出強化","演出調整","r18版","playdrm","予約","同梱","店舗","限定"].contains(&word.as_str())&&!word.starts_with("vol.");s=&s[m.end()..];
+    }any||tail.trim().is_empty()
+}
+// Exclusions for the new fallback only; do not apply them to legacy bonus/code support.
+fn competing_tail(tail:&str)->bool{
+    static RE:OnceLock<(Regex,Regex)>=OnceLock::new();
+    let (audio,product)=RE.get_or_init(||(Regex::new(r"(?i)(?:ソング|主題歌|ドラマ|\bsong\b|\bdrama\b|cd)(?:DLC)?\s*(?:vol\.\s*\d+\s*)?[「『]").unwrap(),
+        Regex::new(r"(?i)[「『」』]|ファンディスク|ふぁんでぃすく|アペンド|スピンオフ|外伝|リメイク|ミニゲーム|(?:^|[^a-z])(?:fd|after|remake|append|spin[ -]?off)(?:$|[^a-z])").unwrap()));
+    let mut plain=String::new();let mut copied=0;
+    for m in audio.find_iter(tail){
+        if m.start()<copied{continue;}let start=m.end()-'「'.len_utf8();let mut end=start;
+        while tail[end..].starts_with(['「','『']){let Some(n)=quoted_end(&tail[end..])else{break;};end+=n;}
+        if end>start{plain.push_str(&tail[copied..start]);copied=end;}
+    }
+    plain.push_str(&tail[copied..]);product.is_match(&plain)
+}
+// Edition and descriptive bonus labels are parsed only after a complete title anchor.
+// Keep the rule-1 parser intact: these additions can never veto an earlier admission.
+fn edition_bonus_tail(tail:&str)->bool{
+    static RE:OnceLock<(Regex,Regex,Regex,Regex)>=OnceLock::new();
+    let (edition,note,head,rest)=RE.get_or_init(||(
+        Regex::new(r"(?i)^(?:[ei]初回版|プレミアム(?:エディション|版)|パッケージ販売限定版|特別限定版|特版|ultra\s+edition|R18(?:版)?)(?:$|[\s+(])").unwrap(),
+        Regex::new(r"(?i)^\((?:SF認証\s+)?(?:\d*(?:flac|tak|wav|mp3|ogg|cue|log|mdf|mds|iso|files)|rr\d+|マニュアル)(?:\+(?:\d*(?:flac|tak|wav|mp3|ogg|cue|log|mdf|mds|iso|files)|rr\d+|マニュアル))*\)").unwrap(),
+        Regex::new(r"(?i)^[^「『」』()\[\]+]*?(?:ドラマCD|ボーカルソングCD|マキシシングルCD|CD|ROM|パッチ|DLC|ボイス集|特典(?:ヂスク|ディスク|disk|disc))").unwrap(),
+        Regex::new(r"(?i)^(?:その\d+|スティックポスターデータ|メッセージペーパー|マスターアップ・発売記念イラスト|digital\s+art\s+works|artwork|カウントダウン漫画|ボイス|miniSoundtrack|Soundtrack)").unwrap()));
+    static GUARDS:OnceLock<(Regex,Regex,Regex)>=OnceLock::new();
+    let (identity,disc,code)=GUARDS.get_or_init(||(Regex::new(r"(?i)^(?:\d|if(?:\s|$)|AP\d)").unwrap(),Regex::new(r"(?i)disk|disc|ディスク|ヂスク").unwrap(),Regex::new(r"^\[D_\d+\]$").unwrap()));
+    let mut s=tail.trim();let mut any=false;let mut payload=false;
+    while !s.is_empty(){
+        s=s.trim_start_matches(|c:char|c.is_whitespace()||matches!(c,'+'|'&'|'-'|'_'|'.'|'。'));if s.is_empty(){return any;}
+        if s.starts_with("※自炊"){return any&&s["※自炊".len()..].trim().is_empty();}
+        if !competing_tail(s)&&media_tail(s){return true;}
+        if let Some(m)=note.find(s){s=&s[m.end()..];any=true;continue;}
+        if let Some(m)=edition.find(s){let end=m.end()-usize::from(m.as_str().ends_with('('));s=&s[end..];any=true;continue;}
+        if s.starts_with("[D_"){return code.is_match(s);}
+        if payload&&s.starts_with(['「','『']){let Some(end)=quoted_end(s)else{return false;};s=&s[end..];continue;}
+        // A character label may precede an unlock patch; this does not license arbitrary quoted games.
+        if s.starts_with(['「','『']){
+            let Some(end)=quoted_end(s)else{return false;};let after=s[end..].trim_start();
+            if after.starts_with("エッチ解放パッチ"){s=&after["エッチ解放パッチ".len()..];any=true;continue;}return false;
+        }
+        // A store radio extra has a quoted programme title and an optional character episode label.
+        if let Some(after)=s.strip_prefix("とらのあな限定 "){
+            let after=after.trim_start();if let Some(end)=quoted_end(after){let episode=after[end..].trim();return after[..end].contains("ラジオ")&&(episode.is_empty()||Regex::new(r"^[\p{Han}\p{Hiragana}\p{Katakana}]+編$").unwrap().is_match(episode));}return false;
+        }
+        if let Some(m)=head.find(s){
+            let word=m.as_str();
+            if competing_tail(word)||identity.is_match(word)||disc.find_iter(word).any(|m|!word[..m.start()].contains("特典")){return false;}
+            // DLC numbering describes the extra, never a sequel before the bonus noun.
+            s=&s[m.end()..];if word.to_ascii_lowercase().ends_with("dlc"){s=s.trim_start_matches(|c:char|c.is_ascii_digit());}
+            payload=!disc.is_match(word);any=true;
+            if s.starts_with('(')&&word.ends_with("パッチ"){
+                if let Some(end)=s.find(')'){let reading=&s[1..end];if reading.chars().all(|c| matches!(c,'・'|'ー')||('ア'..='ン').contains(&c)||('一'..='龯').contains(&c)){s=&s[end+1..];}}
+            }
+            continue;
+        }
+        if let Some(m)=rest.find(s){payload=m.as_str().to_ascii_lowercase().ends_with("soundtrack");s=&s[m.end()..];any=true;continue;}
+        return false;
+    }any
+}
+/// Additive fallback for title-anchored media, editions and distribution/quoted wrappers.
+/// Product exclusions belong only here; legacy bonus admission is unchanged.
+pub fn title_anchored_member(member:&str,names:&[&str],brands:&[&str])->bool{
+    // A file named exactly for this work/folder is ancillary regardless of its runtime extension.
+    if let Some((stem,ext))=member.rsplit_once('.'){
+        if (1..=5).contains(&ext.len())&&ext.bytes().all(|c|c.is_ascii_alphanumeric())&&!normalized(stem).is_empty()&&names.iter().any(|n|normalized(stem)==normalized(n)){return true;}
+    }
+    if let Some((tail,title_plus))=member_tail(member,names,brands){
+        if !title_plus&&!competing_tail(&tail)&&media_tail(&tail){return true;}
+    }
+    // These spellings are local to this fallback; do not change ranking or clean_name.
+    let spelling=|s:&str|s.replace('×'," x ");
+    let variants:Vec<String>=names.iter().map(|n|spelling(n)).collect();let refs:Vec<&str>=variants.iter().map(String::as_str).collect();
+    let member:String=spelling(member).nfkc().collect();let member=replace(&member,r"([\p{Han}])\([ァ-ヶー]+\)([\p{Hiragana}\p{Han}])","$1$2");
+    let Some((tail,title_plus))=member_tail(&member,&refs,brands)else{return false;};
+    if title_plus{return false;}
+    // The old prefix matcher consumes punctuation. Restore a bonus quotation/format bracket
+    // before interpreting the new tail; punctuation inside the title is left alone.
+    let end=member.len()-tail.len();let punctuation=member[..end].trim_end_matches(|c:char|!c.is_alphanumeric());
+    let tail=member[punctuation.len()..end].find(['(','[','「','『','&']).map_or(tail.clone(),|i|member[punctuation.len()+i..].to_string());
+    if tail.trim().is_empty()||edition_bonus_tail(&tail){return true;}
+    // A named remaster bundle retains the leading work's identity. Its other members still
+    // undergo review independently; this never admits the bundled game's own name.
+    let bundle=Regex::new(r"^&(.+)フルHDリマスター同梱限定セット版 \(OST & Maxi & スケパッチ付\)$").unwrap();
+    if let Some(c)=bundle.captures(tail.trim()){
+        if names.iter().any(|n|normalized(n).ends_with(&normalized(&c[1]))){return true;}
+    }
+    // A repeated VNDB spelling/translation is still this work. A sequel number may be omitted
+    // from that translation only when the anchored title already carries the same number.
+    if !tail.is_ascii(){return false;}
+    let digits=Regex::new(r"\d+$").unwrap();let tail_key=normalized(&tail);
+    names.iter().any(|name|{
+        let key=normalized(name);if key==tail_key{return true;}
+        let Some(number)=digits.find(&key)else{return false;};
+        key[..number.start()]==tail_key&&names.iter().any(|anchor|normalized(anchor).ends_with(number.as_str())&&member_tail(&member,&[*anchor],brands).is_some())
+    })
+}
+/// Fan-release wrappers require this candidate's own titles/aliases, never folder or release names.
+/// Keep this separate from title_anchored_member, whose legacy callers also supply folder names.
+pub fn fan_release_member(member:&str,candidate:&Value)->bool{
+    // NFKC does not fold these two observed Han variants. This is deliberately not a script converter.
+    let spelling=|s:&str|s.nfkc().map(|c|match c{'墮'=>'堕','處'=>'処',_=>c}).collect::<String>();
+    let names:Vec<String>=candidate_names(candidate).iter().map(|n|spelling(n)).collect();
+    let keys:Vec<String>=names.iter().map(|n|normalized(n)).filter(|n|n.chars().count()>=4).collect();
+    let exact=|s:&str|{let key=normalized(s);keys.contains(&key)};
+    let title=|s:&str|{
+        let s=s.trim();let s=s.strip_prefix('《').and_then(|s|s.strip_suffix('》')).unwrap_or(s);
+        if exact(s){return true;}
+        // Each side must be a complete title of this work; a known first half never licenses the rest.
+        if s.match_indices('-').any(|(i,_)|exact(&s[..i])&&exact(&s[i+1..])){return true;}
+        names.iter().any(|n|{
+            let Some((_,body))=n.split_once('「')else{return false;};let Some(body)=body.strip_suffix('」')else{return false;};
+            !body.contains(['「','」'])&&normalized(body).chars().count()>=8&&normalized(body)==normalized(s)
+        })
+    };
+    static RE:OnceLock<(Regex,Regex,Regex)>=OnceLock::new();
+    let (prefix,label,suffix)=RE.get_or_init(||(
+        Regex::new(r"(?i)^(?:【[^【】]+[组組社]】|\(C\d{2,3}\)|\(同人ゲーム\)|(?:PSP|PSV|NS|Switch|Android|KRKR版|吉里吉里版)\s+)").unwrap(),
+        Regex::new(r"(?i)^(?:ADV|AVG|RPG|SLG|STG|ACT|\d{6}|\d{8}|(?:RJ|VJ|DMM)\d+)$").unwrap(),
+        Regex::new(r"(?i)(?:汉化(?:补丁|版)?|漢化(?:補丁|版)?|KRKR版|吉里吉里版|\s+(?:PSP|PSV|NS|Switch|Android)|\[(?:RJ|VJ|DMM)\d+\]|(?:v(?:er\.?)?\s*)\d+(?:\.\d+)*|\s+\d+(?:\.\d+)+)$").unwrap()));
+    let member=spelling(member);let mut s=member.trim();
+    loop{
+        if title(s){return true;}
+        if let Some(m)=prefix.find(s){s=s[m.end()..].trim_start();continue;}
+        if let Some(after)=s.strip_prefix('['){
+            if let Some((tag,rest))=after.split_once(']'){
+                let maker=candidate["developers"].as_array().into_iter().flatten().any(|d|["name","original"].iter().any(|k|d[*k].as_str().is_some_and(|n|normalized(&spelling(n))==normalized(tag))));
+                if label.is_match(tag)||maker{s=rest.trim_start();continue;}
+            }
+        }
+        break;
+    }
+    while let Some(m)=suffix.find(s){s=s[..m.start()].trim_end();if title(s){return true;}}
+    false
+}
+/// Candidate-only extension of the member fallback. Never feed it folder or release spellings.
+pub fn corroborated_member(member:&str,candidate:&Value,others:&[Value])->bool{
+    let names=candidate_names(candidate);
+    if generic_member(member,&names,candidate){return true;}
+    if member.is_ascii(){
+        static SUFFIX:OnceLock<Regex>=OnceLock::new();
+        let suffix=SUFFIX.get_or_init(||Regex::new(r"(?i)^(?:crack|crk|crak|patch|new|stage\d+|v?\d+(?:\.\d+)*|win|wp|4koma|cg|save|dlc)$").unwrap());
+        let mut tokens:Vec<&str>=member.split(|c:char|matches!(c,'_'|'-'|'&'|' ')).filter(|s|!s.is_empty()).collect();let count=tokens.len();
+        // A bare sequel number (Clannad 2) is not a code/release suffix by itself.
+        let labelled=tokens.iter().rev().take_while(|s|suffix.is_match(s)).any(|s|!s.chars().all(|c|c.is_ascii_digit()));if !labelled{return false;}
+        while tokens.last().is_some_and(|s|suffix.is_match(s)){tokens.pop();}
+        if tokens.is_empty()||tokens.len()==count||tokens.iter().any(|s|!s.chars().all(|c|c.is_ascii_alphanumeric())){return false;}
+        let head=normalized(&tokens.join(" "));if head.len()<4{return false;}
+        if others.iter().filter(|c|c["id"]!=candidate["id"]).any(|c|candidate_names(c).iter().any(|n|normalized(n)==head)){return false;}
+        if names.iter().any(|n|normalized(n)==head){return true;}
+        let titles:Vec<&str>=["title","alttitle"].iter().filter_map(|k|candidate[*k].as_str())
+            .chain(candidate["titles"].as_array().into_iter().flatten().flat_map(|t|["title","latin"].iter().filter_map(|k|t[*k].as_str()))).collect();
+        return titles.iter().filter(|n|n.is_ascii()).any(|n|{
+            let words:Vec<_>=n.split(|c:char|!c.is_ascii_alphanumeric()).filter(|s|!s.is_empty()).collect();
+            if tokens.len()==1{return words.first().is_some_and(|w|w.eq_ignore_ascii_case(tokens[0]));}
+            if tokens.iter().any(|t|t.len()<4){return false;}
+            let mut words=words.into_iter();tokens.iter().all(|t|words.any(|w|w.eq_ignore_ascii_case(t)))
+        });
+    }
+    false
+}
+// Consume generic words only at the edges, leaving unknown Chinese titles and group labels intact.
+fn generic_member(member:&str,names:&[&str],candidate:&Value)->bool{
+    static WORDS:OnceLock<(Regex,Regex)>=OnceLock::new();
+    let (prefix,suffix)=WORDS.get_or_init(||(Regex::new(r"(?i)^(?:全CG存档|存档|存檔|中文版|中文|汉化|漢化|补丁|補丁|CG\b)").unwrap(),
+        Regex::new(r"(?i)(?:全CG存档|存档|存檔|中文版|中文|汉化|漢化|补丁|補丁|\bCG)$").unwrap()));
+    let s:String=member.nfkc().collect();let mut s=s.trim();let mut any=false;
+    while let Some(m)=prefix.find(s){s=s[m.end()..].trim_start_matches(|c:char|c.is_whitespace()||matches!(c,'_'|'-'|'&'));any=true;}
+    if s.is_empty(){return any;}
+    // Only dates and this work's developers may wrap a generic-prefixed title.
+    while s.starts_with('['){
+        let Some(end)=s.find(']')else{return false;};let label=&s[1..end];
+        let date=matches!(label.len(),6|8)&&label.chars().all(|c|c.is_ascii_digit());
+        let maker=candidate["developers"].as_array().into_iter().flatten().any(|d|["name","original"].iter().any(|k|d[*k].as_str().is_some_and(|n|normalized(n)==normalized(label))));
+        if !date&&!maker{return false;}s=s[end+1..].trim_start();
+    }
+    let japanese:Vec<&str>=names.iter().copied().filter(|n|n.chars().any(|c|('\u{3041}'..='\u{30fa}').contains(&c))).collect();
+    let Some((tail,title_plus))=member_tail(s,&japanese,&[])else{return false;};if title_plus{return false;}
+    let mut tail=tail.trim();
+    while let Some(m)=suffix.find(tail){tail=tail[..m.start()].trim_end_matches(|c:char|c.is_whitespace()||matches!(c,'_'|'-'|'&'));any=true;}
+    any&&tail.is_empty()
+}
 /// The name is exactly one of `names` followed only by bonus/crack/patch/artwork words.
 pub fn names_with_extras(name: &str, names: &[&str]) -> bool {
     let (head, _) = extras_split(name); let key = normalized(&head);
@@ -169,6 +398,42 @@ fn corroborated(input: &Input, candidate: &Value) -> bool {
 /// The folder names both a brand and a release date, and neither belongs to this candidate:
 /// a same-named work from another maker (コイカツ！ by ILLUSION is not コイ☆カツ！ by Silhouette).
 fn contradicted(input: &Input, candidate: &Value) -> bool { !input.brands.is_empty() && !input.dates.is_empty() && !corroborated(input, candidate) }
+// Retrieval only: readings, distribution suffixes and bonus labels are not new identity evidence.
+// Keep titles intact so even a newly retrieved base work still faces every existing admission rule.
+fn query_variants(title:&str)->Vec<String>{
+    static RE:OnceLock<(Regex,Regex,Regex,Regex,Regex,Regex)>=OnceLock::new();
+    let (suffix,reading,quoted,bonus,patch,excluded)=RE.get_or_init(||(
+        Regex::new(r"(?i)(?:\s*\[(?:汉化|漢化|简中|簡中|官中)(?:硬盘|硬盤)?版\]|\s*win(?:7|8|10|11)|-PC(?:简中|簡中)(?:\.part\d+)?|\s+Steam(?:官中|简中|簡中)(?:步兵)?版|\s+if\s*エロパッチ対応(?:豪華)?版|[+&]DLC(?:x\d+)?|\s+追加シナリオ(?:DLC)?|特典付き限定版|\s+(?:初回生産限定|特別限定版)|\s+1[+&]2(?:パック)?)$").unwrap(),
+        Regex::new(r"\([\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+\)").unwrap(),
+        Regex::new(r"^([^「『」』]*)[「『]([^「『」』]+)[」』](.*)$").unwrap(),
+        Regex::new(r"(?i)(?:[\s_]+(?:Amazon|トレーダー|ソフマップ)?特典|[\s_]+Amazon特典|[\s_]+立ち絵パッチ|[~〜][^「『」』]*パッチ$|patch$|_tsuika(?:_patch)?$)").unwrap(),
+        Regex::new(r"(?i)^(?:追加パッチ|(?:Amazon|トレーダー|ソフマップ)?特典(?:DLC|ドラマ|ボイス)|パッチ)").unwrap(),
+        Regex::new(r"(?i)BOX|^新增資料夾|^新建文件夹").unwrap()));
+    if excluded.is_match(title)||(!title.chars().any(|c|('\u{3040}'..='\u{30ff}').contains(&c)||('\u{3400}'..='\u{9fff}').contains(&c))&&!title.ends_with("_tsuika")){return vec![];}
+    let mut stripped=title.to_string();
+    while let Some(m)=suffix.find(&stripped){stripped.truncate(m.start());stripped=stripped.trim_end().to_string();}
+    // Never split A+B sets; numbered packs above are search hints only, not single-work evidence.
+    if stripped.contains('+'){return vec![];}
+    let mut bare=String::new();let mut copied=0;
+    for m in reading.find_iter(&stripped){
+        // A reading follows title text directly, not a detached edition/bonus annotation.
+        if stripped[..m.start()].chars().next_back().is_some_and(|c|c.is_alphanumeric())&&!["版","限定","特典","パッチ","追加","同梱"].iter().any(|word|m.as_str().contains(word)){
+            bare.push_str(&stripped[copied..m.start()]);copied=m.end();
+        }
+    }
+    bare.push_str(&stripped[copied..]);
+    let mut variants=vec![bare.clone(),stripped];
+    if let Some(c)=quoted.captures(&bare){
+        // Only the first quotation can be the work, and a maker prefix cannot already contain a bonus word.
+        let prefix=c[1].trim();
+        if (prefix.is_empty()||prefix.chars().all(|c|c.is_ascii_alphanumeric()))&&patch.is_match(c[3].trim_start()){
+            variants.insert(0,c[2].to_string());
+        }
+    }
+    if let Some(m)=bonus.find(&bare){variants.insert(0,bare[..m.start()].trim_end().to_string());}
+    let mut seen=HashSet::new();let key=normalized(title);
+    variants.into_iter().filter(|v|!v.contains(['「','『','」','』'])&&useful(v)&&normalized(v)!=key&&seen.insert(normalized(v))).collect()
+}
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
@@ -188,13 +453,19 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         for part in parts {
             labels(part, &mut brands, &mut dates);
             // Runtime files and media tracks are not competing work identities.
-            if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
+            if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|arc|ws2|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
             let title = clean_name(part);
             if useful(&title) && seen.insert(normalized(&title)) { titles.push(title); }
         }
     }
     titles.truncate(6);
-    let mut queries = titles.iter().take(2).cloned().collect::<Vec<_>>();
+    let variants=titles.first().map(|t|query_variants(t)).unwrap_or_default();
+    // Give the most useful variant the release lookup too, retain the original, then prefer
+    // another variant over a nearly identical member name within the same three-query budget.
+    let mut queries=Vec::new();let mut searched=HashSet::new();
+    for q in variants.iter().take(1).chain(titles.iter().take(1)).chain(variants.iter().skip(1)).chain(titles.iter().skip(1).take(1)){
+        if searched.insert(normalized(q)){queries.push(q.clone());}
+    }
     // Retrieve the tail, but preserve the full input as evidence until developer corroboration.
     if let Some((_,tail))=titles.first().and_then(|s|branded(s)){if useful(&tail)&&!queries.contains(&tail){queries.push(tail);}}
     // A base-title fallback retrieves candidates; ranking always uses the full title.
@@ -204,6 +475,19 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     }
     queries.truncate(3);
     Ok(Input { titles, queries, direct_id: None, brands, dates })
+}
+#[test]fn shiina_rio_members_are_technical_and_do_not_trip_the_short_guard(){
+    for member in ["Rio","SysGraphic1.arc","add01.ws2","Graphic2.ARC","Script.arc","Rio/内部タイトル/readme.txt"]{
+        assert!(prepare(member,&[member.into()]).unwrap().titles.is_empty(),"{member}");
+        if !member.contains('/'){assert!(prepare(member,&[]).unwrap().titles.is_empty(),"{member}");}
+    }
+    let title="虜ノ歪 ～音大卒の元歌姫が響かせる淫らな啼き声～";
+    let hints=["SysGraphic1.arc","add01.ws2","Rio","Graphic2.arc","Script.arc","Rio/内部タイトル/readme.txt"].map(|p|format!("{title}/{p}"));
+    let input=prepare(title,&hints).unwrap();assert_eq!(input.titles,vec![clean_name(title)]);
+    assert_eq!(rank(&input,vec![json!({"id":"v22600","title":title})])[0]["match"]["strength"],"strong");
+    for (source,name) in [("善悪","善悪"),("[Key] AIR","AIR")]{
+        let input=prepare(source,&[]).unwrap();assert_eq!(rank(&input,vec![json!({"id":"v1","title":name,"developers":[{"name":"Key"}]})])[0]["match"]["strength"],"review");
+    }
 }
 fn numbers(text: &str) -> Vec<String> {
     let s: String = text.nfkc().collect();
@@ -515,6 +799,53 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             ("[211029] [ま～まれぇど] PRIMAL×HEARTS 1＋2パック", "PRIMAL×HEARTS 1+2パック"),
             ("『虜ノ誓』追加パッチ「男だらけの運動会パッチ」", "『虜ノ誓』追加パッチ「男だらけの運動会パッチ」"),
         ] { assert_eq!(clean_name(raw),want,"{raw}"); }
+    }
+    #[test]fn retrieval_variants_cover_readings_suffixes_and_outer_bonus_titles(){
+        for (raw,want) in [
+            ("ネコと女子寮（ワカイ）せよ！","ネコと女子寮せよ！"),
+            ("ネコと女子寮(ワカイ)せよ! 特別限定版 + OST","ネコと女子寮せよ!"),
+            ("人妻天国（ひとづまヘブン）～托卵・熟れた子宮に子種を注ぐ～","人妻天国～托卵・熟れた子宮に子種を注ぐ～"),
+            ("言の葉舞い散る夏の風鈴（こえ）","言の葉舞い散る夏の風鈴"),
+            ("炎の孕ませ乳（パイ）ドルマイ★スター学園Z","炎の孕ませ乳ドルマイ★スター学園Z"),
+            ("仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]","仄暗き時の果てより"),
+            ("夏空彼方win10","夏空彼方"),("Ever17-PC简中.part1","Ever17"),
+            ("忍堕とし Steam官中步兵版","忍堕とし"),("仄暗き時の果てより[汉化硬盘版]","仄暗き時の果てより"),
+            ("虜ノ桜 美しく咲き、淫らに散らされる処女たち ifエロパッチ対応版","虜ノ桜 美しく咲き、淫らに散らされる処女たち"),
+            ("虜ノ翼 舞台裏で淫らに踊る処女人形 if エロパッチ対応豪華版","虜ノ翼 舞台裏で淫らに踊る処女人形"),
+            ("俺の上であがく六人の伽女+DLCx8","俺の上であがく六人の伽女"),("虜ノ誓&DLC","虜ノ誓"),
+            ("僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ 追加シナリオDLC","僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ"),
+            ("顔のない月〜待宵の双椿〜 追加シナリオ","顔のない月〜待宵の双椿〜"),
+            ("こあくまちゃんの誘惑っ！特典付き限定版","こあくまちゃんの誘惑っ！"),
+            ("炎の孕ませ乳(パイ)ドルマイ★スター学園Z 初回生産限定","炎の孕ませ乳(パイ)ドルマイ★スター学園Z"),
+            ("ボクが当主になるために今日からメイドとHします 1&2","ボクが当主になるために今日からメイドとHします"),
+            ("PRIMAL×HEARTS 1+2パック","PRIMAL×HEARTS"),
+            ("『虜ノ誓』追加パッチ「男だらけの運動会パッチ」","虜ノ誓"),
+            ("HOOKSOFT「どっちのiが好きですか？」Amazon特典DLC","どっちのiが好きですか？"),
+            ("若葉色のカルテット_立ち絵パッチ","若葉色のカルテット"),("虜ノ姉妹~迷い子の序章パッチ","虜ノ姉妹"),
+            ("高慢妻patch","高慢妻"),("torikonokizuna_tsuika_patch","torikonokizuna"),
+            ("ヤキモチストリーム トレーダー特典ドラマCD 「昔の制服で先輩後輩プレイ」","ヤキモチストリーム"),
+            ("HaremKingdom_Amazon特典_ボイスドラマ「嫁全員で添い寝バトル」","HaremKingdom"),
+        ]{
+            let input=prepare(raw,&[]).unwrap();let want=clean_name(want);
+            assert!(input.queries.contains(&want),"{raw}: {:?}, wanted {want}",input.queries);
+            assert!(input.queries.contains(&clean_name(raw)),"original query: {raw}");assert!(input.queries.len()<=3);
+            assert_eq!(input.titles,vec![clean_name(raw)],"query variants must not become ranking evidence: {raw}");
+            // Query changes alone cannot promote a candidate or affect the final admission decision.
+            let mut old=input.clone();old.queries=vec![clean_name(raw)];let candidates=vec![candidate("v1",&want)];
+            assert_eq!(rank(&input,candidates.clone()),rank(&old,candidates));
+        }
+    }
+    #[test]fn retrieval_variants_preserve_budget_originals_and_identity_guards(){
+        let raw="仄暗き時の果てより（自黯淡之刻的尽头）[汉化硬盘版]";
+        let input=prepare(raw,&[format!("{raw}/別のタイトル"),"第三のタイトル".into()]).unwrap();
+        assert_eq!(input.queries,vec!["仄暗き時の果てより",&clean_name(raw),"仄暗き時の果てより(自黯淡之刻的尽头)"]);
+        for raw in ["新增資料夾","新增資料夾 (2)","12345","Beat Angel Escalayer Reboot","Super Naughty Maid 2","English Titlepatch","English Titlewin10","ゆずソフトペンタBOX","ねこ20周年記念限定BOX","作品甲+作品乙","作品甲+作品乙 特典付き限定版","作品名 (初回限定版)","作品名(初回限定版)","作品名(特典パッチ)","作品名(2)","作品名(After Story)","作品名(Windows 10)","作品名 トレーダー特典ドラマCD 「別の作品」"]{
+            let input=prepare(raw,&[]).unwrap();
+            if raw.contains("トレーダー"){assert_eq!(input.queries[0],"作品名");assert!(!input.queries.iter().any(|q|q=="別の作品"));}
+            else{assert!(query_variants(&clean_name(raw)).is_empty(),"{raw}: {:?}",input.queries);}
+        }
+        let input=prepare("PRIMAL×HEARTS 1+2パック",&[]).unwrap();let results=rank(&input,vec![candidate("v1","PRIMAL×HEARTS")]);
+        assert_ne!(results[0]["match"]["strength"],"strong");
     }
     #[test] fn paths_and_numeric_containers_use_members_without_guessing_store_ids() {
         let p = prepare("1327332", &[r"1327332\[250725][Archive] アンラベル・トリガー -Prelude to War- DL版 (files).rar".into()]).unwrap();
