@@ -59,7 +59,7 @@ async function changeSavedConnection(command:string,args:Record<string,unknown>)
  try{await invoke(command,args);window.location.reload();}
  catch(error){changing=false;epoch++;stopRequested=false;phase(previous.phase,previous.error);if(previous.phase==='offline')scheduleReconnect();throw error;}
 }
-export class ApiRequestError extends Error {constructor(message:string,public status:number){super(revisionConflictText(i18n.t.bind(i18n),message));}}
+export class ApiRequestError extends Error {constructor(message:string,public status:number,public code?:string){super(revisionConflictText(i18n.t.bind(i18n),message));}}
 export async function webAccessTransport(url:string,signal:AbortSignal):Promise<string|undefined>{
  const status=await fetch(`${url}/api/access/status`,{credentials:'include',signal});
  if(status.ok){const value=await status.json();if(value.transport)return value.transport;}
@@ -109,7 +109,7 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
  if((library&&current.library_id&&library!==current.library_id)||(device&&current.device_id&&device!==current.device_id)){collectionChanged();throw readOnly?new CollectionChangedError():new UncertainOperationError();}
  if(library)current.library_id=library;if(device)current.device_id=device;
  if(response.status===401){if(isDesktop){lostConnection();throw new ConnectionLostError();}throw new AuthenticationError();}
- if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status);return data as T;
+ if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status,data.code);return data as T;
 }
 export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};
@@ -119,7 +119,9 @@ export interface Work{added_order?:number;preferred_release_id?:string|null;id:s
  /** Other local cards for the same VNDB work, such as an original and its remake. */same_work?:{id:string;title:string;original_title:string;released:string;vndb_release:string|null}[]}
 export interface Binding{work_id:string;release_id:string|null;role:'main'|'patch'|'extra'|'unknown'}
 export interface Edition{platforms?:string[];origin?:string;notes?:string;id:string;label:string;languages:string[];edition_type:string;released_date:string;vndb_id:string|null;work_ids:string[];revision:number}
-export interface Resource{primary_work_title?:string|null;unknown?:number;auto_match_reason?:string|null;root_id:string;missing:number;unverified:number;revision:number;bindings:Binding[];id:string;title:string;path:string;kind:string;work_id:string|null;release:string;files:number;bytes:number;root_path?:string}
+export interface MatchSuggestion{id:string;resource_id:string;resource_revision:number;works:{vndb_id:string;title:string}[];query:string;rationale:string;source:string;verified:boolean;state:'open'|'confirmed'|'dismissed'|'stale';created:number;updated:number}
+export type SuggestionResult={id:string;state:'confirmed';resource:{id:string;revision:number}}|{id:string;confirmed:false;error:string};
+export interface Resource{suggestion?:MatchSuggestion|null;primary_work_title?:string|null;unknown?:number;auto_match_reason?:string|null;root_id:string;missing:number;unverified:number;revision:number;bindings:Binding[];id:string;title:string;path:string;kind:string;work_id:string|null;release:string;files:number;bytes:number;root_path?:string}
 export interface Root{id:string;path?:string;label:string;role:string;online:boolean;missing:number;unverified:number}
 export interface JobSummary{version:1;new_works:number;new_editions:number;new_resources:number;new_files:number;updated_files:number;unmatched_resources:number;needs_review:number;skipped:number;failed:number}
 export interface Job{summary?:JobSummary|null;reuse_existing?:boolean;automatic?:boolean;id:string;kind:string;state:string;processed:number;discovered:number;bytes:number;errors:number;current_path?:string;message:string;created:number}

@@ -2,6 +2,20 @@ import i18n from 'i18next';
 import {initReactI18next} from 'react-i18next';
 import {zhTW} from './locales/zh-TW';
 const en={
+suggestionBadge:'AI suggestion',
+suggestionVerified:'Verified',
+suggestionUnverified:'Unverified',
+suggestionRationale:'Why this match',
+suggestionConfirm:'Confirm',
+suggestionDismiss:'Dismiss',
+suggestionConfirmVerified:'Confirm all verified',
+suggestionVerifiedCount:'{{count}} verified suggestions',
+suggestionConflict:'This suggestion or resource changed. The list has been reloaded. Review it again.',
+suggestionResults:'Confirmation results',
+suggestionConfirmed:'Confirmed',
+suggestionFailed:'Not confirmed: {{error}}',
+resourceCollection:'Collection',
+
 settings_about:"About",
 settings_about_hint:"Versions and release updates for this Core and client.",
 updateAvailable:"Galroon {{version}} is available",

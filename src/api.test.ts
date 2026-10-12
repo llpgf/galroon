@@ -6,6 +6,11 @@ import {api,computeRules,previewRules,restoreCore,setSession,SessionChangedError
 function deferred<T>(){let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 const first={url:'http://127.0.0.1:41001',token:'synthetic-first',library_id:'library-a',device_id:'device-a',api_min:1,api_max:1},second={url:'http://127.0.0.1:41002',token:'synthetic-second',library_id:'library-a',device_id:'device-a',api_min:1,api_max:1};
 describe('collection connection transitions',()=>{
+ it('preserves suggestion conflict codes without replaying the confirmation',async()=>{
+  const fetch=vi.fn().mockResolvedValue(new Response(JSON.stringify({code:'suggestion_changed',error:'Conflict: resource or suggestion changed.'}),{status:409}));vi.stubGlobal('fetch',fetch);
+  await expect(api('/suggestions/s/confirm',{revision:3})).rejects.toMatchObject({status:409,code:'suggestion_changed'});
+  expect(fetch).toHaveBeenCalledTimes(1);expect(connectionSnapshot().phase).toBe('connected');
+ });
  it('endpoint repair blocks writes, retains context on failure and never reloads a rejected address',async()=>{
   const {updateConnectionEndpoint}=await import('./api');const pending=deferred<void>();native.invoke.mockReturnValue(pending.promise);const reload=vi.fn();vi.stubGlobal('window',{location:{reload}});
   const repair=updateConnectionEndpoint('saved-core','http://127.0.0.1:42000');const checked=expect(repair).rejects.toBe('Identity mismatch');

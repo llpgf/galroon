@@ -1,6 +1,6 @@
 # AI match suggestions
 
-Phase 3a adds Core and MCP support. The review UI is Phase 3c; this increment has no UI changes and does not change automatic matching or ranking.
+Core and MCP record suggestions; the review UI lets a person confirm them. Suggestions do not change automatic matching or ranking.
 
 An assistant investigates an unmatched resource with `list_resources`, `list_resource_files` and `search_vndb`, then calls `suggest_match` with its current resource revision, one or more VNDB work IDs, query and rationale. This creates a proposal only: no work, edition, binding or manual history is created. Use this tool for review cases instead of `match_resource` (which still binds directly).
 
@@ -15,5 +15,11 @@ Schema 47 stores proposals in `match_suggestions`. Only one open suggestion may 
 Owners on loopback and paired desktops on loopback/LAN may create, confirm and dismiss. Web sessions can only read, through the common path-redacting projection. Source attribution derives from the authenticated session (`mcp:<paired device name>` or `owner:owner`); it is not caller-supplied. Normal collection/device identity pins apply.
 
 See [API contract](../development/API_CONTRACT.md#ai-match-suggestions-schema-47-phase-3a) for request and response shapes and [MCP](MCP.md) for assistant setup.
+
+In Organize and Activity issues, open suggestions show an AI suggestion badge marked verified or unverified, all proposed work titles and VNDB IDs, and an expandable rationale. Confirm uses the reviewed resource revision. A changed suggestion shows a conflict and reloads the list for review; it is never retried automatically. Dismiss removes the proposal without binding.
+
+Confirm all verified includes open verified suggestions across all pages, independent of the visible resource filter. Requests are limited to 60 items each and the UI retains each result, including failures, before refreshing. Web sessions have no suggestion write controls. Resources bound to multiple distinct works show “Collection” / 「合集」 on each work page. Work assets already count physical resources and files once, so no count or backend change is needed.
+
+`tests/e2e/us5-suggestions.spec.ts` starts from the intake snapshot and covers confirmation, rescan persistence, verified-only batches, stale conflicts, dismissal and shared resources. The two-work story temporarily groups two correctly identified golden resources through the catalog API, then restores their boundaries before golden grading. It never edits the source files or golden expectations.
 
 Phase 3b separately admits deterministically proven pure compilations automatically (US-5.2 acceptance 1 and 5); see [matching](MATCHING.md#pure-compilations--algorithm-14-us-52). It shares `editions::set_bindings_in`, the binding/history primitive underlying `manual_bindings_in`, but records an automatic match attempt. AI suggestions still require a person to confirm.
