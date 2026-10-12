@@ -84,7 +84,7 @@ Planned by Claude Code and executed by Codex. Do one phase per PR, in order. Do 
 
 ## Phase 3: suggest-only AI matching in the product
 
-Start only after the Phase 2 gate passes. Before you write code, write the user story and add it to `docs/acceptance/USER_STORIES.md`. The owner must approve the new story, so **STOP** until then.
+Start only after the Phase 2 gate passes **and** LAN Core phase 1 PRs 1–4 have merged (see `docs/development/LAN_CORE_PLAN.md` §7, owner decision 2026-10-12). Those PRs settle the Core process refactor, the role × transport × endpoint permission matrix and two schema migrations. `suggest_match` must fit that matrix, and its migration takes the next free number after theirs. Before you write code, write the user story and add it to `docs/acceptance/USER_STORIES.md`. The owner must approve the new story, so **STOP** until then.
 
 Design that the owner has already approved in principle:
 - **AI suggests and the person confirms.** A new MCP tool, `suggest_match(resource_id, revision, vndb_id, query, rationale)`, records a suggestion. It never binds a resource.
@@ -98,7 +98,7 @@ Design that the owner has already approved in principle:
 
 ## Phase 4: turn review cases into matcher rules (repeat as needed)
 
-Start after Phase 1. This phase can run alongside Phases 2 and 3.
+Start after Phase 1. This phase can run alongside Phases 2 and 3, and alongside the LAN Core work: keep each PR to `matching.rs` / `automatch.rs` decision logic, and branch from the latest `master` so it rebases cleanly over LAN Core PR 1, which moves where automatch is started in `lib.rs`.
 
 For one review category at a time, starting with "A different source name needs review" (98):
 1. Group that category's cases from the replay report into patterns, for example "Chinese patch file name", "translated title" or "artbook/OST member with its own title". Write the groups in the PR description, using no more than a few real names.
