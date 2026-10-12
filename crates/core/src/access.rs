@@ -55,9 +55,16 @@ pub async fn response_headers(request:Request,next:Next)->Response{
  h.insert(header::CONTENT_SECURITY_POLICY,header::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
  h.insert(header::X_CONTENT_TYPE_OPTIONS,header::HeaderValue::from_static("nosniff"));h.insert(header::REFERRER_POLICY,header::HeaderValue::from_static("no-referrer"));if api{h.insert(header::CACHE_CONTROL,header::HeaderValue::from_static("no-store"));}response
 }
-pub async fn guard(State(a):State<App>,request:Request,next:Next)->Response{
+pub(crate) async fn transport_host(State(transport):State<crate::Transport>,mut request:Request,next:Next)->Response{
+ request.extensions_mut().insert(transport);
+ // LAN is reserved for a later PR; it must not inherit loopback access.
+ if transport!=crate::Transport::Loopback{return (StatusCode::FORBIDDEN,Json(json!({"error":"Core currently accepts loopback hosts only"}))).into_response();}
  let host=request.headers().get(header::HOST).and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<axum::http::uri::Authority>().ok());
  if !host.is_some_and(|h|matches!(h.host(),"localhost"|"127.0.0.1"|"[::1]")){return (StatusCode::FORBIDDEN,Json(json!({"error":"Core currently accepts loopback hosts only"}))).into_response();}
+ next.run(request).await
+}
+pub async fn guard(State(a):State<App>,request:Request,next:Next)->Response{
+ if request.extensions().get::<crate::Transport>()!=Some(&crate::Transport::Loopback){return (StatusCode::FORBIDDEN,Json(json!({"error":"Core currently accepts loopback hosts only"}))).into_response();}
  let path=request.uri().path();if !path.starts_with("/api/")||matches!(path,"/api/health"|"/api/access/status"){return next.run(request).await;}
  if matches!(path,"/api/access/login"|"/api/access/pair"){if !origin_allowed(request.headers()){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}return next.run(request).await;}
  match authenticate(&a,request.headers()){
@@ -88,7 +95,49 @@ pub async fn logout(State(a):State<App>,h:HeaderMap)->Result<Response,ApiError>{
 
 #[cfg(test)]mod tests{
  use super::*;
+ use tower::{Layer,ServiceExt};
  const PASSWORD:&str="Generated test owner password";
+ #[tokio::test]async fn transport_host_rejects_preflight_static_unknown_and_head(){
+  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();let router=crate::router(app);
+  let error=json!({"error":"Core currently accepts loopback hosts only"}).to_string();
+  for host in [Some("untrusted.invalid"),Some("bad host"),None]{for (method,path) in [("OPTIONS","/api/works"),("GET","/"),("GET","/api/does-not-exist"),("HEAD","/api/health")]{
+   let mut request=Request::builder().method(method).uri(path).header(header::ORIGIN,"http://localhost:1420").header(header::ACCESS_CONTROL_REQUEST_METHOD,"POST");if let Some(host)=host{request=request.header(header::HOST,host);}
+   let response=router.clone().oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN,"{method} {path} {host:?}");assert!(!response.headers().contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+   let headers=response.headers();assert!(headers.contains_key(header::CONTENT_SECURITY_POLICY));assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS],"nosniff");assert_eq!(headers[header::REFERRER_POLICY],"no-referrer");if path.starts_with("/api/"){assert_eq!(headers[header::CACHE_CONTROL],"no-store");}
+   if method=="HEAD"{assert_eq!(response.headers()[header::CONTENT_LENGTH],error.len().to_string());}
+   let body=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();assert_eq!(body.as_ref(),if method=="HEAD"{b""}else{error.as_bytes()});
+  }}
+ }
+ #[tokio::test]async fn loopback_preserves_preflight_health_and_authenticated_method_not_allowed(){
+  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();let token=app.token.clone();let router=crate::router(app);
+  for host in ["localhost:14230","127.0.0.1:14230","[::1]:14230"]{
+   let request=Request::builder().method("OPTIONS").uri("/api/works").header(header::HOST,host).header(header::ORIGIN,"http://localhost:1420").header(header::ACCESS_CONTROL_REQUEST_METHOD,"POST").header(header::ACCESS_CONTROL_REQUEST_HEADERS,"authorization,content-type").body(axum::body::Body::empty()).unwrap();
+   let response=router.clone().oneshot(request).await.unwrap();assert_eq!(response.status(),StatusCode::OK);let headers=response.headers();
+   assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],"http://localhost:1420");assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_CREDENTIALS],"true");assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_METHODS],"GET,POST");assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_HEADERS],"content-type,authorization,x-galroon-library,x-galroon-device");assert_eq!(headers[header::VARY],"origin, access-control-request-method, access-control-request-headers");assert!(axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap().is_empty());
+   for (method,path,status) in [("GET","/api/health",StatusCode::OK),("POST","/api/access/me",StatusCode::METHOD_NOT_ALLOWED)]{
+    let request=Request::builder().method(method).uri(path).header(header::HOST,host).header(header::AUTHORIZATION,format!("Bearer {token}")).body(axum::body::Body::empty()).unwrap();let response=router.clone().oneshot(request).await.unwrap();assert_eq!(response.status(),status);if status==StatusCode::METHOD_NOT_ALLOWED{assert_eq!(response.headers()[header::ALLOW],"GET,HEAD");}
+   }
+  }
+ }
+ #[tokio::test]async fn guard_rejects_requests_without_transport_even_with_owner_auth(){
+  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();let token=app.token.clone();
+  let router=axum::Router::new().route("/api/health",axum::routing::get(||async{"reachable"})).fallback(||async{"reachable"}).layer(axum::middleware::from_fn_with_state(app,guard));
+  for path in ["/api/health","/","/api/does-not-exist"]{
+   let request=Request::builder().uri(path).header(header::HOST,"localhost").header(header::AUTHORIZATION,format!("Bearer {token}")).body(axum::body::Body::empty()).unwrap();let response=router.clone().oneshot(request).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN);let body=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"error":"Core currently accepts loopback hosts only"}));
+  }
+ }
+ #[tokio::test]async fn transport_wrapper_marks_requests_and_preserves_head_error_before_body_stripping(){
+  let service=axum::middleware::from_fn_with_state(crate::Transport::Loopback,transport_host).layer(tower::service_fn(|request:Request|async move{assert_eq!(request.extensions().get::<crate::Transport>(),Some(&crate::Transport::Loopback));Ok::<_,std::convert::Infallible>(StatusCode::OK.into_response())}));
+  let request=Request::builder().uri("/api/health").header(header::HOST,"localhost").extension(crate::Transport::Lan).body(axum::body::Body::empty()).unwrap();assert_eq!(service.clone().oneshot(request).await.unwrap().status(),StatusCode::OK);
+  // Axum strips HEAD bodies after middleware; check the original error here as well.
+  let request=Request::builder().method("HEAD").uri("/api/health").header(header::HOST,"untrusted.invalid").body(axum::body::Body::empty()).unwrap();let response=service.oneshot(request).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN);let body=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"error":"Core currently accepts loopback hosts only"}));
+ }
+ #[tokio::test]async fn reserved_lan_transport_cannot_serve_requests(){
+  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();let router=crate::router_for(app,crate::Transport::Lan);
+  for (method,path) in [("GET","/api/health"),("GET","/"),("OPTIONS","/api/works")]{
+   let request=Request::builder().method(method).uri(path).header(header::HOST,"localhost").header(header::ORIGIN,"http://localhost:1420").header(header::ACCESS_CONTROL_REQUEST_METHOD,"POST").body(axum::body::Body::empty()).unwrap();assert_eq!(router.clone().oneshot(request).await.unwrap().status(),StatusCode::FORBIDDEN);
+  }
+ }
  #[test]fn pairing_is_single_use_expiring_revocable_and_backups_exclude_credentials(){
   let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();setup(&app.db,PASSWORD,false).unwrap();assert!(setup(&app.db,PASSWORD,false).is_err());let code=create_pair(&app.db,"Windows fixture").unwrap();let session=redeem(&app.db,code["code"].as_str().unwrap()).unwrap();assert!(redeem(&app.db,code["code"].as_str().unwrap()).is_err());
   let mut headers=HeaderMap::new();headers.insert(header::AUTHORIZATION,format!("Bearer {}",session["token"].as_str().unwrap()).parse().unwrap());assert_eq!(authenticate(&app,&headers).unwrap().role,"desktop");

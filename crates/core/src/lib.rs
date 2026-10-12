@@ -64,6 +64,8 @@ pub mod multipart;
 pub mod hashing;
 pub mod watching;
 pub mod access;
+mod services;
+pub use services::Services;
 #[cfg(windows)] pub mod local_core;
 use axum::{routing::{get,post},Router,extract::{State,Path,Query},Json,http::{StatusCode,HeaderMap},response::{IntoResponse,Response}};
 use serde_json::{Value,json};
@@ -92,7 +94,9 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     Ok(App{device,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
 }
-pub fn router(app:App)->Router {
+#[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
+pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
+pub fn router_for(app:App,transport:Transport)->Router {
     Router::new().route("/api/health",get(||async{Json(json!({"name":"Galroon","version":env!("CARGO_PKG_VERSION")}))}))
     .route("/api/context",get(context::get).post(context::update))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))
@@ -164,12 +168,25 @@ pub fn router(app:App)->Router {
     .fallback_service(tower_http::services::ServeDir::new(std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.join("web"))).unwrap_or_default()))
     .layer(axum::middleware::from_fn_with_state(app.clone(),access::guard))
     .layer(axum::middleware::from_fn(diagnostics::requests))
-    .layer(axum::middleware::from_fn(access::response_headers))
     .layer(CorsLayer::new().allow_credentials(true).allow_origin(AllowOrigin::list(["http://localhost:1420","http://127.0.0.1:1420","http://tauri.localhost","tauri://localhost"].into_iter().map(|s|s.parse().unwrap()))).allow_methods([axum::http::Method::GET,axum::http::Method::POST]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))
+    .layer(axum::middleware::from_fn_with_state(transport,access::transport_host))
+    .layer(axum::middleware::from_fn(access::response_headers))
     .with_state(app)
 }
 pub async fn serve(app:App,port:u16)->std::result::Result<(),String>{let listener=tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,port)).await.map_err(|e|e.to_string())?;serve_listener(app,listener).await}
-pub async fn serve_listener(app:App,listener:tokio::net::TcpListener)->std::result::Result<(),String>{let _watching=watching::start(app.clone())?;let _matching=automatch::start(app.db.clone());let _smart=smart_updates::start(app.db.clone());axum::serve(listener,router(app)).await.map_err(|e|e.to_string())}
+pub async fn serve_listener(app:App,listener:tokio::net::TcpListener)->std::result::Result<(),String>{let _services=Services::start(app.clone())?;serve_listeners(app,vec![(listener,Transport::Loopback)],std::future::pending()).await}
+/// Serve a shared App until shutdown, then gracefully stop and await every listener.
+/// Does not start background workers: the caller owns one Services for all listeners.
+pub async fn serve_listeners(app:App,listeners:Vec<(tokio::net::TcpListener,Transport)>,shutdown:impl std::future::Future<Output=()>+Send+'static)->std::result::Result<(),String>{
+ let (stop,rx)=tokio::sync::watch::channel(());let mut servers=tokio::task::JoinSet::new();
+ for (listener,transport) in listeners{let router=router_for(app.clone(),transport);let mut stopped=rx.clone();servers.spawn(async move{axum::serve(listener,router).with_graceful_shutdown(async move{let _=stopped.changed().await;}).await.map_err(|e|e.to_string())});}
+ tokio::pin!(shutdown);let mut stopping=false;let mut error=None;
+ while !servers.is_empty(){tokio::select!{
+  _=&mut shutdown,if !stopping=>{stopping=true;let _=stop.send(());}
+  result=servers.join_next()=>{let failure=match result{Some(Ok(Err(e)))=>Some(e),Some(Err(e))=>Some(e.to_string()),_=>None};if let Some(e)=failure{if error.is_none(){error=Some(e);}stopping=true;let _=stop.send(());}}
+ }}
+ match error{Some(e)=>Err(e),None=>Ok(())}
+}
 async fn dashboard(State(a):State<App>,h:HeaderMap)->Result<Value>{auth(&a,&h)?;let c=a.db.lock().unwrap();let count=|table:&str|c.query_row(&format!("SELECT count(*) FROM {table}"),[],|r|r.get::<_,i64>(0)).unwrap_or(0);let bytes:i64=c.query_row("SELECT coalesce(sum(size),0) FROM files WHERE availability='present'",[],|r|r.get(0))?;let unassigned:i64=c.query_row("SELECT count(*) FROM resources r WHERE work_id IS NULL AND EXISTS(SELECT 1 FROM resource_files rf WHERE rf.resource_id=r.id)",[],|r|r.get(0))?;Ok(Json(json!({"works":c.query_row("SELECT count(*) FROM works WHERE merged_into IS NULL",[],|r|r.get::<_,i64>(0))?,"revision":c.query_row("SELECT revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get::<_,i64>(0))?,"files":count("files"),"resources":c.query_row("SELECT count(*) FROM resources r WHERE EXISTS(SELECT 1 FROM resource_files rf WHERE rf.resource_id=r.id)",[],|r|r.get::<_,i64>(0))?,"roots":count("roots"),"bytes":bytes,"unassigned":unassigned})))}
 async fn roots(State(a):State<App>,h:HeaderMap)->Result<Value>{auth(&a,&h)?;let mut rows={let c=a.db.lock().unwrap();let mut s=c.prepare("SELECT rt.id,rt.path,rt.label,rt.role,(SELECT count(*) FROM files f WHERE f.root_id=rt.id AND f.availability='missing'),(SELECT count(*) FROM files f WHERE f.root_id=rt.id AND f.availability='unverified') FROM roots rt ORDER BY label")?;let rows=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"label":r.get::<_,String>(2)?,"role":r.get::<_,String>(3)?,"missing":r.get::<_,i64>(4)?,"unverified":r.get::<_,i64>(5)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;rows};for row in &mut rows{row["online"]=json!(std::fs::metadata(row["path"].as_str().unwrap()).map(|m|m.is_dir()).unwrap_or(false));}Ok(Json(json!(rows)))}
 async fn add_root(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let p=v["path"].as_str().ok_or(ApiError("Choose a source folder".into()))?;let p=scan::canonical(std::path::Path::new(p))?;if !p.is_dir(){return Err(ApiError("Source must be a folder".into()));}let label=v["label"].as_str().filter(|x|!x.is_empty()).unwrap_or("Source");let c=a.db.lock().unwrap();let rid=db::id();c.execute("INSERT INTO roots(id,path,label) VALUES(?1,?2,?3)",params![rid,p.to_string_lossy(),label])?;watching::ensure(&c)?;Ok(Json(json!({"id":rid})))}
