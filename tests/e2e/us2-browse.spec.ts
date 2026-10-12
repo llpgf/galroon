@@ -83,3 +83,49 @@ test('US-2.3 每部已配作品頁：封面、標題、品牌、發售日、本�
   console.log(problems.join('\n'));
   expect(problems).toEqual([]);
 });
+
+test('US-2.5 背景收藏更新保留捲動位置與卡片；改篩選才回頂端', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openApp(page, core);
+  await nav(page, 'library');
+  await expect(results(page).nth(12)).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await results(page).nth(12).evaluate(element => window.scrollTo(0, window.scrollY + element.getBoundingClientRect().top - 150));
+  // Let the scroll event and sticky header settle before taking the reference position.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  const firstVisible = () => page.locator('.book-grid .book').evaluateAll(cards => {
+    const top = document.querySelector('.collection-browser-tools')!.getBoundingClientRect().bottom;
+    return cards.find(card => { const rect = card.getBoundingClientRect(); return rect.bottom > top && rect.top < innerHeight; })?.getAttribute('data-work-id');
+  });
+  const id = await firstVisible();
+  expect(id).toBeTruthy();
+  const visible = page.locator(`.book[data-work-id="${id}"]`);
+  // This marker survives only if React retains the actual card node across the refresh.
+  await visible.evaluate(element => element.setAttribute('data-scroll-probe', 'retained'));
+  const y = await page.evaluate(() => window.scrollY);
+  expect(y).toBeGreaterThan(500);
+  const before = await core.api<{ revision: number; favorite: boolean }>(`/works/${id}`);
+  try {
+    await core.api(`/works/${id}`, { revision: before.revision, favorite: !before.favorite });
+    // Polling /changes runs every 10 seconds; the rendered heart proves the refresh completed.
+    await expect(visible.locator('.cover-heart')).toHaveCount(before.favorite ? 0 : 1, { timeout: 30_000 });
+    expect(Math.abs(await page.evaluate(() => window.scrollY) - y)).toBeLessThanOrEqual(3);
+    expect(await firstVisible()).toBe(id);
+    await expect(visible).toHaveAttribute('data-scroll-probe', 'retained');
+    await expect(visible).toBeInViewport();
+
+    // Dispatch without Playwright scrolling the filter into view, so the app must reset scroll itself.
+    await page.locator('.collection-tags').getByRole('button', { name: T('favorite'), exact: true }).evaluate(element => (element as HTMLButtonElement).click());
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    await expect(page.locator('.collection-tags').getByRole('button', { name: T('favorite'), exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(async () => {
+      const ids = await results(page).evaluateAll(cards => cards.map(card => card.getAttribute('data-work-id')));
+      const favorites = (await core.api<Array<{ id: string; favorite: boolean }>>('/works')).filter(work => work.favorite).map(work => work.id);
+      return ids.length === Math.min(60, favorites.length) && ids.every(id => favorites.includes(id!));
+    }).toBe(true);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  } finally {
+    const current = await core.api<{ revision: number }>(`/works/${id}`);
+    await core.api(`/works/${id}`, { revision: current.revision, favorite: before.favorite });
+  }
+});
