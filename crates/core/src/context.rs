@@ -43,9 +43,9 @@ pub fn device(dir:&Path)->R<Device>{
 }
 pub fn snapshot(a:&App,role:&str)->R<Value>{
  let library=library(&*a.db.lock().map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
- Ok(json!({"library":library,"core":{"device":a.device,"instance_id":a.instance_id,"version":env!("CARGO_PKG_VERSION"),"location":"local","transport":"loopback"},"api":{"min":1,"max":1},"capabilities":{"collection_paging":true,"work_scoped_reads":true,"edition_membership_edit":true,"resource_grouping_scoped":true,"resource_members_paging":true,"resource_preview_paging":true,"read_catalog":true,"edit_catalog":role!="web","manage_access":role=="owner","file_operations":role!="web","acquire_on_core":role!="web","remote_acquisition":false,"job_lifetime":"core_process","source_availability":"per_source","provider_status":"per_request"}}))
+ Ok(json!({"library":library,"core":{"device":a.device,"instance_id":a.instance_id,"version":env!("CARGO_PKG_VERSION"),"location":"local","transport":"loopback"},"api":{"min":1,"max":1},"capabilities":{"lan_access":true,"collection_paging":true,"work_scoped_reads":true,"edition_membership_edit":true,"resource_grouping_scoped":true,"resource_members_paging":true,"resource_preview_paging":true,"read_catalog":true,"edit_catalog":role!="web","manage_access":role=="owner","file_operations":role!="web","acquire_on_core":role!="web","remote_acquisition":false,"job_lifetime":"core_process","source_availability":"per_source","provider_status":"per_request"}}))
 }
-pub async fn get(State(a):State<App>,h:HeaderMap)->Result<Json<Value>,ApiError>{let who=crate::access::authenticate(&a,&h)?;Ok(Json(snapshot(&a,&who.role)?))}
+pub async fn get(State(a):State<App>,axum::Extension(transport):axum::Extension<crate::Transport>,h:HeaderMap)->Result<Json<Value>,ApiError>{let who=crate::access::authenticate(&a,&h)?;let mut value=snapshot(&a,&who.role)?;value["core"]["transport"]=json!(match transport{crate::Transport::Loopback=>"loopback",crate::Transport::Lan=>"lan"});Ok(Json(value))}
 #[derive(Deserialize)]pub struct Rename{revision:i64,name:String}
 pub async fn update(State(a):State<App>,h:HeaderMap,Json(v):Json<Rename>)->Result<Json<Library>,ApiError>{let who=crate::access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Local owner access required".into()));}Ok(Json(rename(&a.db,v.revision,&v.name)?))}
 
