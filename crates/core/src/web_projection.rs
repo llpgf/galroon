@@ -6,6 +6,9 @@ use crate::App;
 pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/health",WebAccess::Unchanged),
  ("/api/context",WebAccess::Unchanged),
+ ("/api/updates",WebAccess::Unchanged),
+ ("/api/updates/check",WebAccess::Deny),
+ ("/api/updates/settings",WebAccess::Deny),
  ("/api/access/status",WebAccess::Unchanged),
  ("/api/access/me",WebAccess::Unchanged),
  ("/api/access/pairing-codes",WebAccess::Deny),

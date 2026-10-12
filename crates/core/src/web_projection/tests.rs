@@ -48,9 +48,10 @@ pub(crate) async fn request(a:&App,transport:Transport,role:&str,credential:&str
 #[test]fn classification_covers_the_actual_router(){
  // Read the actual .route registrations, including chained .get/.head methods. No second
  // hand-maintained list of readable endpoints can silently drift with the router.
- let source=include_str!("../lib.rs");let mut actual=std::collections::BTreeSet::new();let readable=regex::Regex::new(r"\b(get|head)\s*\(").unwrap();
- for registration in source.split(".route(").skip(1){let path=registration.split('"').nth(1).unwrap();let handler=registration.split(".route(").next().unwrap().split(".fallback_service").next().unwrap();if readable.is_match(handler){actual.insert(path);}}
- let listed=WEB_ROUTES.iter().map(|(path,_)|*path).collect::<std::collections::BTreeSet<_>>();assert_eq!(WEB_ROUTES.len(),listed.len());assert_eq!(actual,listed);
+ // Explicitly denied mutation routes may also be listed, but must be registered.
+ let source=include_str!("../lib.rs");let mut actual=std::collections::BTreeSet::new();let mut registered=std::collections::BTreeSet::new();let readable=regex::Regex::new(r"\b(get|head)\s*\(").unwrap();
+ for registration in source.split(".route(").skip(1){let path=registration.split('"').nth(1).unwrap();let handler=registration.split(".route(").next().unwrap().split(".fallback_service").next().unwrap();registered.insert(path);if readable.is_match(handler){actual.insert(path);}}
+ let listed=WEB_ROUTES.iter().map(|(path,_)|*path).collect::<std::collections::BTreeSet<_>>();assert_eq!(WEB_ROUTES.len(),listed.len());assert!(actual.is_subset(&listed));for path in listed.difference(&actual){assert!(registered.contains(path),"Unregistered route: {path}");assert_eq!(access(path),WebAccess::Deny,"Non-readable route: {path}");}
 }
 #[tokio::test]async fn every_route_is_path_safe_for_web_on_both_transports(){
  let(_t,a,desktop,cookie)=fixture();
