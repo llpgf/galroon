@@ -1,5 +1,21 @@
 # VNDB matching improvement — 2026-09-06
 
+## Replay
+
+Replay stored VNDB candidates without network access or the source files:
+
+```sh
+cargo run --offline --release -p galroon-core --example match_replay -- \
+  test-output/replay/library.sqlite --out test-output/replay/replay-a6.json \
+  --baseline test-output/replay/baseline-a5.json --answers test-output/replay/nas-answers.json
+```
+
+Only the database and `--out` are required. The tool opens SQLite read-only and uses the latest `match_items.evidence` by `jobs.rowid` for every resource, including bound resources. It discards old candidate scores and shares the live matcher's catalog hints, 31-member cap, bundle handling, manual confirmation checks and final review decision. Reports include the algorithm version, candidate identity/strength/reason, ambiguity, review reason and stored outcome. A candidate counts as strong only when the final decision admits it; a strong score with a conflicting source name still counts as review.
+
+`--baseline` compares reports for the same resource ids and paths: **gained** (review → strong), **lost** (strong → review), **changed** (strong → another VNDB id), then **reason changed** for remaining decision/explanation changes. `--answers` accepts `{ "relative/path": { "vndb": "v123", "source": "user" } }` (also source `auto-2026-10-11`) and counts **agree**, **false** and **missing**; absent resources with answers count as missing. Paths must be unique across roots when using an answer key. Exit status is 1 for any changed identity or false match, 2 for input/runtime errors, otherwise 0. The JSON report is written even when a match alarm fires.
+
+Replay only sees candidates stored in the earlier run. Changes that would send different VNDB queries need a live run to confirm. Keep real-library reports and answer keys private, outside version control (normally under `~/GalroonTestData/`; the gitignored `test-output/replay/` is used for sandbox handoff). Automatically generated answers record prior outcomes, not individual owner verification.
+
 ## Algorithm v4 — acceptance stories (2026-10-11)
 
 Driven by docs/acceptance/USER_STORIES.md and the reviewed answer key tests/e2e/golden/sandbox_data.json (37/37 correct, zero false matches on sandbox_data).

@@ -67,8 +67,11 @@ fn explicit_retry(c:&Connection)->R<Option<String>>{sql(c.query_row("SELECT id F
 struct Snapshot{revision:i64,fingerprint:String,input:matching::Input}
 // A name that cleans to nothing (only a date and brand) is left for review rather than failing the whole job.
 fn snapshot(c:&Connection,rid:&str)->R<Option<Snapshot>>{
+    catalog_snapshot(c,rid,false)
+}
+fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapshot>>{
     let (title,path,revision,primary):(String,String,i64,Option<String>)=sql(c.query_row("SELECT title,relative_path,revision,work_id FROM resources WHERE id=?1",[rid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
-    if primary.is_some()||!editions::bindings(c,rid)?.is_empty(){return Ok(None);}
+    if !include_bound&&(primary.is_some()||!editions::bindings(c,rid)?.is_empty()){return Ok(None);}
     // Catalogs scanned before system entries were skipped can still hold macOS metadata such as ._DAV.
     if std::path::Path::new(&path).components().any(|p|crate::scan::system_entry(&p.as_os_str().to_string_lossy())){return Ok(None);}
     let mut hash=Sha256::new();hash.update(path.as_bytes());hash.update(revision.to_le_bytes());
@@ -129,6 +132,18 @@ fn with_confirmation(c:&Connection,rid:&str,input:&matching::Input,response:&Val
     result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
 }
 pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapshot(c,rid)?.ok_or("Resource already matched")?;with_confirmation(c,rid,&snap.input,response)}
+/// Re-evaluate recorded candidates, including bound resources, using catalog evidence only. Never writes.
+pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
+    let Some(snap)=catalog_snapshot(c,rid,true)?else{return Ok(None);};let mut stored=response.clone();
+    if !stored.is_object(){return Err("Recorded response must be an object".into());}
+    if let Some(rows)=stored.get_mut("results"){
+        for row in rows.as_array_mut().ok_or("Recorded results must be an array")?{if let Some(o)=row.as_object_mut(){o.remove("match");}}
+    }
+    let mut result=with_confirmation(c,rid,&snap.input,&stored)?;
+    // An absent search is different from a completed search with no candidates.
+    if stored.get("results").is_none(){result.as_object_mut().unwrap().remove("results");result["decision"]=json!({"reason":review_reason(&result)});}
+    Ok(Some(result))
+}
 
 #[cfg(test)] mod tests {
     use super::*;
@@ -148,6 +163,24 @@ pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapsh
     fn response(input:matching::Input,rows:Vec<Value>)->Value {json!({"results":matching::rank(&input,rows),"titles":input.titles,"incomplete":false})}
     fn exact(input:matching::Input)->Value{response(input,vec![json!({"id":"v4","title":"Clannad"})])}
     fn scalar(db:&Db,query:&str)->i64{db.lock().unwrap().query_row(query,[],|r|r.get(0)).unwrap()}
+    #[test]fn replay_includes_bound_resources_and_shares_live_decisions_without_writes(){
+        let(_t,db)=fixture(&["Clannad","Unknown title","Clannad Anniversary Collection"]);
+        db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('w','Clannad','Clannad','v4')",[]).unwrap();
+        editions::bind_primary(&db,"r0","w","Fixture",1).unwrap();let c=db.lock().unwrap();
+        // A split bundle child must not inherit the collection's title.
+        c.execute("UPDATE resources SET relative_path='Unrelated Bundle/Clannad.rar' WHERE id='r0'",[]).unwrap();
+        c.execute("UPDATE files SET relative_path='Unrelated Bundle/Clannad.rar' WHERE id='r0'",[]).unwrap();
+        c.execute_batch("PRAGMA query_only=ON").unwrap();let changes=c.total_changes();
+        let stale=json!({"results":[{"id":"v4","title":"Clannad","match":{"strength":"review","ambiguous":true}}],"titles":["Stale title"],"incomplete":false});
+        assert!(snapshot(&c,"r0").unwrap().is_none());assert!(explain(&c,"r0",&stale).is_err());
+        let bound=replay(&c,"r0",&stale).unwrap().unwrap();assert_eq!(eligible(&bound).unwrap()["id"],"v4");assert_eq!(bound["titles"],json!(["Clannad"]));
+        let unmatched=replay(&c,"r1",&stale).unwrap().unwrap();assert_eq!(unmatched,explain(&c,"r1",&stale).unwrap());assert!(eligible(&unmatched).is_none());
+        let compilation=json!({"results":[{"id":"v5","title":"Other Work","release_matches":[{"id":"r1","title":"Clannad Anniversary Collection"}]},{"id":"v4","title":"Clannad","release_matches":[{"id":"r1","title":"Clannad Anniversary Collection"}]}],"incomplete":false});
+        let result=replay(&c,"r2",&compilation).unwrap().unwrap();assert_eq!(result,explain(&c,"r2",&compilation).unwrap());assert_eq!(eligible(&result).unwrap()["id"],"v4");
+        assert_eq!(replay(&c,"r1",&json!({})).unwrap().unwrap()["decision"]["reason"],"Not checked against VNDB yet.");
+        let mut partial=stale.clone();partial["incomplete"]=json!(true);assert!(eligible(&replay(&c,"r0",&partial).unwrap().unwrap()).is_none());
+        assert_eq!(c.total_changes(),changes);
+    }
     #[test]fn automatic_matching_is_on_until_turned_off(){
         let(_t,db)=fixture(&["Clannad"]);let c=db.lock().unwrap();assert!(enabled(&c).unwrap());
         c.execute("INSERT INTO settings(key,value) VALUES('auto_match_enabled','0')",[]).unwrap();assert!(!enabled(&c).unwrap());
