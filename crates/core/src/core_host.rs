@@ -4,7 +4,7 @@ use serde::{Serialize,Deserialize};
 use crate::{App,Services};
 type R<T>=Result<T,String>;
 #[derive(Clone,Serialize,Deserialize)]pub struct Session{pub library_id:String,pub device_id:String,pub api_min:u32,pub api_max:u32,pub url:String,pub token:String,pub instance_id:String,pub pid:u32}
-pub struct CoreHost{pub app:App,pub session:Session}
+pub struct CoreHost{pub app:App,pub session:Session,lan:Vec<crate::Listener>}
 pub struct RunningCore{app:App,services:Services,http:tokio::task::JoinHandle<R<()>>,stop:tokio::sync::oneshot::Sender<()>}
 impl CoreHost{
  pub async fn initialize(dir:PathBuf,device_dir:&Path,port:u16)->R<(Self,tokio::net::TcpListener)>{
@@ -12,11 +12,13 @@ impl CoreHost{
   let library=crate::context::library(&*app.db.lock().map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
   let listener=tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,port)).await.map_err(|e|if port==0{e.to_string()}else{format!("Cannot bind loopback port {port} (127.0.0.1): {e}")})?;
   let session=Session{library_id:library.id,device_id:app.device.id.clone(),api_min:1,api_max:1,url:format!("http://127.0.0.1:{}",listener.local_addr().map_err(|e|e.to_string())?.port()),token:app.token.clone(),instance_id:app.instance_id.clone(),pid:std::process::id()};
-  Ok((Self{app,session},listener))
+  let mut listeners=crate::configured_listeners(&app,listener).await?;let crate::Listener::Loopback(listener)=listeners.remove(0)else{unreachable!()};
+  Ok((Self{app,session,lan:listeners},listener))
  }
  pub fn start(self,listener:tokio::net::TcpListener)->R<RunningCore>{
   let services=Services::start(self.app.clone())?;let (stop,stopped)=tokio::sync::oneshot::channel();let app=self.app.clone();
-  let http=tokio::spawn(async move{crate::serve_listeners(app,vec![(listener,crate::Transport::Loopback)],async{let _=stopped.await;}).await});
+  let mut listeners=self.lan;listeners.insert(0,crate::Listener::Loopback(listener));
+  let http=tokio::spawn(async move{crate::serve_tls_listeners(app,listeners,async{let _=stopped.await;}).await});
   Ok(RunningCore{app:self.app,services,http,stop})
  }
 }
