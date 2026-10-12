@@ -313,7 +313,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 ## 6. 相容性
 
 - API 版本維持 `1`。`/api/context` 新增 `capabilities.lan_access`，並依實際連線方式回報 `transport`。
-- 需要 schema 遷移的有：`pairing_codes.role`（4.4）、`catalog_change_seq`（4.9）。都走既有的遷移流程並附測試；兩者若在不同 PR 平行開發，合併前要協調遷移編號。網路設定放裝置目錄，不進 schema。
+- 需要 schema 遷移的有：`pairing_codes.role`（4.4）、`catalog_change_seq`（4.9）。都走既有的遷移流程並附測試；兩者若在不同 PR 平行開發，合併前要協調遷移編號。匹配計畫（`docs/plans/2026-10-12-matching-accuracy-and-ai.md`）第 3 階段的 `match_suggestions` 遷移與 `suggest_match` MCP 寫入端點排在本計畫 PR 1 到 PR 4 合併之後，使用其後的下一個遷移編號，並納入 4.3 的權限矩陣。網路設定放裝置目錄，不進 schema。
 - **契約例外**：`web` 角色的回應會移除絕對路徑，部分端點改為拒絕 `web`（4.8）。這是有意的契約變更，記錄在 `API_CONTRACT.md`。
 - `connections.json` 新增 `fingerprint`。舊的項目沒有這個欄位，只能連 loopback。
 - 沒開區網模式時：**既有行為與 API 契約的回歸測試全部通過**，而且不會開任何新的監聽埠。（不要求回應逐位元組相同，因為回應本來就含隨機 request ID 和 instance ID。）
