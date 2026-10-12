@@ -34,7 +34,8 @@ impl Drop for Services{fn drop(&mut self){self.request_stop();}}
    let mut ready=[0;25];tokio::time::timeout(std::time::Duration::from_secs(3),stream.read_exact(&mut ready)).await.unwrap().unwrap();assert_eq!(&ready,b"HTTP/1.1 100 Continue\r\n\r\n");pending.push(stream);
   }
   stop.send(()).unwrap();
-  tokio::time::timeout(std::time::Duration::from_secs(3),async{for address in addresses{while tokio::net::TcpStream::connect(address).await.is_ok(){tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}}).await.unwrap();
+  // Windows retries a refused connect for about two seconds, so allow several attempts.
+  tokio::time::timeout(std::time::Duration::from_secs(20),async{for address in addresses{while tokio::net::TcpStream::connect(address).await.is_ok(){tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}}).await.unwrap();
   for mut stream in pending{
    assert!(!server.is_finished(),"Server returned before all requests drained");stream.write_all(body.as_bytes()).await.unwrap();let mut response=String::new();tokio::time::timeout(std::time::Duration::from_secs(3),stream.read_to_string(&mut response)).await.unwrap().unwrap();assert!(response.starts_with("HTTP/1.1 200 OK\r\n"),"{response}");
   }
