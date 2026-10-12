@@ -1,3 +1,5 @@
+pub mod catalog_changes;
+pub mod web_projection;
 pub mod resource_page;
 pub mod resource_members_page;
 pub mod edition_options;
@@ -99,6 +101,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     db.lock().map_err(|e|e.to_string())?.execute("DELETE FROM settings WHERE key='local_token'",[]).map_err(|e|e.to_string())?;
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
+    issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
     Ok(App{device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
@@ -118,6 +121,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/access/pairing-codes",get(access::pairing_codes)).route("/api/access/pairing-codes/{id}/revoke",post(access::revoke_pairing_code))
     .route("/api/access/network",get(access::network_show).post(access::network_set))
     .route("/api/access/devices",get(access::devices)).route("/api/access/devices/{id}/revoke",post(access::revoke))
+    .route("/api/changes",get(catalog_changes::read))
     .route("/api/dashboard",get(dashboard)).route("/api/roots",get(roots).post(add_root))
     .route("/api/roots/{id}/watch",get(watch_status).post(configure_watch))
     .route("/api/roots/{id}/remap/preview",post(preview_root_remap)).route("/api/roots/{id}/remap",post(remap_root))

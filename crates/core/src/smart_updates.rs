@@ -60,7 +60,7 @@ fn plan(c:&mut Connection,online:&BTreeMap<String,bool>,stopped:&AtomicBool,now:
 }
 fn offlock(db:&crate::db::Db,stopped:&AtomicBool,before_publish:&dyn Fn())->R<bool>{
  if stopped.load(Ordering::SeqCst){return Ok(false);}
- let (path,roots)={let Ok(c)=db.try_lock()else{return Ok(false);};let path=c.path().ok_or("Catalog path unavailable")?.to_string();
+ let (path,roots)={let Ok(c)=db.try_lock()else{return Ok(false);};crate::issues::refresh(&c)?;let path=c.path().ok_or("Catalog path unavailable")?.to_string();
  let mut q=c.prepare("SELECT id,path FROM roots").map_err(|e|e.to_string())?;let roots=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;(path,roots)};
  let online=roots.into_iter().map(|(id,path)|(id,std::fs::metadata(path).is_ok_and(|m|m.is_dir()))).collect();
  let now=crate::db::now();let Some((id,list_revision,revision))=({let Ok(mut c)=db.try_lock()else{return Ok(false);};plan(&mut c,&online,stopped,now)?})else{return Ok(false);};
