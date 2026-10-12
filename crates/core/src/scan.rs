@@ -46,10 +46,11 @@ pub(crate) fn enqueue(c:&rusqlite::Connection,spec:ScanSpec,recursive:bool,autom
     if crate::backup::protected_path(&start){return Err("Catalog backup folders cannot be scanned as game sources".into());}
     crate::plans::validate_chain(&root.join(&spec.scope))?;
     crate::roots::require_idle(&c)?;
+    let start=utf8_path(&start)?;
     let jid=id();
     let mut payload=json!(spec);payload["recursive"]=json!(recursive);payload["automatic"]=json!(automatic);
     c.execute("INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES(?1,'scan','queued',?2,?3,?3)",params![jid,payload.to_string(),now()]).map_err(|e|e.to_string())?;
-    c.execute("INSERT INTO frontier(job_id,path) VALUES(?1,?2)",params![jid,start.to_string_lossy()]).map_err(|e|e.to_string())?;
+    c.execute("INSERT INTO frontier(job_id,path) VALUES(?1,?2)",params![jid,start]).map_err(|e|e.to_string())?;
     Ok(jid)
 }
 fn state(db:&Db,jid:&str)->String { db.lock().ok().and_then(|c|c.query_row("SELECT state FROM jobs WHERE id=?1",[jid],|r|r.get(0)).ok()).unwrap_or_else(||"failed".into()) }
@@ -58,7 +59,8 @@ fn stop(db:&Db,jid:&str)->bool {
     if s=="running" {return false;}
     if let Ok(c)=db.lock() {let target=if s=="pausing" {"paused"} else if s=="cancelling" {"cancelled"} else {&s};let _=c.execute("UPDATE jobs SET state=?2,updated=?3 WHERE id=?1",params![jid,target,now()]);} true
 }
-fn skipped(db:&Db,jid:&str,path:&Path)->Result<(),String>{let c=db.lock().map_err(|e|e.to_string())?;crate::job_summary::record(&c,jid,"skipped",&path.to_string_lossy(),"yes").map_err(|e|e.to_string())}
+fn utf8_path(path:&Path)->Result<&str,String>{path.to_str().ok_or_else(||format!("File name is not valid UTF-8 and was skipped: {}",path.display()))}
+fn skipped(db:&Db,jid:&str,path:&Path)->Result<(),String>{let c=db.lock().map_err(|e|e.to_string())?;crate::job_summary::record(&c,jid,"skipped",utf8_path(path)?,"yes").map_err(|e|e.to_string())}
 fn error(db:&Db,jid:&str,path:&str,message:&str) {
     crate::diagnostics::record("error","scan.error",message,Some(jid));
     if let Ok(mut c)=db.lock(){if let Ok(tx)=c.transaction(){
@@ -96,20 +98,21 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             if stop(db,jid) {return Ok(());}
             let entry=match result {Ok(e)=>e,Err(e)=>{complete=false;error(db,jid,&dir,&format!("{dir}: {e}"));continue}};
             let path=entry.path();
-            let name=entry.file_name().to_string_lossy().to_string();
             // Even unreadable or excluded children were seen. Never infer their absence.
             present_children.insert(entry.file_name());
+            let full=match utf8_path(&path){Ok(p)=>p,Err(message)=>{complete=false;error(db,jid,&dir,&message);continue;}};
+            let filename=entry.file_name();let name=filename.to_str().ok_or("Invalid UTF-8 file name")?;
             if crate::backup::protected_path(&path){skipped(db,jid,&path)?;continue;}
-            if system_entry(&name) {skipped(db,jid,&path)?;continue;}
-            let rel=path.strip_prefix(&root).map_err(|e|e.to_string())?.to_string_lossy().to_string();
+            if system_entry(name) {skipped(db,jid,&path)?;continue;}
+            let rel=utf8_path(path.strip_prefix(&root).map_err(|e|e.to_string())?)?.to_string();
             if spec.exclude.iter().any(|ex|Path::new(&rel).starts_with(Path::new(ex))) {skipped(db,jid,&path)?;continue;}
-            let meta=match fs::symlink_metadata(&path){Ok(m)=>m,Err(e)=>{complete=false;error(db,jid,&path.to_string_lossy(),&format!("{}: {e}",path.display()));continue}};
+            let meta=match fs::symlink_metadata(&path){Ok(m)=>m,Err(e)=>{complete=false;error(db,jid,full,&format!("{}: {e}",path.display()));continue}};
             if link(&meta){skipped(db,jid,&path)?;continue;}
-            if meta.is_dir(){if recursive{let c=db.lock().map_err(|e|e.to_string())?;c.execute("INSERT OR IGNORE INTO frontier(job_id,path) VALUES(?1,?2)",params![jid,path.to_string_lossy()]).map_err(|e|e.to_string())?;}continue;}
+            if meta.is_dir(){if recursive{let c=db.lock().map_err(|e|e.to_string())?;c.execute("INSERT OR IGNORE INTO frontier(job_id,path) VALUES(?1,?2)",params![jid,full]).map_err(|e|e.to_string())?;}continue;}
             if !meta.is_file(){skipped(db,jid,&path)?;continue;}
-            let full=path.to_string_lossy().to_string();let size=meta.len() as i64;
+            let size=meta.len() as i64;
             let mtime=meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_nanos().to_string()).unwrap_or_default();
-            let ext=path.extension().map(|s|s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let ext=path.extension().and_then(|s|s.to_str()).map(str::to_lowercase).unwrap_or_default();
             let mut c=db.lock().map_err(|e|e.to_string())?;let tx=c.transaction().map_err(|e|e.to_string())?;
             let prior:Option<(i64,String)>=tx.query_row("SELECT size,mtime FROM files WHERE root_id=?1 AND path=?2",params![spec.root_id,full],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
             tx.execute("INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(root_id,path) DO UPDATE SET hash=CASE WHEN size=excluded.size AND mtime=excluded.mtime THEN hash ELSE NULL END,size=excluded.size,mtime=excluded.mtime,seen_job=excluded.seen_job,availability='present'",params![id(),spec.root_id,full,rel,size,mtime,ext,jid]).map_err(|e|e.to_string())?;
@@ -119,8 +122,8 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             if added>0 {tx.execute("UPDATE jobs SET processed=processed+1,discovered=discovered+1,bytes=bytes+?2,updated=?3 WHERE id=?1",params![jid,size,now()]).map_err(|e|e.to_string())?;}
             // Keep previously confirmed resource membership when scanning an organized tree.
             let parts:Vec<_>=Path::new(&rel).components().collect();
-            let top=parts[0].as_os_str().to_string_lossy().to_string();
-            let split=parts.len()>1&&*bundles.entry(top.clone()).or_insert_with(||fs::read_dir(root.join(&top)).map(|e|bundle(&top,&e.filter_map(|e|e.ok()).map(|e|e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())).unwrap_or(false));
+            let top=parts[0].as_os_str().to_str().ok_or("Invalid UTF-8 resource path")?.to_string();
+            let split=parts.len()>1&&*bundles.entry(top.clone()).or_insert_with(||fs::read_dir(root.join(&top)).map(|e|bundle(&top,&e.filter_map(|e|e.ok()).filter_map(|e|e.file_name().into_string().ok()).collect::<Vec<_>>())).unwrap_or(false));
             let mut existing:Option<String>=tx.query_row("SELECT resource_id FROM resource_files WHERE file_id=?1 ORDER BY resource_id LIMIT 1",[&fid],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
             // An earlier scan grouped a bundle folder as one resource. Release its files while nobody has bound or regrouped it.
             if let Some(old)=existing.clone().filter(|_|split){
@@ -129,9 +132,9 @@ fn run_inner(db:&Db,jid:&str)->Result<(),String> {
             }
             if existing.is_none(){
                 let volume=if parts.len()==1||(split&&parts.len()==2){crate::multipart::part(&rel)}else{None};
-                let resource_path=if let Some(p)=volume.as_ref().filter(|_|split&&parts.len()==2){p.entry.clone()}else if split {Path::new(&top).join(parts[1].as_os_str()).to_string_lossy().to_string()}else if parts.len()>1 {top.clone()}else if let Some(p)=&volume{p.entry.clone()}else{rel.clone()};
+                let resource_path=if let Some(p)=volume.as_ref().filter(|_|split&&parts.len()==2){p.entry.clone()}else if split {utf8_path(&Path::new(&top).join(parts[1].as_os_str()))?.to_string()}else if parts.len()>1 {top.clone()}else if let Some(p)=&volume{p.entry.clone()}else{rel.clone()};
                 let resource_kind=if parts.len()>2||(parts.len()>1&&!split) {"directory"}else if volume.as_ref().is_some_and(|p|p.numbered){"multipart"}else if ["rar","zip","7z","001"].contains(&ext.as_str()){"archive"}else if ["iso","mds","mdf","cue","bin"].contains(&ext.as_str()){"disc"}else{"file"};
-                let new_resource=tx.execute("INSERT OR IGNORE INTO resources(id,root_id,relative_path,title,kind) VALUES(?1,?2,?3,?4,?5)",params![id(),spec.root_id,resource_path,clean_title(&Path::new(&resource_path).file_name().map(|n|n.to_string_lossy().to_string()).unwrap_or_else(||resource_path.clone())),resource_kind]).map_err(|e|e.to_string())?;
+                let new_resource=tx.execute("INSERT OR IGNORE INTO resources(id,root_id,relative_path,title,kind) VALUES(?1,?2,?3,?4,?5)",params![id(),spec.root_id,resource_path,clean_title(&Path::new(&resource_path).file_name().and_then(|n|n.to_str()).map(str::to_string).unwrap_or_else(||resource_path.clone())),resource_kind]).map_err(|e|e.to_string())?;
                 let rid:String=tx.query_row("SELECT id FROM resources WHERE root_id=?1 AND relative_path=?2 AND manual_group=0",params![spec.root_id,resource_path],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if new_resource>0 {crate::job_summary::record(&tx,jid,"new_resources",&rid,"yes").map_err(|e|e.to_string())?;event(&tx,jid,"resource.discovered",&json!({"resource_id":rid,"root_id":spec.root_id})).map_err(|e|e.to_string())?;}
                 tx.execute("INSERT OR IGNORE INTO resource_files(resource_id,file_id) VALUES(?1,?2)",params![rid,fid]).map_err(|e|e.to_string())?;
@@ -186,6 +189,33 @@ pub fn clean_title(s:&str)->String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]fn utf8_validation_checks_parent_components_and_accepts_literal_replacement_character(){
+        use std::{ffi::OsString,os::unix::ffi::OsStringExt};
+        let bad=PathBuf::from(OsString::from_vec(b"parent-\xff/valid.bin".to_vec()));
+        assert_eq!(utf8_path(&bad).unwrap_err(),format!("File name is not valid UTF-8 and was skipped: {}",bad.display()));assert_eq!(utf8_path(Path::new("valid-�.bin")).unwrap(),"valid-�.bin");
+    }
+    #[cfg(unix)]
+    #[test]fn non_utf8_files_and_directories_are_source_issues_not_catalog_paths(){
+        use std::{ffi::OsString,os::unix::ffi::OsStringExt};
+        let t=tempfile::tempdir().unwrap();let root=t.path().join("source");fs::create_dir(&root).unwrap();
+        let bad_file=root.join(OsString::from_vec(b"invalid-\xff.bin".to_vec()));let bad_dir=root.join(OsString::from_vec(b"invalid-\xfe-dir".to_vec()));
+        for result in [fs::write(&bad_file,b"bad"),fs::create_dir(&bad_dir)]{if let Err(e)=result{
+            // macOS APFS rejects invalid UTF-8 names instead of storing them.
+            #[cfg(target_os="macos")]{eprintln!("Skipping non-UTF-8 fixture: this macOS filesystem rejects the name: {e}");return;}
+            #[cfg(not(target_os="macos"))]{panic!("Cannot create non-UTF-8 fixture: {e}");}
+        }}
+        fs::write(bad_dir.join("hidden.bin"),b"bad").unwrap();fs::create_dir(root.join("Good Game")).unwrap();fs::write(root.join("Good Game/game.bin"),b"good").unwrap();
+        let db=crate::db::open(&t.path().join("library.sqlite")).unwrap();{let c=db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'Fixture')",[root.to_str().unwrap()]).unwrap();crate::watching::ensure(&c).unwrap();}
+        let job=create(&db,ScanSpec{root_id:"r".into(),scope:String::new(),exclude:vec![]}).unwrap();run(db.clone(),job.clone());
+        let c=db.lock().unwrap();crate::source_issues::reconcile(&c).unwrap();
+        assert_eq!(c.query_row("SELECT count(*) FROM files",[],|r|r.get::<_,i64>(0)).unwrap(),1);assert_eq!(c.query_row("SELECT relative_path FROM resources",[],|r|r.get::<_,String>(0)).unwrap(),"Good Game");
+        assert_eq!(c.query_row("SELECT errors FROM jobs WHERE id=?1",[&job],|r|r.get::<_,i64>(0)).unwrap(),2);
+        let reason:String=c.query_row("SELECT reason FROM issues WHERE root_id='r' AND category='source' AND kind='scan_partial'",[],|r|r.get(0)).unwrap();assert_eq!(reason,"Scan completed: Scan completed with errors. Some folders could not be read.");
+        for path in [&bad_file,&bad_dir]{let message=format!("File name is not valid UTF-8 and was skipped: {}",path.display());assert_eq!(c.query_row("SELECT count(*) FROM events WHERE job_id=?1 AND code='scan.error' AND json_extract(payload,'$.message')=?2",params![job,message],|r|r.get::<_,i64>(0)).unwrap(),1);}
+        assert_eq!(c.query_row("SELECT count(*) FROM frontier WHERE instr(path,'�')>0 OR path LIKE '%invalid-%'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(utf8_path(&bad_dir).is_err());
+    }
     #[test]fn mac_and_nas_housekeeping_is_never_a_resource(){
         for n in ["._DAV","._game.rar",".DS_Store","@eaDir","#recycle",".Spotlight-V100"]{assert!(system_entry(n),"{n}");}
         for n in ["game.rar","[251219] ママ×カノEX",".hidden-game"]{assert!(!system_entry(n),"{n}");}

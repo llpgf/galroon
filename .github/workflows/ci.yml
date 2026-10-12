@@ -35,7 +35,7 @@ jobs:
           python-version: '3.12'
       - run: python scripts/check_repository.py
 
-  # Galroon's Core only runs on Windows, so the Rust suite runs there.
+  # The packaged Core targets Windows; the Linux job covers the NAS build.
   rust:
     runs-on: windows-latest
     steps:
@@ -44,3 +44,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p galroon-core --lib
       - run: cargo test -p galroon-mcp
+
+  rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p galroon-core --lib
