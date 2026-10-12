@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use axum::{extract::State,http::HeaderMap,Json};
 use serde_json::{Value,json};
 // Editions are stored as releases. Join-only changes are visible catalog changes too.
-pub const TABLES:&[&str]=&["works","releases","resources","files","resource_files","work_releases","resource_bindings","work_preferences","custom_tags","custom_tag_works","custom_tag_entities","curated_lists","list_entries","list_entry_variants","smart_lists","relation_overrides","relation_corrections","entity_overrides","roots","issues","plans","plan_locations","plan_reversals","operations","quarantine","match_items","jobs","job_summary_entries","library_identity"];
+pub const TABLES:&[&str]=&["works","releases","resources","files","resource_files","work_releases","resource_bindings","work_preferences","custom_tags","custom_tag_works","custom_tag_entities","curated_lists","list_entries","list_entry_variants","smart_lists","relation_overrides","relation_corrections","entity_overrides","roots","issues","plans","plan_locations","plan_reversals","operations","quarantine","match_items","match_suggestions","jobs","job_summary_entries","library_identity"];
 pub fn migrate(c:&Connection)->rusqlite::Result<()>{
  c.execute_batch("CREATE TABLE IF NOT EXISTS catalog_change_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),seq INTEGER NOT NULL); INSERT OR IGNORE INTO catalog_change_state VALUES(1,0);")?;
  for table in TABLES{

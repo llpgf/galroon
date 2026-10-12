@@ -24,6 +24,8 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/issues/{id}/task",WebAccess::Deny),
  ("/api/resources/page",WebAccess::Project),
  ("/api/resources",WebAccess::Project),
+ ("/api/suggestions",WebAccess::Project),
+ ("/api/resources/{id}/suggestions",WebAccess::Project),
  ("/api/works",WebAccess::Unchanged),
  ("/api/works/lookup",WebAccess::Unchanged),
  ("/api/works/{id}/assets",WebAccess::Project),

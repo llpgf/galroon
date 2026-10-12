@@ -4,13 +4,14 @@ use crate::{Transport,web_projection::{WEB_ROUTES,WebAccess}};
 #[test]fn schema_45_upgrade_is_backed_up_and_starts_at_zero(){
  let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=crate::db::open(&path).unwrap();
  {let c=db.lock().unwrap();let triggers=c.prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'catalog_changed_%'").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();for name in triggers{c.execute_batch(&format!("DROP TRIGGER {name};")).unwrap();}c.execute_batch("DROP TABLE catalog_change_state; INSERT INTO works(id,title,original_title) VALUES('old','Saved','Saved'); PRAGMA user_version=45; UPDATE settings SET value='45' WHERE key='schema_version';").unwrap();}drop(db);
- let db=crate::db::open(&path).unwrap();{let c=db.lock().unwrap();assert_eq!(seq(&c).unwrap(),0);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),46);assert_eq!(c.query_row("SELECT title FROM works WHERE id='old'",[],|r|r.get::<_,String>(0)).unwrap(),"Saved");c.execute("UPDATE works SET title='Changed' WHERE id='old'",[]).unwrap();assert_eq!(seq(&c).unwrap(),1);}drop(db);
+ let db=crate::db::open(&path).unwrap();{let c=db.lock().unwrap();assert_eq!(seq(&c).unwrap(),0);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),crate::db::SCHEMA_VERSION);assert_eq!(c.query_row("SELECT title FROM works WHERE id='old'",[],|r|r.get::<_,String>(0)).unwrap(),"Saved");c.execute("UPDATE works SET title='Changed' WHERE id='old'",[]).unwrap();assert_eq!(seq(&c).unwrap(),1);}drop(db);
  let db=crate::db::open(&path).unwrap();assert_eq!(seq(&db.lock().unwrap()).unwrap(),1);
  let backups=std::fs::read_dir(t.path().join("migration-backups")).unwrap().collect::<Result<Vec<_>,_>>().unwrap();assert_eq!(backups.len(),1);let saved=Connection::open(backups[0].path()).unwrap();assert_eq!(saved.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),45);assert_eq!(saved.query_row("SELECT count(*) FROM sqlite_schema WHERE name='catalog_change_state'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
 }
 #[test]fn visible_table_writes_bump_and_rollback_does_not_publish(){
  let(_t,a,_,_)=fixture();let c=a.db.lock().unwrap();
  let writes=[
+ ("match_suggestions","INSERT INTO match_suggestions VALUES('suggestion','resource',1,'[{\"vndb_id\":\"v1\",\"title\":\"Game\"}]','Game','Review','mcp:test',1,'[]','open',1,1)"),
  ("works","UPDATE works SET notes='Edited',tags='[\"tag\"]'"),("releases","UPDATE releases SET label='Changed'"),("resources","UPDATE resources SET title='Changed'"),("files","UPDATE files SET availability='missing'"),
  ("resource_files","DELETE FROM resource_files"),("resource_bindings","DELETE FROM resource_bindings"),("work_preferences","DELETE FROM work_preferences"),
  ("work_releases","INSERT INTO works(id,title,original_title) VALUES('other','Other','Other'); INSERT INTO work_releases VALUES('other','edition')"),

@@ -164,6 +164,8 @@ Compatibility exception: `/resources/page` is identical for desktop and web exce
 | `/api/issues/{id}/task` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
 | `/api/resources/page` | 投影 | items 移除 root_path |
 | `/api/resources` | 投影 | 移除 root_path；保留相對 path |
+| `/api/suggestions` | 投影 | 建議內容中的絕對路徑遮蔽 |
+| `/api/resources/{id}/suggestions` | 投影 | 建議內容中的絕對路徑遮蔽 |
 | `/api/works` | 原樣 | 無實體路徑欄位 |
 | `/api/works/lookup` | 原樣 | 無實體路徑欄位 |
 | `/api/works/{id}/assets` | 投影 | resources 移除 root_path |
@@ -221,3 +223,24 @@ Compatibility exception: `/resources/page` is identical for desktop and web exce
 Source remap preview is POST and remains forbidden to web sessions.
 
 Issue reconciliation is published on startup and by the existing background worker; GET `/api/issues` reads persisted results and does not cause catalog writes. Web JSON bodies are bounded at 32 MiB; an oversized or unparseable response fails closed without returning its contents.
+
+## AI match suggestions (schema 47, Phase 3a)
+
+All paths below include `/api`. These are catalog endpoints under the existing authentication, identity pin, transport and role matrix. Owner is loopback-only; owner and paired desktop may mutate. Desktop works over loopback or LAN. Web GET/HEAD reads are allowed and use the shared recursive path-redacting projection, including query, rationale, source, work titles and verification strings. Web mutation attempts are 403. No new identity mechanism or UI is introduced.
+
+| Method and path | Body / result |
+|---|---|
+| `POST /resources/{id}/suggestions` | `{revision, works:["v123",...], query, rationale}` → the stored suggestion. Rejects stale revisions and any primary or shared binding with 409. Requires 1–32 distinct VNDB IDs, positive revision, nonblank query (≤512 bytes), nonblank rationale (≤8192 bytes); unknown fields rejected. Fetches actual work data through the cached, spaced VNDB provider. Replaces an existing open suggestion by dismissing it, atomically. Never creates works or bindings. |
+| `GET /suggestions?before=<next>` | `{items,next}`; at most 60 open suggestions, newest insertion first. `next` is a nullable integer insertion cursor; pass it unchanged to continue. Scope it to the current collection. States are read fresh, so this is not a pinned snapshot. |
+| `GET /resources/{id}/suggestions` | `{suggestion: <open suggestion or null>}`. |
+| `POST /suggestions/{id}/confirm` | `{revision}` → `{id,state:"confirmed",resource:{id,revision}}`. Individual manual confirmation also permits unverified suggestions. |
+| `POST /suggestions/batch-confirm` | `{ids:[...],revisions:[...]}`: 1–60 distinct suggestion IDs with corresponding resource revisions in the same order. `{results:[...]}` preserves input order. Success uses the individual response; failure is `{id,confirmed:false,error}`. Unverified proposals are skipped with a per-ID error. Each suggestion is its own atomic transaction; one failure does not undo earlier successes. HTTP 200 for a valid batch, including mixed failures. |
+| `POST /suggestions/{id}/dismiss` | No body required → `{id,state:"dismissed"}`. Requires an open suggestion; otherwise 409. |
+
+Suggestion fields: `id`, `resource_id`, `resource_revision`, `works:[{vndb_id,title}]` (ordered, nonempty), `query`, `rationale`, `source`, `verified` (boolean), `verification` (per-work array), `state` (`open`, `confirmed`, `dismissed`, `stale`), `created`, `updated` (Unix seconds). Source comes from the authenticated paired session name (`mcp:<name>`) or `owner:owner`. These labels are attribution, not extra permissions. The shared resource projection (`/resources`, `/resources/page`, work assets) and issue review items also contain `suggestion`, nullable when absent.
+
+Verification requires **each** work's own title/alttitle/titles/aliases to equal the query or a prepared resource/member title using `matching::normalized`, plus existing brand-or-date corroboration (or neither hint present). Work-owned names alone count, not related works or release-only titles. Each verification entry includes `vndb_id`, `verified`, nullable `exact_name`, `title_reason` (`exact_own_name` or `no_exact_own_name`) and `corroboration` (`no_folder_brand_or_date`, `brand_or_date_agrees`, or `brand_or_date_not_corroborated`). All entries must pass for the suggestion to be verified.
+
+Confirmation fetches provider data before opening the write transaction, then checks the current resource revision, stored suggestion revision, open state and absence of bindings again. A mismatch returns HTTP 409 `{code:"suggestion_changed",error}` and writes no catalog data. Work creation reuses the manual dialog helper and existing VNDB identity/merge resolution. The manual binding/history primitive is shared with `/resources/{id}/bind`: first work primary, **all roles `main`**, null edition IDs, one `resource_history` record and a `manual.bind` event. All work inserts, references, revision updates, history and confirmed state commit together. Bound resources retain the existing protection against automatic rematching.
+
+Migration 46→47 creates `match_suggestions`, the unique open-per-resource index, paging index, revision invalidation trigger, and catalog-change notifications. Any resource revision change stales open suggestions in that same transaction. Changed file observations during rescan now advance resource revisions; unchanged observations do not. Replaced/dismissed/stale/confirmed proposals remain stored. See [AI suggestions](../features/AI_SUGGESTIONS.md).

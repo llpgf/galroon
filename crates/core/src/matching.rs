@@ -386,7 +386,7 @@ pub fn release_card(work: &Value, release: &Value) -> Value {
 /// The part of a provider title before its ～subtitle～ or -subtitle-.
 pub fn main_title(name: &str) -> &str { Regex::new(r"\s*[～~〜]|\s+[-－]").unwrap().split(name).next().unwrap_or(name).trim() }
 /// A brand or release date from the local names agrees with this candidate.
-fn corroborated(input: &Input, candidate: &Value) -> bool {
+pub(crate) fn corroborated(input: &Input, candidate: &Value) -> bool {
     let names = |list: &Value| -> Vec<String> { list.as_array().map(|ds| ds.iter().flat_map(|d| [d["name"].as_str(), d["original"].as_str()]).flatten().map(normalized).collect()).unwrap_or_default() };
     let mut makers = names(&candidate["developers"]);
     let mut dates: Vec<&str> = candidate["released"].as_str().into_iter().collect();
@@ -611,6 +611,14 @@ pub async fn search(input: Input) -> Result<Value,String> {
     let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new(), last:None }));
     let mut provider = shared.try_lock().map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
     retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
+}
+/// Exact work lookup shares search's provider cache, request spacing and field shape.
+pub async fn fetch_work(id:&str)->Result<Value,String>{
+    if !id.strip_prefix('v').is_some_and(|s|!s.is_empty()&&s.bytes().all(|b|b.is_ascii_digit())){return Err("Invalid VNDB work identifier".into());}
+    let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None}));
+    let mut provider=shared.lock().await;provider.cache.retain(|_,(at,_)|at.elapsed()<Duration::from_secs(600));
+    let data=request(&mut provider,&format!("{}/vn",vndb_api()),json!({"filters":["id","=",id],"sort":"id","fields":WORK_FIELDS,"results":30}),Duration::from_millis(1600)).await?;
+    data["results"].as_array().and_then(|rows|rows.iter().find(|v|v["id"]==id)).cloned().ok_or_else(||"VNDB work not found".into())
 }
 const WORK_FIELDS: &str = "title,alttitle,titles.title,titles.latin,aliases,description,image.url,released,developers.name,developers.original,tags.name";
 async fn request(provider: &mut Provider, endpoint: &str, body: Value, spacing: Duration) -> Result<Value,String> {
@@ -975,4 +983,8 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let result=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(result["incomplete"],true);assert!(result["warning"].as_str().unwrap().contains("429"));assert_eq!(result["results"].as_array().unwrap().len(),1);assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),2);
         let _=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),3);task.abort();
     }
+}
+
+#[cfg(test)]pub(crate) async fn cache_work_for_test(work:Value){
+ let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None}));let body=json!({"filters":["id","=",work["id"]],"sort":"id","fields":WORK_FIELDS,"results":30});shared.lock().await.cache.insert(format!("{}/vn:{body}",vndb_api()),(Instant::now(),json!({"results":[work]})));
 }
