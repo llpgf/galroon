@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=5;
+pub const ALGORITHM_VERSION:i64=6;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -12,7 +12,8 @@ pub fn normalized(text: &str) -> String {
     text.nfkc().flat_map(char::to_lowercase).map(|c| {
         // Katakana and hiragana spellings compare equally; retain long vowel marks.
         if ('\u{30a1}'..='\u{30f6}').contains(&c) { char::from_u32(c as u32 - 0x60).unwrap() } else { c }
-    }).filter(|c| c.is_alphanumeric()).collect()
+    // "+" names a different product (アマナツ is not アマナツ＋), so it survives like a letter.
+    }).filter(|c| c.is_alphanumeric() || *c == '+').collect()
 }
 fn useful(text: &str) -> bool {
     let n = normalized(text);
@@ -60,6 +61,8 @@ pub fn clean_name(input: &str) -> String {
         let numeric = Regex::new(r"^\[(?:\d{6,8}|(?i:rj|vj)\d+)\]").unwrap().is_match(&caps[1]);
         if labels >= 2 || numeric { s = s[caps[0].len()..].to_string(); }
     }
+    // "アマカノ2 ＋ + Tokuten Voice": a doubled "+" means the first one belongs to the title (アマカノ2＋).
+    s = replace(&s, r"(\S)\s+\+(\s+\+)", "$1+$2");
     s = strip_plus_extras(&s);
     s = replace(&s, r"(?i)\s+(?:(?:豪華|予約|初回|特典付き|特装|通常|限定|パッケージ|ダウンロード|DL|多国語)+版|(?:FANZA|Sofmap|ソフマップ|予約|初回|限定)?特典|追加コンテンツ|壁紙セット|Crack(?:\s|$)).*$", "");
     s = replace(&s, r"(?i)\s*\((?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+)(?:\+(?:files|mdf|mds|iso|bin|cue|wav|mp3|pdf|jpg|rr\d+))*\)\s*$", "");
@@ -68,6 +71,8 @@ pub fn clean_name(input: &str) -> String {
     // Bonus and re-release descriptors: "Webアンケート特典", "エッチな音声データ", "フルHDリマスター版", "アニメ追加版".
     s = replace(&s, r"\s+\S*(?:特典|アンケート|音声データ|ボイスデータ)(?:[\s「(]|$).*$", "");
     s = replace(&s, r"\s+\S*(?:リマスター|リニューアル|アニメ追加|新装|廉価|普及)版(?:\s|$).*$", "");
+    // A " +" left dangling after its extras were removed is a separator, not part of the title.
+    s = replace(&s, r"\s+\+$", "");
     s = replace(&s, r"\s+", " ").trim().to_string();
     // Some release names accidentally repeat the whole title twice.
     for (i, _) in s.match_indices(' ') {
@@ -99,7 +104,7 @@ fn labels(raw: &str, brands: &mut Vec<String>, dates: &mut Vec<String>) {
 /// Splits a name into the part before its first bonus/crack/patch/artwork word, dropping release labels and format notes.
 fn extras_split(name: &str) -> (String, String) {
     let s: String = name.nfkc().collect();
-    let s = replace(&replace(&replace(&s, r"^(?:\s*(?:\([^)]*\)|\[[^\]]*\]))+\s*", ""), r"\([^)]*\)", " "), r"※.*$", "");
+    let s = replace(&replace(&replace(&strip_plus_extras(&s), r"^(?:\s*(?:\([^)]*\)|\[[^\]]*\]))+\s*", ""), r"\([^)]*\)", " "), r"※.*$", "");
     let words = Regex::new(r"(?i)特典|同梱|予約|初回|限定|豪華|通常版|パッケージ版|pkg|dl版|ダウンロード|アップデート|update|patch|パッチ|修正|プログラム|crack|crak|クラック|認証回避|ヘッダー|アイコン|イラスト|壁紙|wallpaper|サウンドトラック|soundtrack|\bost\b|サントラ|original|オリジナル|ボーカル|vocal|song|album|ドラマ|ボイス|voice|drama|音声|データ|manual|マニュアル|bonus|omake|tokuten|dlc|4コマ|チラシ|ビジュアル|visual ?book|ガイドブック|artbook|メロンブックス|ソフマップ|sofmap|amazon|fanza|\bver\.?\s*\d[\d.]*|\bx\d+\b").unwrap();
     let head = words.find(&s).map_or(s.clone(), |m| s[..m.start()].to_string());
     let rest = words.replace_all(&s, "").into_owned();
@@ -389,6 +394,18 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             ("ダウニャーさんと飼い主くん",vec!["ダウニャーさんと飼い主くん/ダウニャーさんと飼い主くん_特典ASMR/wave/03.Track.wav","ダウニャーさんと飼い主くん_主題歌マキシ音源"],vec!["ダウニャーさんと飼い主くん"]),
         ]{let h:Vec<_>=hints.into_iter().map(str::to_string).collect();assert_eq!(prepare(query,&h).unwrap().titles,expected);}
         assert_eq!(clean_name("Game 2 -After Story-"),"Game 2 -After Story-");
+        assert_eq!(clean_name("[230428] [あざらしそふと] アマカノ2 ＋ + Tokuten Voice"),"アマカノ2+");assert_eq!(clean_name("[200424] [あざらしそふと] アマカノ2 + Bonus + Update 1.1"),"アマカノ2");
+        assert_eq!(clean_name("[240830][1278460][あざらしそふと] アマナツ＋ DL版 (files)"),"アマナツ+");
+    }
+    #[test] fn a_plus_suffix_names_a_different_work(){
+        let works=||vec![json!({"id":"v34848","title":"Amanatsu","alttitle":"アマナツ","released":"2022-08-26","developers":[{"name":"あざらしそふと"}]}),json!({"id":"v47551","title":"Amanatsu+","alttitle":"アマナツ＋","released":"2024-04-12","developers":[{"name":"あざらしそふと"}]})];
+        for (folder,id) in [("[220826][1178934][あざらしそふと] アマナツ DL版 (files).rar","v34848"),("[240830][1278460][あざらしそふと] アマナツ＋ DL版 (files)","v47551")]{
+            let r=rank(&prepare(folder,&[]).unwrap(),works());assert_eq!(r[0]["id"],id);assert_eq!(r[0]["match"]["strength"],"strong","{folder}");
+        }
+        let amakano=||vec![json!({"id":"v26307","title":"Amakano 2","alttitle":"アマカノ２","released":"2020-04-24","developers":[{"name":"あざらしそふと"}]}),json!({"id":"v31813","title":"Amakano 2+","alttitle":"アマカノ２＋","released":"2023-04-28","developers":[{"name":"あざらしそふと"}]})];
+        for (folder,id) in [("[200424] [あざらしそふと] アマカノ2 + Bonus + Update 1.1","v26307"),("[230428] [あざらしそふと] アマカノ2 ＋ + Tokuten Voice","v31813"),("アマカノ2+ ソフマップ特典","v31813")]{
+            let r=rank(&prepare(folder,&[]).unwrap(),amakano());assert_eq!(r[0]["id"],id,"{folder}");assert_eq!(r[0]["match"]["strength"],"strong","{folder}");
+        }
         assert!(prepare("Actual Title",&["Other Game/data.xp3".into()]).unwrap().titles.contains(&"Other Game".into()));
     }
     #[test] fn compact_romanized_filenames_only_corroborate_the_same_full_identity(){
