@@ -1,6 +1,6 @@
 # 區網 Core 規劃書：一個 Core、多台客戶端
 
-狀態：**第 5 版：依第 3 輪審查修訂 NAS 部署軌道，待第 4 輪審查**（2026-10-12）
+狀態：**第 6 版：NAS 軌道已通過第 4 輪審查（`approve_with_changes`，修改已併入），開始執行**（2026-10-12）
 範圍：讓同一區網內的多台機器連到同一個 Galroon Core，共用同一份收藏、標籤、清單與分類資料。
 
 > **給審查者與實作者**：兩輪審查的處理結果見第 10 節。本文每一項現況描述都附了檔案與行號，請對照程式碼確認。
@@ -332,7 +332,9 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 - socket 放在資料目錄內一個 **0700 的私有子目錄**，socket 本身 0600；這個目錄不得掛載給其他 container。
 - **雙向驗證**：
   - server 以 `SO_PEERCRED` 確認 client 的 uid 與自己相同。
-  - client 確認 socket 檔的擁有者是預期的 uid，並以 `SO_PEERCRED` 確認 server 程序的 uid。這對應 Windows 版中 client 檢查 server 執行檔的作法（`local_core.rs:25`）。
+  - client 確認 socket 檔的擁有者是預期的 uid，並以 `SO_PEERCRED` 確認 server 程序的 uid。
+  - 預期的 uid 一律取自程序自己的 euid 或可信的設定，不取自對方提供的資料；**驗證完成之前不交換任何敏感資料**（例如 owner token）。
+  - 這**不等同** Windows 版檢查 server 執行檔路徑（`local_core.rs:25`）：`SO_PEERCRED` 只能確認 uid，無法分辨同 uid 的冒充程式。這在下面的信任範圍內是可以接受的。
 - **殘留的 socket**：啟動時先取得資料目錄的程序鎖（現有的 `core.lock`）；拿到鎖之後，才刪除擁有者相符的舊 socket 檔並重建。拿不到鎖就直接失敗。
 - **信任範圍要寫清楚**：信任「能存取這個 socket 的同 uid 程序」。不防護 NAS 的 root 或 Docker 管理員；能執行 `docker exec` 的人本來就等同 root。只能連到 loopback 埠的程序**不會**因此取得 owner，因為仍然需要 bearer（`access.rs:42`）。
 
@@ -351,7 +353,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 | `galroon-core owner devices` / `owner revoke <id>` | 列出、撤銷已配對的裝置 |
 | `galroon-core owner network ...` | 區網設定（PR 2、PR 3 之後） |
 | `galroon-core owner session` | 開發測試用：輸出含 owner token 的 session JSON，語意與 Windows 控制通道的 `session` 相同，只給通過雙向驗證的呼叫者 |
-| `galroon-core restore --from <備份> --to <新資料目錄>` | **離線**還原：Core 停止時執行，呼叫 `backup::restore_new`，見下方搬移流程 |
+| `galroon-core restore --from <備份> --to <新資料目錄>` | **離線**還原：Core 停止時，以一次性 container 執行（見搬移流程），呼叫 `backup::restore_new` |
 
 在 NAS 上以 `docker exec galroon galroon-core owner ...` 執行。owner 仍然**只能從 Core 主機本機**取得。
 
@@ -374,25 +376,24 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 - `scripts/nas/`：建置 image、以 `docker save` / `docker load` 經 SSH 傳到 NAS、啟動與停止。不使用公開的 image registry。
 - CI 新增 Linux 的 `cargo build` 與 `cargo test -p galroon-core --lib`。
 
-**從現有收藏搬到 NAS**（N3，需要 PR N1a 的離線還原）
+**從現有收藏搬到 NAS**（N3，需要 PR N1d）
 
 1. 在現有 Core 建立備份。
 2. 停止 NAS 上的 Core。
-3. 在 NAS 上執行 `galroon-core restore --from <備份> --to <新資料目錄>`。
+3. container 已停止，不能用 `docker exec`。改用同一個 image 啟動一次性 container 執行還原：`docker compose run --rm --no-deps -v <備份所在目錄>:/backup:ro -v <新資料目錄>:/data-new galroon galroon-core restore --from /backup/<備份> --to /data-new`，以與正式 container 相同的 uid 執行。
 4. 把 compose 的資料目錄改指向新目錄，啟動 Core。
-5. 用既有的來源重新對應（`/roots/{id}/remap`）把舊路徑改成 NAS 路徑。從 Windows 搬過來時，資料庫裡的相對路徑使用反斜線（`roots.rs:14`），重新對應時要正規化成 `/`；這需要程式修改，放在 N1a。
+5. 用既有的來源重新對應（`/roots/{id}/remap`）把舊路徑改成 NAS 路徑。從 Windows 搬過來時，資料庫裡的相對路徑使用反斜線（`roots.rs:14`），重新對應時要正規化成 `/`；這需要程式修改，放在 PR N1d。
 6. 檢查作品、標籤、清單、手動修正都保留。
 
-**跨資料庫的匹配結果比較**（PR N1c，N1 的前置條件）
+**跨資料庫的匹配結果比較**（由匹配計畫的 Phase 1b 提供，N1 的前置條件）
 
-`match_replay --baseline` 目前要求 resource ID 與相對路徑都相同（`examples/match_replay.rs:38`），但 NAS 上的全新掃描會產生新的 ID（`scan.rs:134`），所以無法直接拿來比較 N1。需要新增：
+`match_replay --baseline` 目前要求 resource ID 與相對路徑都相同（`examples/match_replay.rs:38`），但 NAS 上的全新掃描會產生新的 ID（`scan.rs:134`）。匹配計畫（`docs/plans/2026-10-12-matching-accuracy-and-ai.md`）的 Phase 2 也需要同樣的能力，因此由匹配計畫以 **Phase 1b** 實作（2026-10-12 與該計畫協調確定），本計畫不另開 PR：
 
-- 跨資料庫比較模式：以「來源對應＋相對路徑」識別同一個資源；路徑先做 NFC 正規化；同一個 key 對到多筆時，列為碰撞並視為失敗。
-- 比較**實際的匹配結果**，與候選重播分開報告。
-- `lost`（基準有、這次沒有）與 `missing`（兩邊對不上）納入失敗的退出碼（目前沒有，`match_replay.rs:76`）。
-- 這次新增、但答案檔沒涵蓋的匹配，列成清單供人工核對；不能用「匹配數不少於基準、已知答案零錯誤」推論全部正確。
-
-`match_replay` 屬於匹配計畫（`docs/plans/2026-10-12-matching-accuracy-and-ai.md`），N1c 開始前要先和該計畫協調，避免改到同一段程式。
+- ID 不同時，以「套用 `--root-map <舊>=<新>` 後的根路徑＋相對路徑」的 NFC 形式識別同一個資源；任一側出現重複 key 就失敗（退出碼 2）；只出現在一側的資源列為 added / removed。
+- **actual**（已儲存的匹配結果）與 **replay**（重新排序的候選）分開報告，各有 gained / lost / changed。
+- `--fail-on changed,false,lost,missing`：N1 使用全部四項。
+- 答案檔沒涵蓋的強匹配列為 `unreviewed`，供人工核對。
+- 摘要列出 added、removed、gained、lost、changed、false、missing 的數量。
 
 ## 5. 威脅模型
 
@@ -432,10 +433,11 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 
 **NAS 軌道**（4.15）
 
-- **PR N1a：Linux 無畫面 Core**：拆出共用生命週期與平台控制通道、`serve` 入口、Unix socket 控制通道與雙向驗證、殘留 socket 處理、固定 loopback 埠、SIGTERM 停止流程、網路檔案系統拒絕啟動、owner 命令列（`setup`、`pair --role desktop`、`devices`、`revoke`、`session`）、離線 `restore`、Linux 的 7-Zip 尋找、watcher 定期掃描備援、非 UTF-8 檔名處理、Windows 反斜線相對路徑在重新對應時正規化、CI 的 Linux 建置與測試。
+- **PR N1a：Linux 執行與控制通道**：拆出共用生命週期與平台控制通道、`serve` 入口、Unix socket 控制通道與雙向驗證、殘留 socket 處理、固定 loopback 埠、SIGTERM 停止流程、網路檔案系統拒絕啟動、owner 命令列（`setup`、`pair --role desktop`、`devices`、`revoke`、`session`）、CI 的 Linux 建置與測試。
 - **PR N1b：Docker 與部署**：`Dockerfile`（含前端 `web/`）、compose 檔、`scripts/nas/`。可執行的驗收依賴 N1a。
-- **PR N1c：跨資料庫匹配比較**：見 4.15，與匹配計畫協調。
-- **里程碑 N1**：N1a、N1b、N1c 合併後，在 NAS 上以唯讀收藏跑一次完整掃描與匹配（第 8 節）。
+- **PR N1c：掃描、封存與監看的 Linux 相容性**：Linux 的 7-Zip 尋找、watcher 定期掃描備援（含錯誤注入測試）、非 UTF-8 檔名處理。
+- **PR N1d：離線還原與跨平台重新對應**：`restore` 指令、Windows 反斜線相對路徑在重新對應時正規化。**只阻擋 N3**，不阻擋 N1。
+- **里程碑 N1**：PR N1a、N1b、N1c 與匹配計畫 Phase 1b 合併後，在 NAS 上以唯讀收藏跑一次完整掃描與匹配（第 8 節）。
 - **里程碑 N2**：PR 2、PR 3、**PR 5** 合併後（現有桌面只接受 HTTP loopback，`paired.rs:32`，要等 PR 5 才能透過區網配對），NAS 上的 Core 開啟區網監聽器，桌面透過配對連線。owner 命令列在 PR 3 補上 `pair --role web` 與 `network`。
 - **里程碑 N3**：第 1 階段結束時，第 8 節的手動驗收全部在 NAS 上進行，包含搬移流程。
 
@@ -446,7 +448,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 - PR 4：可以獨立開發；與 PR 3 都有 schema 遷移，合併前協調遷移編號。
 - PR 5：SPKI verifier 和 IPC 傳輸的原型（含實測）可以先做；整合需要 PR 2、PR 3。
 - PR 6：Core 路徑輸入元件可以先做；其餘部分需要 PR 3 到 PR 5。
-- PR N1a、N1b、N1c：在 PR 1 合併、並先固定共用生命週期、控制協定、CLI 參數、目錄與 loopback 設定的介面後，可以和 PR 2、PR 3 平行。N1b 的實際部署測試要等 N1a。
+- PR N1a 到 N1d：在 PR 1 合併、並先固定共用生命週期、控制協定、CLI 參數、目錄與 loopback 設定的介面後，可以和 PR 2、PR 3 平行。N1b 的實際部署測試要等 N1a；N1c、N1d 建立在 N1a 的 Linux 入口上。
 - PR 7 最後合併。
 
 **第 2 階段**：mDNS、推送通知、Core 端目錄瀏覽、操作者紀錄、自動啟動、瀏覽器正式憑證評估、IPv6 link-local（需要客戶端選擇介面）。
@@ -481,10 +483,17 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 
 合格條件：
 
-- 固定程式版本、收藏內容與匹配設定後，用 PR N1c 的跨資料庫比較，與 Mac 透過 SMB 的基準（`~/GalroonTestData/nas-2026-10-11-v6`，561 個匹配）比較：**錯誤匹配為 0**；沒有 `lost`、`missing` 或碰撞；新增且答案檔沒涵蓋的匹配全部經人工核對。
+- **基準要可重現**：舊的 `nas-2026-10-11-v6`（561 個匹配）是 algorithm 5 的結果，不能直接當基準。N1 前以**與 NAS 相同的 commit**、同一份收藏、同樣的匹配設定，在 Mac 上透過 SMB 重建基準，記錄 commit、收藏檔案清單的雜湊與設定。
+- 比較命令（匹配計畫 Phase 1b）：`match_replay <NAS 收藏庫的副本> --baseline <Mac 基準報告> --root-map /Volumes/Backup/Galgame=/volume1/Backup/Galgame --answers ~/GalroonTestData/nas-answers.json --fail-on changed,false,lost,missing --out n1.json`。報告存到 `~/GalroonTestData/nas-n1-<日期>/`。
+- 合格：命令以 0 結束（**錯誤匹配為 0**，沒有 `changed`、`lost`、`missing`、重複 key）；added / removed 只能是測試期間新增或移除的資料夾；`unreviewed` 清單全部經人工核對。
 - 收藏檔案完全沒有被寫入（唯讀掛載保證；另比對執行前後的檔案清單與修改時間）。
-- container 記憶體尖峰不超過 **600 MB**（NAS 實際可用約 1.3 GB），並記錄掃描與匹配時間。
-- 在 NAS 上新增一個遊戲資料夾，檔案監看能偵測到；把 watch 配額調低模擬耗盡時，自動改為定期掃描並顯示原因。
+- **記憶體**：初始預算 **600 MiB**，第一次實測後再確認門檻。量測方式：
+  - 指標：container cgroup 的記憶體尖峰（DSM 7.4 的 cgroup v1 用 `memory.max_usage_in_bytes`，v2 用 `memory.peak`），涵蓋 `7zz` 等子程序；不使用 `docker stats` 的顯示值，因為它扣除了部分快取。
+  - 期間：從 container 啟動、掃描到自動匹配完成。
+  - 同時記錄：swap 使用量、NAS 主機剩餘記憶體、是否發生 OOM 或異常重啟（不得發生）。
+- 記錄掃描與匹配所花的時間。
+- 在 NAS 上新增一個遊戲資料夾，檔案監看能偵測到。
+- **監看備援**：不在共用的 NAS 上調低 watch 配額，以免影響其他服務。改用 PR N1c 提供的錯誤注入開關（只在測試設定中生效）讓 watcher 啟動失敗，確認自動改為定期掃描、顯示原因，而且**定期掃描確實找到新增的資料夾**。真正的配額耗盡在 CI 或隔離的 VM 中測試。
 - `docker stop galroon` 走完正常停止流程（有進行中的任務時先暫停），重新啟動後資料完整；重新啟動 NAS 後 Core 自動啟動。
 - NAS 上其他 container 不受影響。
 
@@ -574,11 +583,22 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 | 非 UTF-8 檔名會被 `to_string_lossy()` 改寫 | 4.15「平台差異」 |
 | 同 uid 不足以區分 container；Windows 版有 client 驗證 server | 4.15「控制通道的安全前提」：專用 uid、私有目錄、雙向驗證、殘留 socket、寫明信任範圍 |
 | 固定埠衝突、SSH 通道與 LAN 的關係 | 4.15「固定 loopback 埠」 |
-| `match_replay` 無法比較兩次獨立掃描 | 新增 PR N1c |
+| `match_replay` 無法比較兩次獨立掃描 | 由匹配計畫 Phase 1b 實作（第 4 輪後協調確定） |
 | N2 還依賴 PR 5 | 第 7 節 |
 | SIGTERM 停止、Web UI 打包 | 4.15「執行方式」、「建置與部署」 |
-| NAS 沒有還原入口；Windows 反斜線路徑 | 離線 `restore` 指令與搬移流程，放在 N1a |
+| NAS 沒有還原入口；Windows 反斜線路徑 | 離線 `restore` 指令與搬移流程，放在 PR N1d |
 
-### 10.6 執行分工
+### 10.6 第 4 輪（Codex，2026-10-12）：判定 `approve_with_changes`
+
+| 審查意見 | 處理 |
+|---|---|
+| PR N1a 範圍太大 | 拆成 N1a（執行與控制通道）、N1c（Linux 相容性）、N1d（還原與重新對應，只阻擋 N3） |
+| `SO_PEERCRED` 不等同 Windows 檢查執行檔 | 4.15 修正措辭；預期 uid 取自 euid，驗證前不交換敏感資料 |
+| 600 MB 沒有量測定義 | 第 8 節定義 MiB、cgroup 指標、期間、OOM 與 swap 紀錄；首次實測後確認門檻 |
+| 561 是 algorithm 5 的結果，基準不可重現 | 第 8 節改為以同一 commit 重建 Mac 基準，並寫出比較命令 |
+| 不應在共用 NAS 調低 watch 配額 | 改用錯誤注入；真正耗盡在 CI 或 VM 測試 |
+| container 停止後不能 `docker exec` 還原 | 改用一次性 `docker compose run --rm` |
+
+### 10.7 執行分工
 
 Claude 負責規劃、撰寫每個 PR 的任務說明和審查；Codex 負責實作。每個 PR 在獨立分支完成，Claude 審查並跑完測試後才進行下一個。
