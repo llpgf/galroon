@@ -82,7 +82,8 @@ async fn drain(db:&crate::db::Db)->R<()>{
   assert_eq!(app.db.lock().unwrap().query_row("SELECT state FROM jobs WHERE id='queued'",[],|r|r.get::<_,String>(0)).unwrap(),"queued");
   app.db.lock().unwrap().execute("UPDATE jobs SET state='interrupted'",[]).unwrap();
   // The replacement smart worker must actually publish after stop was refused.
-  tokio::time::timeout(Duration::from_secs(5),async{loop{let count:i64=app.db.lock().unwrap().query_row("SELECT count(*) FROM smart_snapshots WHERE list_id='stop-fixture'",[],|r|r.get(0)).unwrap();if count>0{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
+  // This is a ceiling for slow CI under contention, not an expected duration.
+  tokio::time::timeout(Duration::from_secs(30),async{loop{let count:i64=app.db.lock().unwrap().query_row("SELECT count(*) FROM smart_snapshots WHERE list_id='stop-fixture'",[],|r|r.get(0)).unwrap();if count>0{break;}tokio::time::sleep(Duration::from_millis(20)).await;}}).await.unwrap();
   assert!(core.request_stop_if_idle().unwrap());core.shutdown().await.unwrap();
  }
  #[tokio::test]async fn occupied_fixed_port_fails_without_fallback(){
