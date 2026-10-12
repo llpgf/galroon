@@ -12,7 +12,24 @@ cargo run --offline --release -p galroon-core --example match_replay -- \
 
 Only the database and `--out` are required. The tool opens SQLite read-only and uses the latest `match_items.evidence` by `jobs.rowid` for every resource, including bound resources. It discards old candidate scores and shares the live matcher's catalog hints, 31-member cap, bundle handling, manual confirmation checks and final review decision. Reports include the algorithm version, candidate identity/strength/reason, ambiguity, review reason and stored outcome. A candidate counts as strong only when the final decision admits it; a strong score with a conflicting source name still counts as review.
 
-`--baseline` compares reports for the same resource ids and paths: **gained** (review → strong), **lost** (strong → review), **changed** (strong → another VNDB id), then **reason changed** for remaining decision/explanation changes. `--answers` accepts `{ "relative/path": { "vndb": "v123", "source": "user" } }` (also source `auto-2026-10-11`) and counts **agree**, **false** and **missing**; absent resources with answers count as missing. Paths must be unique across roots when using an answer key. Exit status is 1 for any changed identity or false match, 2 for input/runtime errors, otherwise 0. The JSON report is written even when a match alarm fires.
+`--baseline` uses resource ids when both reports have exactly the same ids and relative paths. Otherwise it compares **NFC(root path + "/" + relative path)**, so fresh scans with new ids can be compared. Rows include `root_path` from the resource's root. Baselines created by the older tool without roots still work in ID mode; regenerate them for path mode. Duplicate normalized keys on either side are input errors, with the colliding paths listed. Resources on only one side are listed as **added** or **removed**, separately from gained/lost.
+
+Repeat `--root-map <old>=<new>` to translate baseline root paths. The longest raw string prefix wins, is applied once, and NFC normalization happens afterward; new report roots are unchanged. For a native NAS run against a Mac SMB baseline:
+
+```sh
+cargo run --offline --release -p galroon-core --example match_replay -- \
+  test-output/replay/nas/library.sqlite --out test-output/replay/nas-vs-mac.json \
+  --baseline test-output/replay/mac-report.json --answers test-output/replay/nas-answers.json \
+  --root-map /Volumes/Backup/Galgame=/volume1/Backup/Galgame --fail-on changed,false,lost,missing
+```
+
+Comparisons have independent **actual** and **replay** sections. Actual uses the stored `match_items.state` and work's VNDB id: a row is matched only when state is `matched` and an id exists. Replay uses the current re-ranked final admission decision. Each section lists **gained**, **lost**, and **changed** (matched/strong to a different VNDB id); replay also lists **reason_changed** for remaining explanation changes. A stored live-run identity change is a finding even if replay chooses the same candidate in both reports.
+
+`--answers` accepts `{ "relative/path": { "vndb": "v123", "source": "user" } }` (also source `auto-2026-10-11`) and checks both sections for **agree**, **false**, and **missing**. Relative paths and answer keys are NFC-normalized; they must be unique across roots. Absent resources with answers count as missing. **Unreviewed** lists actual matches or strong replay decisions without an answer entry for manual review. Answer counts are zero when no answer file is supplied.
+
+The printed and JSON summary includes actual matched/replay strong totals, gained, lost, changed, false, agree, missing, unreviewed, and shared added/removed counts. JSON `diff` contains the comparison mode, added/removed rows, and separate actual/replay entries; `answers` contains separate actual/replay checks.
+
+`--fail-on` accepts a comma list of `changed,false,lost,missing,added,removed` (default `changed,false`) and applies to both sections. Exit status is **1** if any selected count is nonzero, **2** for input/runtime errors, otherwise **0**. The JSON report is written before an alarm or error exit; errors have an `error` field. A missing/unsafe/unwritable `--out` cannot receive a report. Output is atomically replaced and must be separate from every input.
 
 Replay only sees candidates stored in the earlier run. Changes that would send different VNDB queries need a live run to confirm. Keep real-library reports and answer keys private, outside version control (normally under `~/GalroonTestData/`; the gitignored `test-output/replay/` is used for sandbox handoff). Automatically generated answers record prior outcomes, not individual owner verification.
 
