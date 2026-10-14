@@ -116,3 +116,22 @@ headers 只包含 content-type、x-galroon-library、x-galroon-device、retry-af
 - 上面「尚未執行」的 socket 測試這次實際跑了。`pairing_checks_pin_before_sending_code_and_context_is_pinned` 原本用格式錯誤的 token，Core 依設計回 `Authentication required` 而不是 `credential_invalid`；測試改成撤銷剛配對的 session。
 - `cargo test -p galroon-core -p galroon-mcp --lib --bins --tests`：core 453 通過、1 忽略；MCP 全部通過。`npx vitest run`：32 檔 184 項通過。`npx tsc --noEmit` 成功。
 - galroon-desktop 在 macOS 仍無法編譯（build script 需要 Windows 資源），Windows 編譯與上面的 IPC 效能量測仍待驗。
+
+## Windows 與 NAS 實機驗證（2026-10-15，香港時間）
+
+驗證桌面版本為 PR #59 的 `4a84fb6`。Windows 原生 Tauri App 使用獨立本機 profile，連到 NAS 上獨立的 `galroon-pr59-check` 容器；資料來自現有收藏的 catalog-only 備份，保留 620 個作品、793 個資源及 6,512 筆檔案索引，排除原有登入憑證。兩個 NAS Core 均將 `/volume1/Backup/Galgame` 唯讀掛載，測試實例另用資料目錄及 LAN port 14831。
+
+NAS 沿用 `galroon:f0e5b43bcb1f`：它已包含本次使用的 LAN TLS、owner CLI 與配對 API；#59 的新增內容在桌面及 LAN client。只在獨立實例設定測試 owner，現有 Core 的 owner 認證未更動。
+
+- Windows 執行 `npm ci`、`npm run build`、`cargo build --locked -p galroon-core --bin galroon-core` 及 `cargo build --locked -p galroon-desktop` 成功。桌面以 `TAURI_CONFIG={"build":{"devUrl":null},"bundle":{"resources":[]}}` 嵌入建置好的前端並略過安裝包資源複製；同目錄提供原生 Core。**驗證的是 debug App，尚未驗證 release installer。**
+- 實際桌面 UI 貼上 NAS 配對字串、儲存配對、確認開啟收藏成功。首頁與收藏頁顯示 620 個作品，作品詳情、封面、角色資料及「NAS Galgame」資源正常載入。
+- NAS owner 撤銷該桌面憑證後，UI 顯示「需要重新配對／此裝置的配對已失效」，`connections.json` 保留 selected 並寫入 `needs_repair:true`。取得新配對字串並明確開啟新連線後，恢復同一收藏的正常瀏覽。
+- 補充原生 probe 直接使用此版本的 `Controller`、`paired` 與 `lan_client`。錯誤 SPKI 指紋被拒絕；desktop role、空的 WebView session token、兩頁各 60 個作品、作品詳情及 assets 通過，203,197 bytes 的封面以二進位 IPC envelope 回傳。
+- probe 憑證撤銷後，代理保留 `401` 及 `credential_invalid`；失效狀態與 selected 持久化，重新建立 Controller 仍拒絕舊憑證，未啟動本機收藏作為 fallback。Credential Manager 測試在登入中的 Windows 桌面工作階段執行；SSH 工作階段不能寫入該 credential store。
+- 測試快照的來源監控保持停用；未操作掃描、檔案取得／移動或收藏編輯。結束後逐列核對 `works`、`resources`、`resource_files`、`files` 與 `jobs`，均與備份完全相同，10 個既有 completed jobs 沒有增減。Core 的自動配對設定在執行中仍為 enabled，因此沒有將「停用自動配對」列為驗證結果。
+- 遊戲庫 7,727 個目錄項目（6,618 個檔案、1,109 個目錄）的路徑、類型、大小、mtime 指紋前後一致：`4e94f4eb6f947b7916b22d09cbc392129b88c47d31f6f0127695ff896eac8295`。這是檔案 metadata 指紋，加上 Docker 唯讀掛載；沒有對約 3.3 TB 的檔案內容逐一計算 hash。
+- 測試裝置全部撤銷，測試容器停止並移除，Windows 測試 App／Core 關閉，臨時排程及 client credentials 清除。現有 NAS Core 保持正常執行，LAN 設定恢復為未設定，owner 仍未設定密碼。
+
+Windows MCP 測試的 watched-scan／automatic-matching 競態已修正，三項 e2e 連跑十次全部通過（30/30）；另將 Windows Core limiter fixture 的 1,000 筆資料改為同一 transaction 並統一 timestamp，避免慢速逐筆 commit 讓資料提前過期。`4a84fb6` 的 CI 四項工作均通過。
+
+原始截圖、檔案指紋、唯讀掛載證據及 probe JSON 保存在執行此驗證的 worktree `test-output/lan-pr5-nas-live/`，不含於 Git。計畫 §4.5 的 IPC／fetch p95 與 5 MB 封面尖峰記憶體比較仍未量測；上述結果不能代替效能驗收。
