@@ -71,6 +71,7 @@ pub mod network;
 pub mod updates;
 pub mod pairing;
 pub mod lan_tls;
+pub mod lan_client;
 mod services;
 pub use services::Services;
 pub mod core_host;

@@ -2,11 +2,11 @@ import i18n from 'i18next';
 import {revisionConflictText} from './coreText';
 import {reportClientError} from './clientDiagnostics';
 import {invoke,isTauri} from '@tauri-apps/api/core';
-export type Session={url:string;token:string;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
+export type Session={url:string;token:string;remote?:boolean;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
 export const isDesktop=isTauri();
 let session:Session|undefined;
 let epoch=0,changing=false,stopRequested=false,everConnected=false;
-export type ConnectionPhase='idle'|'connecting'|'connected'|'offline'|'reconnecting'|'restoring'|'stopping'|'stopped'|'collection_changed'|'incompatible';
+export type ConnectionPhase='idle'|'connecting'|'connected'|'offline'|'reconnecting'|'restoring'|'stopping'|'stopped'|'collection_changed'|'incompatible'|'repair_required';
 export type ConnectionSnapshot={phase:ConnectionPhase;error:string};
 let connection:ConnectionSnapshot={phase:'idle',error:''};const listeners=new Set<()=>void>();
 let retryTimer:ReturnType<typeof setTimeout>|undefined,retryDelay=500,pendingConnection:Promise<boolean>|undefined;
@@ -14,15 +14,17 @@ export const connectionSnapshot=()=>connection;
 export function subscribeConnection(listener:()=>void){listeners.add(listener);return ()=>{listeners.delete(listener);};}
 function phase(value:ConnectionPhase,error=''){if(error&&error!==connection.error)reportClientError(error);connection={phase:value,error};for(const listener of listeners)listener();}
 function clearRetry(){if(retryTimer!==undefined){clearTimeout(retryTimer);retryTimer=undefined;}}
-function scheduleReconnect(){if(!isDesktop||stopRequested||retryTimer!==undefined)return;const delay=retryDelay;retryDelay=Math.min(30000,retryDelay*2);retryTimer=setTimeout(()=>{retryTimer=undefined;void nativeConnect().catch(()=>{});},delay);}
+function scheduleReconnect(){if(!isDesktop||stopRequested||connection.phase==='repair_required'||retryTimer!==undefined)return;const delay=retryDelay;retryDelay=Math.min(30000,retryDelay*2);retryTimer=setTimeout(()=>{retryTimer=undefined;void nativeConnect().catch(()=>{});},delay);}
 export class SessionChangedError extends Error {constructor(){super('Collection connection changed');}}
 export class CollectionChangedError extends Error {constructor(){super('A different collection or Core device answered. Open it explicitly before continuing.');}}
 export class CompatibilityError extends Error {constructor(message='Core and this app do not support a common API. Update the older application before reconnecting.'){super(message);}}
 function checkNative(s:Session){
- if(!s?.url||!s.token||!s.library_id||!s.device_id||typeof s.api_min!=='number'||typeof s.api_max!=='number'||s.api_min>1||s.api_max<1)throw new CompatibilityError();
+ if(!s?.url||(!s.remote&&!s.token)||(s.remote&&(s.url!=='ipc://core'||s.token!==''))||!s.library_id||!s.device_id||typeof s.api_min!=='number'||typeof s.api_max!=='number'||s.api_min>1||s.api_max<1)throw new CompatibilityError();
 }
 function differs(a:Session|undefined,b:Session){return !!a&&!!a.library_id&&(a.library_id!==b.library_id||a.device_id!==b.device_id);}
 function collectionChanged(){clearRetry();stopRequested=true;epoch++;phase('collection_changed');}
+export class RepairRequiredError extends Error {constructor(){super("This device's pairing is no longer valid. Pair again.");}}
+function repairRequired(){clearRetry();stopRequested=true;epoch++;phase('repair_required');return new RepairRequiredError();}
 export class AuthenticationError extends Error {constructor(){super('Sign in again to reconnect to this collection');}}
 export class ConnectionLostError extends Error {constructor(){super('The Core connection is unavailable. Reconnect before continuing.');}}
 export class UncertainOperationError extends Error {constructor(){super('The connection changed before this operation was confirmed. Check Activity and the affected item before trying again; the operation was not sent again automatically.');}}
@@ -32,11 +34,12 @@ export const coreUrl=()=>session?.url||browserCoreUrl();
 export function sessionChanging(){return changing;}
 function lostConnection(){if(!isDesktop||changing||stopRequested)return;if(connection.phase==='connected'){epoch++;phase('offline');}scheduleReconnect();}
 function nativeConnect():Promise<boolean>{
+ if(connection.phase==='repair_required')return Promise.reject(new RepairRequiredError());
  if(connection.phase==='collection_changed')return Promise.reject(new CollectionChangedError());
  if(pendingConnection)return pendingConnection;if(changing)return Promise.reject(new SessionChangedError());
  clearRetry();changing=true;epoch++;const attempt=epoch;phase(everConnected?'reconnecting':'connecting');
  const run=(async()=>{let failed=false,failure:unknown;try{const next=await Promise.resolve().then(()=>invoke<Session>('core_session'));checkNative(next);if(differs(session,next))throw new CollectionChangedError();if(epoch!==attempt)throw new SessionChangedError();session=next;everConnected=true;retryDelay=500;}catch(error){failed=true;failure=error;}finally{if(epoch===attempt){changing=false;epoch++;}pendingConnection=undefined;}
-  if(failed){if(failure instanceof CollectionChangedError){collectionChanged();throw failure;}if(failure instanceof CompatibilityError){stopRequested=true;phase('incompatible',failure.message);throw failure;}phase('offline',failure instanceof Error?failure.message:String(failure));scheduleReconnect();throw failure;}phase('connected');return true;
+  if(failed){if(String(failure)==='credential_invalid')throw repairRequired();if(String(failure)==='collection_changed')failure=new CollectionChangedError();if(failure instanceof CollectionChangedError){collectionChanged();throw failure;}if(failure instanceof CompatibilityError){stopRequested=true;phase('incompatible',failure.message);throw failure;}phase('offline',failure instanceof Error?failure.message:String(failure));scheduleReconnect();throw failure;}phase('connected');return true;
  })();pendingConnection=run;return run;
 }
 export async function stopCore(){if(changing)throw new SessionChangedError();clearRetry();stopRequested=true;changing=true;epoch++;phase('stopping');try{await invoke('stop_core');}finally{changing=false;epoch++;phase('stopped');}}
@@ -72,6 +75,19 @@ export function collectionStorageKey(name:string){return `galroon.${session?.lib
 export function setSession(s:Session){clearRetry();session=s;epoch++;stopRequested=false;retryDelay=500;if(isDesktop){everConnected=true;phase('connected');}}
 export function readApi<T=unknown>(path:string,signal:AbortSignal):Promise<T>{return request<T>(path,undefined,signal);}
 export function api<T=unknown>(path:string,body?:unknown):Promise<T>{return request<T>(path,body);}
+async function ipcResponse(current:Session,path:string,method:string,body:unknown,signal?:AbortSignal):Promise<Response>{
+ if(signal?.aborted)throw new DOMException('Request cancelled','AbortError');
+ const pending=invoke<ArrayBuffer>('core_request',{method,path,body:body===undefined?null:Array.from(new TextEncoder().encode(JSON.stringify(body))),contentType:body===undefined?null:'application/json',libraryId:current.library_id,deviceId:current.device_id});
+ let abort:(()=>void)|undefined;
+ try{
+  const raw=await (signal?Promise.race([pending,new Promise<never>((_,reject)=>{abort=()=>reject(new DOMException('Request cancelled','AbortError'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();})]):pending);
+  const bytes=new Uint8Array(raw);if(bytes.byteLength<4)throw new Error('Invalid Core IPC response');
+  const length=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(0);if(length>65536||4+length>bytes.byteLength)throw new Error('Invalid Core IPC metadata');
+  const metadata=JSON.parse(new TextDecoder().decode(bytes.subarray(4,4+length)));
+  const bodyStream=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(bytes.subarray(4+length));controller.close();}});
+  return new Response([204,205,304].includes(metadata.status)||method==='HEAD'?null:bodyStream,{status:metadata.status,headers:metadata.headers});
+ }finally{if(abort)signal?.removeEventListener('abort',abort);}
+}
 export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  if(signal.aborted)throw new DOMException('Request cancelled','AbortError');
  if(!session||changing)throw new SessionChangedError();
@@ -79,14 +95,15 @@ export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  const controller=new AbortController(),abort=()=>controller.abort();signal.addEventListener('abort',abort,{once:true});
  const timeout=setTimeout(abort,55000);let response:Response|undefined;
  try{
- response=await fetch(`${current.url}/api/artwork?url=${encodeURIComponent(url)}`,{signal:controller.signal,credentials:current.token?'omit':'include',headers:{...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})}});
+ response=current.remote?await ipcResponse(current,`/api/artwork?url=${encodeURIComponent(url)}`,'GET',undefined,controller.signal):await fetch(`${current.url}/api/artwork?url=${encodeURIComponent(url)}`,{signal:controller.signal,credentials:current.token?'omit':'include',headers:{...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})}});
  const check=()=>{if(controller.signal.aborted)throw new DOMException('Request cancelled','AbortError');if(changing||started!==epoch)throw new SessionChangedError();};check();
  const library=response.headers.get('x-galroon-library'),device=response.headers.get('x-galroon-device');
  if((library&&current.library_id&&library!==current.library_id)||(device&&current.device_id&&device!==current.device_id))throw new CollectionChangedError();
+ if(response.status===401){const data=await response.json().catch(()=>null);if(data?.code==='credential_invalid')throw repairRequired();}
  const type=response.headers.get('content-type')?.split(';')[0];
  if(!response.ok||!type||!['image/png','image/jpeg','image/webp'].includes(type)||!response.body)throw new Error('Artwork unavailable');
  const reader=response.body.getReader(),parts:Uint8Array<ArrayBuffer>[]= [];let size=0;
- try{for(;;){const item=await reader.read();if(item.done)break;check();size+=item.value.byteLength;if(size>8*1024*1024)throw new Error('Artwork exceeds size limit');parts.push(new Uint8Array(item.value));}check();return new Blob(parts,{type});}
+ try{for(;;){const item=await reader.read();if(item.done)break;check();size+=item.value.byteLength;if(size>(current.remote?16:8)*1024*1024)throw new Error('Artwork exceeds size limit');parts.push(new Uint8Array(item.value));}check();return new Blob(parts,{type});}
  finally{try{await reader.cancel();}catch{/* Preserve the original read failure. */}reader.releaseLock();}
  }finally{clearTimeout(timeout);signal.removeEventListener('abort',abort);if(response?.body&&!response.body.locked){try{await response.body.cancel();}catch{/* A failed response may already be closed. */}}}
 }
@@ -101,14 +118,14 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
  const stale=()=>{if(changing||started!==epoch)throw readOnly?new SessionChangedError():new UncertainOperationError();};
  let response:Response,data:any;const controller=body===undefined?new AbortController():undefined;const timeout=controller?setTimeout(()=>controller.abort(),path.includes('/exploration')||path.startsWith('/people/')||path.startsWith('/characters/')||path.startsWith('/companies/')||path.startsWith('/discover?')?60000:15000):undefined;
  const abort=()=>controller?.abort();callerSignal?.addEventListener('abort',abort,{once:true});
- try{response=await fetch(`${current.url}/api${path}`,{signal:controller?.signal||callerSignal,method:body===undefined?'GET':'POST',credentials:current.token?'omit':'include',headers:{'Content-Type':'application/json',...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})},body:body===undefined?undefined:JSON.stringify(body)});data=await response.json();}
- catch(error){if(callerSignal?.aborted)throw error;stale();if(isDesktop){lostConnection();throw readOnly?new ConnectionLostError():new UncertainOperationError();}throw error;}finally{if(timeout!==undefined)clearTimeout(timeout);callerSignal?.removeEventListener('abort',abort);}
+ try{response=current.remote?await ipcResponse(current,`/api${path}`,body===undefined?'GET':'POST',body,controller?.signal||callerSignal):await fetch(`${current.url}/api${path}`,{signal:controller?.signal||callerSignal,method:body===undefined?'GET':'POST',credentials:current.token?'omit':'include',headers:{'Content-Type':'application/json',...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})},body:body===undefined?undefined:JSON.stringify(body)});data=await response.json();}
+ catch(error){if(callerSignal?.aborted)throw error;stale();if(String(error)==='credential_invalid')throw repairRequired();if(String(error).startsWith('409 collection_changed')){collectionChanged();throw new CollectionChangedError();}if(isDesktop){lostConnection();throw readOnly?new ConnectionLostError():new UncertainOperationError();}throw error;}finally{if(timeout!==undefined)clearTimeout(timeout);callerSignal?.removeEventListener('abort',abort);}
  stale();
  if(data?.code==='collection_changed'){collectionChanged();throw new CollectionChangedError();}
  const library=response.headers.get('x-galroon-library'),device=response.headers.get('x-galroon-device');
  if((library&&current.library_id&&library!==current.library_id)||(device&&current.device_id&&device!==current.device_id)){collectionChanged();throw readOnly?new CollectionChangedError():new UncertainOperationError();}
  if(library)current.library_id=library;if(device)current.device_id=device;
- if(response.status===401){if(isDesktop){lostConnection();throw new ConnectionLostError();}throw new AuthenticationError();}
+ if(response.status===401){if(data?.code==='credential_invalid')throw repairRequired();if(isDesktop){lostConnection();throw new ConnectionLostError();}throw new AuthenticationError();}
  if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status,data.code);return data as T;
 }
 export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
