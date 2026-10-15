@@ -25,6 +25,7 @@ pub mod relation_corrections;
 pub mod artwork_cache;
 pub mod artwork_library;
 pub mod artwork_offline;
+pub mod collection_download;
 pub mod artwork;
 mod artwork_queue;
 mod artwork_references;

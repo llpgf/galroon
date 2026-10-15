@@ -7,7 +7,14 @@ use std::path::Path;
 type R<T>=Result<T,String>;
 pub const FILE:&str="artwork-library.sqlite";
 pub struct Library{connection:Connection}
-fn profile_key(key:&str)->R<()>{if !key.strip_prefix("exploration.v4.work.").and_then(|s|s.strip_suffix(".1")).is_some_and(|s|crate::exploration::valid_id(s,'v')){return Err("Unsupported offline work profile".into());}Ok(())}
+fn profile_key(key:&str)->R<()>{
+ let parts:Vec<_>=key.split('.').collect();
+ let valid=match parts.as_slice(){
+  ["exploration","v4","work",id,"1"]=>crate::exploration::valid_id(id,'v'),
+  ["exploration","v3",kind,id,page]=>match *kind{"character"=>Some('c'),"person"=>Some('s'),"company"=>Some('p'),_=>None}.is_some_and(|prefix|crate::exploration::valid_id(id,prefix)&&page.parse::<u32>().is_ok_and(|n|(1..=1000).contains(&n))),
+  _=>false
+ };if !valid{return Err("Unsupported offline profile".into());}Ok(())
+}
 #[derive(Serialize,Deserialize,Debug)]pub struct Stats{pub images:i64,pub bytes:i64,pub profiles:i64}
 impl Library{
  pub fn open(base:&Path)->R<Self>{

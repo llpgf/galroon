@@ -9,6 +9,7 @@ import {JobSummary} from './JobSummary';
 import {JobHistory,type JobPage} from './JobHistory';
 import {APP_VERSION} from './version';
 import {CachedImage} from './CachedImage';
+import {ClientCachePanel} from './ClientCachePanel';
 import {reportClientError} from './clientDiagnostics';
 import type {DiscoveryQuery} from './discovery';
 import {SettingsLayout} from './SettingsLayout';
@@ -135,7 +136,7 @@ function App(){
  <section className="settings-row"><Languages size={22}/><div><h2>{t('nameDisplay')}</h2><p>{t('nameDisplayHint')}</p></div><select aria-label={t('nameDisplay')} value={nameMode} onChange={e=>setNameMode(e.target.value as NameMode)}><option value="romanized">{t('nameRomanized')}</option><option value="original">{t('nameOriginal')}</option></select></section>
  <section className="settings-row"><BookOpen size={22}/><div><h2>{t('titleDisplay')}</h2><p>{t('titleDisplayHint')}</p></div><select aria-label={t('titleDisplay')} value={titleMode} onChange={e=>setTitleMode(e.target.value as 'display'|'original')}><option value="display">{t('displayTitle')}</option><option value="original">{t('originalTitleChoice')}</option></select></section>
  <section className="settings-row"><EyeOff size={22}/><div><h2>{t('safeMode')}</h2><p>{t('safeHint')}</p></div><input type="checkbox" role="switch" checked={safe} aria-label={t('safeMode')} onChange={e=>{setSafe(e.target.checked);localStorage.setItem('galroon.safe',String(e.target.checked));}}/></section></>}
- collection={<>{canWrite&&<OfflineArtworkPanel/>}{identity?.can_manage_access&&<ArtworkCachePanel/>}{isDesktop&&<ConnectionsPanel/>}{context&&<CollectionContextPanel key={context.library.id+':'+context.library.revision} context={context} onChanged={refresh}/>}{isDesktop&&identity?.can_manage_access&&<section className="settings-row"><HardDrive size={22}/><div><h2>{t('backgroundCore')}</h2><p>{t('backgroundCoreHint')}</p></div><button disabled={busy} onClick={()=>void act(stopCore)}>{t('stopCore')}</button></section>}</>}
+ collection={<><ClientCachePanel/>{canWrite&&<OfflineArtworkPanel/>}{identity?.can_manage_access&&<ArtworkCachePanel/>}{isDesktop&&<ConnectionsPanel/>}{context&&<CollectionContextPanel key={context.library.id+':'+context.library.revision} context={context} onChanged={refresh}/>}{isDesktop&&identity?.can_manage_access&&<section className="settings-row"><HardDrive size={22}/><div><h2>{t('backgroundCore')}</h2><p>{t('backgroundCoreHint')}</p></div><button disabled={busy} onClick={()=>void act(stopCore)}>{t('stopCore')}</button></section>}</>}
  account={<>{identity?.can_manage_access?<AccessPanel/>:<p>{t('settingsAccessManaged')}</p>}{!isDesktop&&<DiagnosticsPanel core={false}/>} {!isDesktop&&<button onClick={()=>void signOut().catch(reportError).finally(()=>{setReady(false);setIdentity(null);setDetail(null);})}>{t('signOut')}</button>}</>}
  about={<AboutPanel updates={updates} coreVersion={context?.core.version} canWrite={canWrite}/>}
  backup={canWrite?<><BackupPanel allowRestore={identity?.can_manage_access===true} onRestored={async()=>{window.location.reload();}}/>{isDesktop&&identity?.can_manage_access&&<DiagnosticsPanel/>}</>:null}
