@@ -6,7 +6,7 @@ type Saved={selected:string|null;entries:{id:string;name:string;url:string;libra
 export function ConnectionsPanel(){
  const connection=useSyncExternalStore(subscribeConnection,connectionSnapshot);
  const [editing,setEditing]=useState<{id:string;name:string;url:string}|null>(null);
- const {t}=useTranslation();const [saved,setSaved]=useState<Saved|null>(null),[url,setUrl]=useState('http://127.0.0.1:14800'),[code,setCode]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[review,setReview]=useState<{kind:'switch'|'revoke'|'forget';id:string|null;name:string}|null>(null);
+ const {t}=useTranslation();const [saved,setSaved]=useState<Saved|null>(null),[url,setUrl]=useState('http://127.0.0.1:14800'),[code,setCode]=useState(''),[pairing,setPairing]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[review,setReview]=useState<{kind:'switch'|'revoke'|'forget';id:string|null;name:string}|null>(null);
  const run=async(work:()=>Promise<void>)=>{setBusy(true);setError('');try{await work();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}};
  useEffect(()=>{invoke<Saved>('list_connections').then(setSaved).catch(e=>setError(String(e)));},[]);
  return <section className="section connections-panel"><h2>{t('savedCores')}</h2><p>{t('pairedCoreScope')}</p>
@@ -22,5 +22,8 @@ export function ConnectionsPanel(){
  <h3>{t('addPairedCore')}</h3><label>{t('coreAddress')}<input value={url} onChange={e=>setUrl(e.target.value)} disabled={busy} spellCheck={false}/></label>
  <label>{t('pairingCode')}<input value={code} onChange={e=>setCode(e.target.value)} disabled={busy} maxLength={20} autoComplete="off" spellCheck={false}/></label>
  <button className="primary" disabled={busy||!saved||code.replace(/-/g,'').trim().length!==12}>{t('savePairing')}</button>
+ </form><form aria-label={t('pastePairingString')} onSubmit={e=>{e.preventDefault();void run(async()=>{setSaved(await invoke<Saved>('pair_lan_connection',{pairing:pairing.trim()}));setPairing('');});}}>
+ <h3>{t('pairLanCore')}</h3><label>{t('pastePairingString')}<input value={pairing} onChange={e=>setPairing(e.target.value)} disabled={busy} maxLength={256} autoComplete="off" spellCheck={false}/></label>
+ <button className="primary" disabled={busy||!saved||!pairing.trim()}>{t('savePairing')}</button>
  </form>{busy&&<p role="status">{t('loading')}</p>}{error&&<p role="alert" className="error-text">{error}</p>}</section>;
 }

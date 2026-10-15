@@ -5,10 +5,12 @@ use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path, time::Duration};
 type R<T> = Result<T, String>;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String, pub name: String, pub url: String,
     pub library_id: String, pub device_id: String,
+    #[serde(default)] pub fingerprint: Option<String>,
+    #[serde(default)] pub needs_repair: bool,
 }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Connections { pub selected: Option<String>, pub entries: Vec<Connection> }
@@ -31,19 +33,20 @@ pub fn save(base: &Path, value: &Connections) -> R<()> {
 fn valid_id(id: &str)->bool {id.len()==36 && id.bytes().all(|b|b.is_ascii_hexdigit()||b==b'-')}
 pub fn endpoint(raw:&str)->R<String> {
     let u=reqwest::Url::parse(raw.trim()).map_err(|_|"Enter a Core URL such as http://127.0.0.1:14800")?;
-    // LAN/TLS deployment is a separate product boundary. Do not widen the listener or CSP here.
     if u.scheme()!="http" || !matches!(u.host_str(),Some("127.0.0.1"|"localhost")) || !u.username().is_empty() || u.password().is_some() || u.path()!="/" || u.query().is_some() || u.fragment().is_some() {
-        return Err("This Windows build supports loopback Core connections only (http://127.0.0.1:port). NAS/LAN deployment is not enabled.".into());
+        return Err("Pairing by URL and code supports loopback only (http://127.0.0.1:port). For LAN, paste a pairing string.".into());
     }
     let port=u.port_or_known_default().ok_or("Core port is missing")?;if port==0{return Err("Core port must not be zero".into());}
     Ok(format!("http://127.0.0.1:{port}"))
 }
 fn client()->R<reqwest::Client>{reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(10)).build().map_err(|e|e.to_string())}
 async fn response(r:reqwest::Response)->R<Value>{
-    if !r.status().is_success(){return Err(format!("Core request failed ({}). Check the connection or pair again.",r.status().as_u16()));}
+    let status=r.status();
     if r.content_length().is_some_and(|n|n>65536){return Err("Core response is too large".into());}
     let mut r=r;let mut body=Vec::new();while let Some(chunk)=r.chunk().await.map_err(|_|"Core response interrupted")?{if body.len()+chunk.len()>65536{return Err("Core response is too large".into());}body.extend_from_slice(&chunk);}
-    serde_json::from_slice(&body).map_err(|_|"Core returned an invalid response".into())
+    let value:Value=serde_json::from_slice(&body).map_err(|_|"Core returned an invalid response")?;
+    if status.as_u16()==401&&value["code"]=="credential_invalid"{return Err("credential_invalid".into());}
+    if !status.is_success(){return Err(format!("Core request failed ({}). Check the connection or pair again.",status.as_u16()));}Ok(value)
 }
 fn field(v:&Value,key:&str)->R<String>{v[key].as_str().filter(|s|!s.is_empty()&&s.len()<1024).map(str::to_owned).ok_or_else(||format!("Core response is missing {key}"))}
 async fn context(url:&str,token:&str)->R<Value>{response(client()?.get(format!("{url}/api/context")).bearer_auth(token).send().await.map_err(|_|"Core is unavailable. The selected collection has not changed.")?).await}
@@ -53,8 +56,10 @@ fn session(url:String,token:String,v:&Value)->R<Session>{
     Ok(Session{url,token,library_id:field(&v["library"],"id")?,device_id:field(&v["core"]["device"],"id")?,api_min:1,api_max:1,instance_id:field(&v["core"],"instance_id")?,pid:0})
 }
 pub async fn connect(entry:&Connection)->R<Session>{
-    let url=endpoint(&entry.url)?;let token=credential_read(&entry.id)?;
-    let s=session(url.clone(),token.clone(),&context(&url,&token).await?)?;
+    if entry.needs_repair{return Err("credential_invalid".into());}
+    let url=entry_endpoint(entry,&entry.url)?;let token=credential_read(&entry.id)?;
+    let v=if let Some(fp)=&entry.fingerprint{response(galroon_core::lan_client::pinned_client(galroon_core::lan_client::decode_fingerprint(fp)?)?.get(format!("{url}/api/context")).bearer_auth(&token).header("x-galroon-library",&entry.library_id).header("x-galroon-device",&entry.device_id).send().await.map_err(|_|"Core is unavailable or its certificate fingerprint changed. Pair again if its key changed.")?).await?}else{context(&url,&token).await?};
+    let s=session(url.clone(),token.clone(),&v)?;
     if s.library_id!=entry.library_id||s.device_id!=entry.device_id{return Err("A different collection or Core device answered. Pair it explicitly; the saved connection was not replaced.".into());}Ok(s)
 }
 /// Recover an explicitly supplied address without replacing the pinned identity or credential.
@@ -62,7 +67,7 @@ pub async fn connect(entry:&Connection)->R<Session>{
 pub async fn update_endpoint(base:&Path,id:&str,raw:&str)->R<Connections>{
     let mut saved=read(base)?;
     let entry=saved.entries.iter_mut().find(|entry|entry.id==id).ok_or("Connection not found")?;
-    let mut candidate=entry.clone();candidate.url=endpoint(raw)?;
+    let mut candidate=entry.clone();candidate.url=entry_endpoint(entry,raw)?;
     connect(&candidate).await?;
     entry.url=candidate.url;
     save(base,&saved)?;Ok(saved)
@@ -75,12 +80,26 @@ pub async fn pair(base:&Path,raw:&str,code:&str)->R<Connections>{
     let token=field(&reply,"token")?;
     let result=async {
         let v=context(&url,&token).await?;let s=session(url.clone(),token.clone(),&v)?;
-        let entry=Connection{id:db::id(),name:field(&v["library"],"name")?,url:url.clone(),library_id:s.library_id,device_id:s.device_id};
+        let entry=Connection{id:db::id(),name:field(&v["library"],"name")?,url:url.clone(),library_id:s.library_id,device_id:s.device_id,fingerprint:None,needs_repair:false};
         credential_write(&entry.id,&token)?;let id=entry.id.clone();saved.entries.push(entry);
         if let Err(e)=save(base,&saved){let _=credential_delete(&id);return Err(e);}Ok(saved)
     }.await;
     if result.is_err(){let _=client()?.post(format!("{url}/api/access/logout")).header("Origin",&url).bearer_auth(&token).json(&json!({})).send().await;}
     result
+}
+pub fn entry_endpoint(entry:&Connection,raw:&str)->R<String>{if let Some(fp)=&entry.fingerprint{galroon_core::lan_client::decode_fingerprint(fp)?;galroon_core::lan_client::endpoint(raw)}else{endpoint(raw)}}
+fn entry_client(entry:&Connection)->R<reqwest::Client>{if let Some(fp)=&entry.fingerprint{galroon_core::lan_client::pinned_client(galroon_core::lan_client::decode_fingerprint(fp)?)}else{client()}}
+pub fn lan_connection(entry:&Connection)->R<galroon_core::lan_client::LanConnection>{
+ if entry.needs_repair{return Err("credential_invalid".into());}
+ galroon_core::lan_client::LanConnection::new(entry_endpoint(entry,&entry.url)?,entry.fingerprint.clone().ok_or("Selected connection is not a LAN Core")?,credential_read(&entry.id)?,entry.library_id.clone(),entry.device_id.clone())
+}
+pub fn mark_repair(base:&Path,id:&str)->R<()>{let mut saved=read(base)?;if let Some(entry)=saved.entries.iter_mut().find(|e|e.id==id){entry.needs_repair=true;save(base,&saved)?;}Ok(())}
+pub async fn pair_lan(base:&Path,pairing_string:&str)->R<Connections>{
+ let mut saved=read(base)?;if saved.entries.len()>=32{return Err("Remove an unused connection before adding another".into());}
+ let paired=galroon_core::lan_client::pair_with_string(pairing_string.trim(),"Galroon desktop").await?;
+ let entry=Connection{id:db::id(),name:paired.name,url:paired.url,library_id:paired.library_id,device_id:paired.device_id,fingerprint:Some(paired.fingerprint),needs_repair:false};
+ credential_write(&entry.id,&paired.token)?;let id=entry.id.clone();saved.entries.push(entry);
+ if let Err(error)=save(base,&saved){let _=credential_delete(&id);return Err(error);}Ok(saved)
 }
 pub fn forget(base:&Path,id:&str)->R<Connections>{
     let mut saved=read(base)?;if saved.selected.as_deref()==Some(id){return Err("Switch to another collection before removing this connection".into());}
@@ -92,7 +111,7 @@ pub async fn remove(base:&Path,id:&str)->R<Connections>{
     let entry=saved.entries.iter().find(|e|e.id==id).ok_or("Connection not found")?;
     // Identity must match before revocation; failures preserve the saved entry for retry.
     let s=connect(entry).await?;
-    response(client()?.post(format!("{}/api/access/logout",s.url)).header("Origin",&s.url).bearer_auth(&s.token).json(&json!({})).send().await.map_err(|_|"Could not confirm revocation; the connection remains saved")?).await?;
+    response(entry_client(entry)?.post(format!("{}/api/access/logout",s.url)).header("Origin",&s.url).bearer_auth(&s.token).json(&json!({})).send().await.map_err(|_|"Could not confirm revocation; the connection remains saved")?).await?;
     credential_delete(id)?;saved.entries.retain(|e|e.id!=id);save(base,&saved)?;Ok(saved)
 }
 #[cfg(windows)]fn target(id:&str)->R<Vec<u16>>{if !valid_id(id){return Err("Invalid credential reference".into());}Ok(format!("Galroon/paired/{id}\0").encode_utf16().collect())}
@@ -119,6 +138,10 @@ pub async fn remove(base:&Path,id:&str)->R<Connections>{
 #[cfg(test)]mod tests{
     use super::*;
     #[test]fn endpoints_do_not_expand_access(){assert_eq!(endpoint("http://localhost:14800/").unwrap(),"http://127.0.0.1:14800");for bad in ["https://example.com","http://192.168.1.2:14800","http://127.0.0.1:0","http://user@127.0.0.1","http://127.0.0.1/path","http://127.0.0.1/?x=y"]{assert!(endpoint(bad).is_err(),"{bad}");}}
+    #[test]fn old_metadata_and_repair_state_survive_reload(){
+        let entry:Connection=serde_json::from_value(json!({"id":db::id(),"name":"Fixture","url":"http://127.0.0.1:14800","library_id":"library","device_id":"device"})).unwrap();assert!(entry.fingerprint.is_none());assert!(!entry.needs_repair);
+        let t=tempfile::tempdir().unwrap();let id=entry.id.clone();save(t.path(),&Connections{selected:Some(id.clone()),entries:vec![entry]}).unwrap();mark_repair(t.path(),&id).unwrap();let saved=read(t.path()).unwrap();assert_eq!(saved.selected,Some(id));assert!(saved.entries[0].needs_repair);
+    }
     #[test]fn malformed_selection_never_falls_back(){let t=tempfile::tempdir().unwrap();save(t.path(),&Connections{selected:Some("missing".into()),entries:vec![]}).unwrap();assert!(read(t.path()).is_err());}
     #[cfg(windows)]#[test]fn windows_credential_roundtrip(){let id=db::id();credential_write(&id,"generated-test-token").unwrap();let actual=credential_read(&id).unwrap();let deleted=credential_delete(&id);assert!(actual=="generated-test-token");deleted.unwrap();assert!(credential_read(&id).is_err());}
 }

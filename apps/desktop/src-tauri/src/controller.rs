@@ -1,7 +1,47 @@
 use std::{path::PathBuf,fs,io::Write,time::Duration};
 use galroon_core::{local_core,backup,plans};
-pub struct Controller{pub base:PathBuf,pub exe:PathBuf,pub gate:tokio::sync::Mutex<()>}
+pub struct Controller{pub base:PathBuf,pub exe:PathBuf,pub gate:tokio::sync::Mutex<()>,remote:tokio::sync::Mutex<Option<Remote>>,proxy:tokio::sync::Mutex<Option<galroon_core::lan_proxy::LocalProxy>>}
+struct Remote{entry:crate::paired::Connection,connection:std::sync::Arc<galroon_core::lan_client::LanConnection>}
+impl Drop for Remote{fn drop(&mut self){self.connection.cancel();}}
 impl Controller{
+ pub fn new(base:PathBuf,exe:PathBuf)->std::sync::Arc<Self>{std::sync::Arc::new(Self{base,exe,gate:tokio::sync::Mutex::new(()),remote:tokio::sync::Mutex::new(None),proxy:tokio::sync::Mutex::new(None)})}
+ pub async fn client_session(self:&std::sync::Arc<Self>)->Result<serde_json::Value,String>{
+  let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let saved=crate::paired::read(&self.base)?;
+  if let Some(id)=&saved.selected{let entry=saved.entries.iter().find(|e|&e.id==id).ok_or("Selected connection is missing")?;
+   if entry.fingerprint.is_some(){
+    let conn=self.remote_connection(entry).await?;
+    let result=conn.session().await;
+    if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,id)?;self.remote.lock().await.take();}
+    let mut session=serde_json::to_value(result?).map_err(|e|e.to_string())?;let mut proxy=self.proxy.lock().await;
+    if proxy.is_none(){let weak=std::sync::Arc::downgrade(self);*proxy=Some(galroon_core::lan_proxy::LocalProxy::start(move|request|{let weak=weak.clone();async move{Ok(weak.upgrade().ok_or("Desktop closed")?.http_request(request).await?.response)}}).await?);}
+    let proxy=proxy.as_ref().unwrap();session["proxy_url"]=serde_json::json!(proxy.url);session["proxy_key"]=serde_json::json!(proxy.key);return Ok(session);
+   }
+   return serde_json::to_value(crate::paired::connect(entry).await?).map_err(|e|e.to_string());
+  }
+  serde_json::to_value(local_core::connect_or_start_with_device(self.active()?,self.exe.clone(),self.base.clone()).await?).map_err(|e|e.to_string())
+ }
+ async fn remote_connection(&self,entry:&crate::paired::Connection)->Result<std::sync::Arc<galroon_core::lan_client::LanConnection>,String>{
+  if entry.needs_repair{return Err("credential_invalid".into());}let mut remote=self.remote.lock().await;
+  if !remote.as_ref().is_some_and(|r|r.entry==*entry){*remote=Some(Remote{entry:entry.clone(),connection:std::sync::Arc::new(crate::paired::lan_connection(entry)?)});}
+  Ok(remote.as_ref().unwrap().connection.clone())
+ }
+ pub async fn core_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<Vec<u8>,String>{self.proxy_request(request).await?.into_ipc_bytes()}
+ pub async fn proxy_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<galroon_core::lan_client::ProxyResponse,String>{
+  let (id,conn)={let _gate=self.gate.lock().await;let saved=crate::paired::read(&self.base)?;let id=saved.selected.ok_or("No LAN Core selected")?;let entry=saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?;let conn=self.remote_connection(entry).await?;(id,conn)};
+  let response=galroon_core::lan_client::proxy(&conn,request).await?;
+  let _gate=self.gate.lock().await;
+  if conn.is_cancelled(){return Err("Connection changed".into());}
+  if response.credential_invalid(){let _lock=self.launch_lock()?;crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}
+  Ok(response)
+ }
+ pub async fn http_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<galroon_core::lan_client::HttpProxyResponse,String>{
+  let (id,conn)={let _gate=self.gate.lock().await;let saved=crate::paired::read(&self.base)?;let id=saved.selected.ok_or("No LAN Core selected")?;let entry=saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?;let conn=self.remote_connection(entry).await?;(id,conn)};
+  let response=galroon_core::lan_client::http_proxy(conn.clone(),request).await?;let _gate=self.gate.lock().await;
+  if conn.is_cancelled(){return Err("Connection changed".into());}
+  if response.credential_invalid{let _lock=self.launch_lock()?;crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}Ok(response)
+ }
+ pub async fn pair_lan(&self,pairing:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::pair_lan(&self.base,&pairing).await}
+
  fn launch_lock(&self)->Result<fs::File,String>{fs::create_dir_all(&self.base).map_err(|e|e.to_string())?;plans::validate_chain(&self.base)?;let file=fs::OpenOptions::new().create(true).read(true).write(true).open(self.base.join("launch.lock")).map_err(|e|e.to_string())?;fs2::FileExt::try_lock_exclusive(&file).map_err(|_|"Another desktop is connecting or restoring this Core; try again shortly".to_string())?;Ok(file)}
  fn active(&self)->Result<PathBuf,String>{let pointer=self.base.join("active-library.json");if !pointer.exists(){return Ok(self.base.clone());}plans::validate_chain(&pointer)?;let v:serde_json::Value=serde_json::from_slice(&fs::read(&pointer).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let dir=PathBuf::from(v["current"].as_str().ok_or("Invalid collection pointer")?).canonicalize().map_err(|e|e.to_string())?;if !dir.starts_with(self.base.canonicalize().map_err(|e|e.to_string())?){return Err("Collection pointer is outside its local data directory".into());}plans::validate_chain(&dir)?;Ok(dir)}
  pub async fn session(&self)->Result<local_core::Session,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let saved=crate::paired::read(&self.base)?;if let Some(id)=saved.selected {return crate::paired::connect(saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?).await;}local_core::connect_or_start_with_device(self.active()?,self.exe.clone(),self.base.clone()).await}
@@ -21,8 +61,8 @@ impl Controller{
   }Ok(serde_json::json!(result))
  }
  pub async fn pair(&self,url:String,code:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::pair(&self.base,&url,&code).await}
- pub async fn update_endpoint(&self,id:String,url:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::update_endpoint(&self.base,&id,&url).await}
- pub async fn select(&self,id:Option<String>)->Result<(),String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let mut saved=crate::paired::read(&self.base)?;if let Some(id)=&id{crate::paired::connect(saved.entries.iter().find(|e|&e.id==id).ok_or("Connection not found")?).await?;}saved.selected=id;crate::paired::save(&self.base,&saved)}
+ pub async fn update_endpoint(&self,id:String,url:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let result=crate::paired::update_endpoint(&self.base,&id,&url).await;if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}let result=result?;self.remote.lock().await.take();Ok(result)}
+ pub async fn select(&self,id:Option<String>)->Result<(),String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let mut saved=crate::paired::read(&self.base)?;if let Some(id)=&id{let result=crate::paired::connect(saved.entries.iter().find(|e|&e.id==id).ok_or("Connection not found")?).await;if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,id)?;}result?;}saved.selected=id;crate::paired::save(&self.base,&saved)?;self.remote.lock().await.take();Ok(())}
  pub async fn remove_connection(&self,id:String,forget:bool)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;if forget{return crate::paired::forget(&self.base,&id);}crate::paired::remove(&self.base,&id).await}
  pub async fn stop(&self)->Result<(),String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;if crate::paired::read(&self.base)?.selected.is_some(){return Err("Stop the Core from its local owner desktop".into());}local_core::request(&self.active()?,&self.exe,"stop").await?;Ok(())}
  pub async fn restore(&self,source:PathBuf,expected_hash:String)->Result<PathBuf,String>{
@@ -52,7 +92,7 @@ impl Controller{
   let db=galroon_core::db::open(&t.path().join("snapshot/library.sqlite")).unwrap();
   {let c=db.lock().unwrap();c.execute("INSERT INTO roots(id,path,label) VALUES('r',?1,'Generated source')",[source.to_string_lossy().to_string()]).unwrap();c.execute("INSERT INTO source_watch(root_id,path,enabled) VALUES('r',?1,1)",[source.to_string_lossy().to_string()]).unwrap();}
   let folder=backup::export(&db,t.path()).unwrap();drop(db);let manifest=backup::inspect(&folder).unwrap();
-  let controller=Controller{base:t.path().join("desktop"),exe:test_core(),gate:tokio::sync::Mutex::new(())};controller.session().await.unwrap();
+  let controller=Controller::new(t.path().join("desktop"),test_core());controller.session().await.unwrap();
   let restored=controller.restore(folder,manifest.sha256).await.unwrap();controller.session().await.unwrap();
   fs::write(source.join("new.zip"),b"generated restore event").unwrap();
   // Exceed the watcher quiet period, so an accidentally enabled watcher has time to enqueue.
@@ -65,8 +105,8 @@ impl Controller{
  fn test_core()->PathBuf{std::env::var_os("GALROON_TEST_CORE").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/release/galroon-core.exe")).canonicalize().expect("Acceptance Core executable must exist")}
  #[tokio::test]async fn paired_endpoint_recovery_preserves_identity_and_credentials(){
   let t=tempfile::tempdir().unwrap();let exe=test_core();
-  let owner=Controller{base:t.path().join("owner"),exe:exe.clone(),gate:tokio::sync::Mutex::new(())};
-  let desktop=Controller{base:t.path().join("desktop"),exe:exe.clone(),gate:tokio::sync::Mutex::new(())};
+  let owner=Controller::new(t.path().join("owner"),exe.clone());
+  let desktop=Controller::new(t.path().join("desktop"),exe.clone());
   let s=owner.session().await.unwrap();let client=reqwest::Client::new();
   client.post(format!("{}/api/access/setup",s.url)).bearer_auth(&s.token).json(&serde_json::json!({"password":"Generated endpoint test password"})).send().await.unwrap().error_for_status().unwrap();
   let code=client.post(format!("{}/api/access/pairing",s.url)).bearer_auth(&s.token).json(&serde_json::json!({"name":"Endpoint fixture"})).send().await.unwrap().error_for_status().unwrap().json::<serde_json::Value>().await.unwrap();
@@ -92,11 +132,11 @@ impl Controller{
  }
  #[tokio::test]async fn paired_connection_persists_revokes_and_never_falls_back(){
   let t=tempfile::tempdir().unwrap();let exe=test_core();
-  let owner=Controller{base:t.path().join("owner"),exe:exe.clone(),gate:tokio::sync::Mutex::new(())};let s=owner.session().await.unwrap();
+  let owner=Controller::new(t.path().join("owner"),exe.clone());let s=owner.session().await.unwrap();
   let client=reqwest::Client::new();
   let setup=client.post(format!("{}/api/access/setup",s.url)).bearer_auth(&s.token).json(&serde_json::json!({"password":"Generated pairing test password"})).send().await.unwrap();assert!(setup.status().is_success());
   let paircode=client.post(format!("{}/api/access/pairing",s.url)).bearer_auth(&s.token).json(&serde_json::json!({"name":"Generated paired desktop"})).send().await.unwrap().json::<serde_json::Value>().await.unwrap();
-  let desktop=Controller{base:t.path().join("desktop"),exe,gate:tokio::sync::Mutex::new(())};
+  let desktop=Controller::new(t.path().join("desktop"),exe);
   let saved=desktop.pair(s.url.clone(),paircode["code"].as_str().unwrap().into()).await.unwrap();assert!(saved.selected.is_none());let id=saved.entries[0].id.clone();
   assert!(desktop.pair(s.url.clone(),paircode["code"].as_str().unwrap().into()).await.is_err());
   desktop.select(Some(id.clone())).await.unwrap();let connected=desktop.session().await.unwrap();assert_eq!(connected.library_id,s.library_id);
@@ -118,7 +158,7 @@ impl Controller{
  #[tokio::test]async fn restore_switches_core_and_preserves_previous_database(){
   let t=tempfile::tempdir().unwrap();let base=t.path().join("controller");let initial=galroon_core::db::open(&base.join("library.sqlite")).unwrap();initial.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('old','Original catalog','Original catalog')",[]).unwrap();drop(initial);
   let snapshot=galroon_core::db::open(&t.path().join("snapshot/library.sqlite")).unwrap();snapshot.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('saved','Saved catalog','Saved catalog')",[]).unwrap();let backup=backup::export(&snapshot,t.path()).unwrap();drop(snapshot);let manifest=backup::inspect(&backup).unwrap();
-  let exe=test_core();let controller=Controller{base:base.clone(),exe:exe.clone(),gate:tokio::sync::Mutex::new(())};
+  let exe=test_core();let controller=Controller::new(base.clone(),exe.clone());
   let original=controller.session().await.unwrap();assert_eq!(titles(&original).await,vec!["Original catalog"]);
   assert!(controller.restore(backup.clone(),"wrong preview digest".into()).await.is_err());assert_eq!(controller.session().await.unwrap().instance_id,original.instance_id);
   fs::write(base.join(".galroon-restore-snapshots"),b"generated obstruction").unwrap();
@@ -131,11 +171,11 @@ impl Controller{
   let protection=PathBuf::from(history[0]["path"].as_str().unwrap());let checked=backup::inspect(&protection).unwrap();assert_eq!(checked.library.unwrap().id,original.library_id);
   controller.restore(protection,checked.sha256).await.unwrap();let returned=controller.session().await.unwrap();assert_eq!(returned.library_id,original.library_id);assert_eq!(titles(&returned).await,vec!["Original catalog"]);
   let history=controller.restore_history().await.unwrap();assert_eq!(history.as_array().unwrap().len(),2);assert_eq!(history[0]["library"]["id"],current.library_id);
-  let reopened=Controller{base,exe,gate:tokio::sync::Mutex::new(())};assert_eq!(reopened.session().await.unwrap().instance_id,returned.instance_id);reopened.stop().await.unwrap();tokio::time::sleep(Duration::from_millis(300)).await;
+  let reopened=Controller::new(base,exe);assert_eq!(reopened.session().await.unwrap().instance_id,returned.instance_id);reopened.stop().await.unwrap();tokio::time::sleep(Duration::from_millis(300)).await;
  }
  #[tokio::test]async fn reconnect_follows_an_externally_restarted_core(){
   let t=tempfile::tempdir().unwrap();let base=t.path().join("controller");let db=galroon_core::db::open(&base.join("library.sqlite")).unwrap();db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w','Persistent restart fixture','Persistent restart fixture')",[]).unwrap();drop(db);
-  let exe=test_core();let controller=Controller{base:base.clone(),exe:exe.clone(),gate:tokio::sync::Mutex::new(())};let original=controller.session().await.unwrap();
+  let exe=test_core();let controller=Controller::new(base.clone(),exe.clone());let original=controller.session().await.unwrap();
   // Another trusted local client requests shutdown and starts the replacement.
   local_core::request(&base,&exe,"stop").await.unwrap();let lock=fs::OpenOptions::new().read(true).write(true).open(base.join("core.lock")).unwrap();let until=tokio::time::Instant::now()+Duration::from_secs(10);
   loop{if fs2::FileExt::try_lock_exclusive(&lock).is_ok(){break;}assert!(tokio::time::Instant::now()<until,"Old Core did not stop");tokio::time::sleep(Duration::from_millis(100)).await;}drop(lock);

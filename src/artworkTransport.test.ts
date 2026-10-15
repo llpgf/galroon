@@ -24,3 +24,9 @@ it('does not send a pre-cancelled request and aborts a hung request at55s',async
  const cancelled=new AbortController();cancelled.abort();await expect(artworkBlob(url,cancelled.signal)).rejects.toMatchObject({name:'AbortError'});expect(fetcher).not.toHaveBeenCalled();
  const pending=artworkBlob(url,new AbortController().signal),check=expect(pending).rejects.toMatchObject({name:'AbortError'});await vi.advanceTimersByTimeAsync(55000);await check;expect(vi.getTimerCount()).toBe(0);
 });
+
+it('uses native Blob consumption for known lengths and enforces declared and received limits',async()=>{
+ const response=new Response(new Uint8Array([1,2,3]),{headers:{'content-type':'image/png','content-length':'3'}}),blob=vi.spyOn(response,'blob');
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));expect((await artworkBlob(url,new AbortController().signal)).size).toBe(3);expect(blob).toHaveBeenCalledOnce();
+ for(const length of ['1',String(8*1024*1024+1)]){vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(new Uint8Array(8*1024*1024+1),{headers:{'content-type':'image/png','content-length':length}})));await expect(artworkBlob(url,new AbortController().signal)).rejects.toThrow('Artwork exceeds size limit');}
+});

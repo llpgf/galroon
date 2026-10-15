@@ -158,7 +158,7 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(!entries.is_empty() && entries.iter().all(|e| e["relative"].is_string() && e["size"].is_number()), "{files}");
     assert!(!files.to_string().contains(f.source.to_str().unwrap()), "absolute source paths must not leak: {files}");
 
-    // Core files matching issues once the automatic follow-up scan settles, shortly after the fixture's scan.
+    // Background reconciliation publishes issues after the fixture's manual scan.
     let mut issues = Value::Null;
     for _ in 0..100 {
         issues = server.ok("list_issues", json!({})).await;
@@ -231,18 +231,11 @@ async fn mcp_session_tidies_the_catalog_without_touching_files() {
     assert!(!second.to_string().contains("Paging fixture 00"), "{second}");
 
     let jobs = server.ok("list_jobs", json!({})).await;
-    // Automatic matching is on by default, so a match task may be listed before the scan.
-    assert!(jobs["jobs"].as_array().unwrap().iter().any(|j| j["kind"] == "scan"), "{jobs}");
+    let scans = jobs["jobs"].as_array().unwrap();
+    assert_eq!(scans.len(), 1, "Only the fixture's manual scan should run: {jobs}");
+    assert_eq!(scans[0]["kind"], "scan");
+    assert_eq!(scans[0]["state"], "completed");
     server.ok("list_plans", json!({})).await;
-
-    // Core refuses organize previews while tasks run; the automatic match task can outlast the scan on slow machines.
-    for _ in 0..600 {
-        let jobs = server.ok("list_jobs", json!({})).await;
-        if !jobs["jobs"].as_array().unwrap().iter().any(|j| matches!(j["state"].as_str(), Some("queued" | "running" | "pausing" | "cancelling"))) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
 
     // Organizing outside a managed folder is refused by Core; nothing on disk changes either way.
     let (refused, is_error) = server.call("preview_organize", json!({"resource_id": game["id"], "destination": f.source})).await;

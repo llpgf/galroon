@@ -18,7 +18,12 @@ impl Fixture {
         let owner = app.token.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        tokio::spawn(galroon_core::serve_listener(app, listener));
+        // MCP tests scan and bind explicitly. Keep issue reconciliation, but do not start
+        // watching or automatic matching that can race setup and query live VNDB.
+        tokio::spawn(async move {
+            let _smart = galroon_core::smart_updates::start(app.db.clone());
+            galroon_core::serve_listeners(app, vec![(listener, galroon_core::Transport::Loopback)], std::future::pending()).await
+        });
         let source = root.join("source");
         for (folder, file) in [("Sakura Note", "game.exe"), ("Sakura Note OST", "01.flac"), ("Unknown Pack", "data.bin")] {
             std::fs::create_dir_all(source.join(folder)).unwrap();
@@ -48,9 +53,11 @@ impl Fixture {
         let job = self.owner(Method::POST, "/scans", Some(json!({"root_id": root["id"], "scope": "", "exclude": []}))).await;
         for _ in 0..200 {
             let detail = self.owner(Method::GET, &format!("/jobs/{}", job["id"].as_str().unwrap()), None).await;
-            if !matches!(detail["state"].as_str(), Some("queued" | "running")) {
+            if detail["state"] == "completed" {
+                assert_eq!(detail["errors"], 0, "{detail}");
                 return;
             }
+            assert!(matches!(detail["state"].as_str(), Some("queued" | "running")), "Scan did not complete: {detail}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("Scan did not finish");

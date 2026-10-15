@@ -39,7 +39,10 @@ fn fixture()->(tempfile::TempDir,App,String,String){
 }
 #[test]fn source_record_cap_does_not_evict_live_limits(){
  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("state")).unwrap();let c=app.db.lock().unwrap();
- for i in 0..SOURCE_RECORD_CAP{c.execute("INSERT INTO access_attempts VALUES(?1,?2,10)",params![format!("pair:ip:10.0.{}.{}",i/256,i%256),db::now()]).unwrap();}
+ // Seed in one transaction, then timestamp the records so slow setup cannot expire live limits.
+ let tx=c.unchecked_transaction().unwrap();
+ for i in 0..SOURCE_RECORD_CAP{tx.execute("INSERT INTO access_attempts VALUES(?1,0,10)",[format!("pair:ip:10.0.{}.{}",i/256,i%256)]).unwrap();}
+ tx.execute("UPDATE access_attempts SET started=?1",[db::now()]).unwrap();tx.commit().unwrap();
  assert!(budget_from(&c,"pair","192.168.1.1".parse().unwrap()).unwrap_err().contains("sources"));assert_eq!(c.query_row("SELECT count(*) FROM access_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),SOURCE_RECORD_CAP);assert!(budget_from(&c,"pair","10.0.0.0".parse().unwrap()).is_err());
  c.execute("UPDATE access_attempts SET started=0",[]).unwrap();budget_from(&c,"pair","192.168.1.1".parse().unwrap()).unwrap();assert_eq!(c.query_row("SELECT count(*) FROM access_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),2);
 }
