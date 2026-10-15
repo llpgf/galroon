@@ -7,7 +7,20 @@ use unicode_normalization::UnicodeNormalization;
 type R<T>=Result<T,String>;
 fn sql<T>(v:rusqlite::Result<T>)->R<T>{v.map_err(|e|e.to_string())}
 pub fn migrate(c:&Connection)->R<()> {
-    sql(c.execute_batch("CREATE TABLE IF NOT EXISTS match_items(job_id TEXT NOT NULL REFERENCES jobs(id),resource_id TEXT NOT NULL REFERENCES resources(id),revision INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',evidence TEXT NOT NULL DEFAULT '{}',work_id TEXT,PRIMARY KEY(job_id,resource_id)); CREATE INDEX IF NOT EXISTS match_pending ON match_items(job_id,state); CREATE INDEX IF NOT EXISTS match_resource ON match_items(resource_id,revision,state); CREATE INDEX IF NOT EXISTS intake_events ON events(code,job_id,seq); CREATE INDEX IF NOT EXISTS match_attempt_resource ON events(json_extract(payload,'$.resource_id'),seq) WHERE code='match.attempt';"))
+    sql(c.execute_batch("CREATE TABLE IF NOT EXISTS match_items(job_id TEXT NOT NULL REFERENCES jobs(id),resource_id TEXT NOT NULL REFERENCES resources(id),revision INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',evidence TEXT NOT NULL DEFAULT '{}',work_id TEXT,PRIMARY KEY(job_id,resource_id)); CREATE INDEX IF NOT EXISTS match_pending ON match_items(job_id,state); CREATE INDEX IF NOT EXISTS match_resource ON match_items(resource_id,revision,state); CREATE INDEX IF NOT EXISTS intake_events ON events(code,job_id,seq); CREATE INDEX IF NOT EXISTS match_attempt_resource ON events(json_extract(payload,'$.resource_id'),seq) WHERE code='match.attempt';"))?;
+    let saved:bool=sql(c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('match_items') WHERE name='review_reason')",[],|r|r.get(0)))?;
+    if !saved {
+        sql(c.execute_batch("ALTER TABLE match_items ADD COLUMN review_reason TEXT;"))?;
+        // Backfill display text once. Evidence and binding decisions remain unchanged.
+        let mut statement=sql(c.prepare("SELECT rowid,evidence FROM match_items WHERE state='review'"))?;
+        let rows=sql(statement.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))))?;
+        for row in rows {
+            let (id,evidence)=sql(row)?;
+            let evidence:Value=serde_json::from_str(&evidence).unwrap_or_default();
+            sql(c.execute("UPDATE match_items SET review_reason=?2 WHERE rowid=?1",params![id,review_reason(&evidence)]))?;
+        }
+    }
+    Ok(())
 }
 fn scan_key(c:&Connection)->R<String>{Ok(sql(c.query_row("SELECT id||':'||updated FROM jobs WHERE kind='scan' AND state='completed' ORDER BY updated DESC,rowid DESC LIMIT 1",[],|r|r.get(0)).optional())?.unwrap_or_default())}
 fn set(c:&Connection,key:&str,value:&str)->R<()>{sql(c.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value]))?;Ok(())}
@@ -203,6 +216,45 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
     #[test]fn unsearched_resources_are_not_reported_as_missing_from_vndb(){
         assert_eq!(review_reason(&json!({})).as_deref(),Some("Not checked against VNDB yet."));
         assert_eq!(review_reason(&json!({"results":[]})).as_deref(),Some("No VNDB candidate found."));
+    }
+    #[tokio::test]async fn review_reason_is_saved_with_completion_and_refresh(){
+        let(_t,db)=fixture(&["Unrecognized game"]);let job=kick(&db,false).unwrap().unwrap();
+        run_with(&db,&job,|_|async{Ok(json!({"results":[]}))}).await.unwrap();
+        {let c=db.lock().unwrap();let (state,evidence,saved):(String,String,Option<String>)=c.query_row("SELECT state,evidence,review_reason FROM match_items WHERE job_id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(state,"review");assert_eq!(saved,review_reason(&serde_json::from_str(&evidence).unwrap()));assert_eq!(saved.as_deref(),Some("No VNDB candidate found."));
+        assert_eq!(crate::resource_catalog::rows(&c,None).ok().unwrap()[0]["auto_match_reason"],saved.unwrap());}
+        let next=kick(&db,true).unwrap().unwrap();
+        run_with(&db,&next,|_|async{Ok(json!({"results":[],"incomplete":true}))}).await.unwrap();
+        let c=db.lock().unwrap();assert_eq!(crate::resource_catalog::rows(&c,None).ok().unwrap()[0]["auto_match_reason"],"VNDB has too many works with this name to be sure. Choose the work manually.");
+        assert_eq!(c.query_row("SELECT count(*) FROM resource_bindings",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    #[tokio::test]async fn saved_reason_upgrade_preserves_evidence_bindings_and_projection(){
+        let(t,db)=fixture(&["Clannad","Unknown"]);let job=kick(&db,false).unwrap().unwrap();
+        run_with(&db,&job,|i|async{Ok(if i.titles.iter().any(|t|t=="Clannad"){exact(i)}else{json!({"results":[]})})}).await.unwrap();
+        let (before,evidence,bindings)={let c=db.lock().unwrap();
+            let before=crate::resource_catalog::rows(&c,None).ok().unwrap();
+            let evidence=c.query_row("SELECT evidence FROM match_items WHERE resource_id='r1'",[],|r|r.get::<_,String>(0)).unwrap();
+            let bindings=editions::bindings(&c,"r0").unwrap();assert!(!bindings.is_empty());
+            c.execute_batch("DROP TRIGGER catalog_changed_match_items_UPDATE; ALTER TABLE match_items DROP COLUMN review_reason; PRAGMA user_version=48;").unwrap();(before,evidence,bindings)};
+        drop(db);
+        for _ in 0..2 {
+            let db=db::open(&t.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+            assert_eq!(crate::resource_catalog::rows(&c,None).ok().unwrap(),before);
+            assert_eq!(c.query_row("SELECT evidence FROM match_items WHERE resource_id='r1'",[],|r|r.get::<_,String>(0)).unwrap(),evidence);
+            assert_eq!(editions::bindings(&c,"r0").unwrap(),bindings);
+            assert_eq!(c.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+        assert_eq!(std::fs::read_dir(t.path().join("migration-backups")).unwrap().count(),1);
+    }
+    #[test]fn resource_projection_uses_saved_latest_review_including_null_without_reranking(){
+        let(_t,db)=fixture(&["Clannad","No attempt"]);let c=db.lock().unwrap();
+        c.execute_batch("INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('old','match','completed','{}',1,1),('new','match','completed','{}',2,2),('pending','match','queued','{}',3,3);
+            INSERT INTO match_items(job_id,resource_id,revision,state,evidence,review_reason) VALUES('old','r0',1,'review','{}','Old saved reason'),('new','r0',1,'review','{}','Latest saved reason'),('pending','r0',1,'pending','{}',NULL);").unwrap();
+        for _ in 0..2 {let rows=crate::resource_catalog::selected(&c,&["r0".into(),"r1".into()]).ok().unwrap();assert_eq!(rows[0]["auto_match_reason"],"Latest saved reason");assert!(rows[1].get("auto_match_reason").is_none());}
+        c.execute("UPDATE match_items SET review_reason=NULL WHERE job_id='new'",[]).unwrap();
+        let row=&crate::resource_catalog::rows(&c,None).ok().unwrap()[0];assert!(row.get("auto_match_reason").unwrap().is_null());
+        // Opening/migrating again must not rerun matching or reinterpret saved text.
+        migrate(&c).unwrap();assert!(crate::resource_catalog::rows(&c,None).ok().unwrap()[0]["auto_match_reason"].is_null());
     }
     fn fixture(names:&[&str])->(tempfile::TempDir,Db){
         let t=tempfile::tempdir().unwrap();let db=db::open(&t.path().join("library.sqlite")).unwrap();
@@ -829,7 +881,7 @@ fn complete_item(c:&Connection,job:&str,rid:&str,state:&str,response:&Value,work
     sql(crate::job_summary::resource(c,job,rid))?;
     for (dimension,active) in [("needs_review",state=="review"),("skipped",state=="skipped")]{sql(crate::job_summary::record(c,job,dimension,rid,if active{"yes"}else{"no"}))?;}
     let mut response=response.clone();response["recorded_at"]=json!(db::now());
-    sql(c.execute("UPDATE match_items SET state=?3,evidence=?4,work_id=?5 WHERE job_id=?1 AND resource_id=?2",params![job,rid,state,response.to_string(),work]))?;
+    sql(c.execute("UPDATE match_items SET state=?3,evidence=?4,work_id=?5,review_reason=?6 WHERE job_id=?1 AND resource_id=?2",params![job,rid,state,response.to_string(),work,if state=="review"{review_reason(&response)}else{None}]))?;
     let revision:i64=sql(c.query_row("SELECT revision FROM match_items WHERE job_id=?1 AND resource_id=?2",params![job,rid],|r|r.get(0)))?;
     sql(db::event(c,job,"match.attempt",&json!({"resource_id":rid,"revision":revision,"state":state,"evidence":response,"work_id":work})))?;
     sql(c.execute("UPDATE jobs SET processed=(SELECT count(*) FROM match_items WHERE job_id=?1 AND state IN ('matched','review','skipped')),updated=?2 WHERE id=?1",params![job,db::now()]))?;Ok(())
