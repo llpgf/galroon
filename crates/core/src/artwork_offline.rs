@@ -75,12 +75,19 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
    Key::Staff{id,..}=>{related.insert(("person",id));},Key::Voice{id,character,..}=>{related.insert(("person",id));related.insert(("character",character));},Key::Character{id,..}=>{related.insert(("character",id));},Key::Company{id}=>{related.insert(("company",id));},Key::Work{..}=>{}
   }}}}
   let owned=crate::collection_profiles::owned(&*a.db.lock().map_err(|e|e.to_string())?)?;
-  for(kind,id)in related{
-   if !running(a,job)?{return Ok(bytes);}
-   let value=match crate::exploration::load_entity(a,kind,&id).await{Ok(value)=>value,Err(error)=>{failure=Some(format!("{kind} {id}: {error}"));continue;}};
-   let value=crate::collection_profiles::basic(&value,kind,&owned);
-   Library::open(&a.state_dir)?.save_profile(&crate::collection_profiles::key(kind,&id),&value)?;
-   image_url(&value[kind],&mut images);
+  for kind in ["character","company","person"]{
+   let ids:Vec<_>=related.iter().filter(|(k,_)|*k==kind).map(|(_,id)|id.clone()).collect();
+   for chunk in ids.chunks(crate::exploration::ENTITY_BATCH){
+    if !running(a,job)?{return Ok(bytes);}
+    let (values,error)=crate::exploration::load_entities(a,kind,chunk).await?;
+    if let Some(error)=error{failure=Some(format!("{kind}: {error}"));}
+    for value in values{
+     let id=value[kind]["id"].as_str().ok_or("VNDB biography has no ID")?;
+     let value=crate::collection_profiles::basic(&value,kind,&owned);
+     Library::open(&a.state_dir)?.save_profile(&crate::collection_profiles::key(kind,id),&value)?;
+     image_url(&value[kind],&mut images);
+    }
+   }
   }
  }
  let images:Vec<_>=images.into_iter().collect();
