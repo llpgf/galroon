@@ -56,7 +56,7 @@ async fn run(a:&App,job:&str)->R<()>{
  a.db.lock().map_err(|e|e.to_string())?.execute("UPDATE jobs SET state=CASE WHEN state='pausing' THEN 'paused' WHEN state='cancelling' THEN 'cancelled' WHEN errors=0 THEN 'completed' ELSE 'failed' END,current_path='',updated=?2 WHERE id=?1 AND state IN ('running','pausing','cancelling')",params![job,now()]).map_err(|e|e.to_string())?;
  Ok(())
 }
-fn urls(value:&Value,out:&mut BTreeSet<String>){match value{Value::Object(o)=>{if let Some(url)=o.get("image").and_then(|v|v.get("url")).and_then(Value::as_str){out.insert(url.into());}for v in o.values(){urls(v,out);}},Value::Array(a)=>for v in a{urls(v,out);},_=>{}}}
+fn image_url(entity:&Value,out:&mut BTreeSet<String>){if let Some(url)=entity["image"]["url"].as_str(){out.insert(url.into());}}
 async fn save_image(a:&App,url:&str)->R<i64>{
  if crate::artwork_library::image(&a.state_dir,url)?.is_some(){return Ok(0);}
  let image=crate::artwork::fetch(a,url).await.map_err(|e|e.0)?;let bytes=image.bytes.len() as i64;let base=a.state_dir.clone();let url=url.to_owned();
@@ -68,7 +68,8 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
  if let Some(id)=&work.vndb_id{
   let profile=crate::exploration::load(a,"work",id,1,false).await?;
   match complete(&profile,false){Ok(())=>{Library::open(&a.state_dir)?.save_profile(&format!("exploration.v4.work.{id}.1"),&profile)?;update_catalog(a,work,&profile)?;},Err(error)=>failure=Some(error)}
-  urls(&profile,&mut images);
+  image_url(&profile["vn"],&mut images);
+  if let Some(characters)=profile["characters"].as_array(){for character in characters{image_url(character,&mut images);}}
   let mut related=entities(&profile);
   {use crate::relation_corrections::Key;let c=a.db.lock().map_err(|e|e.to_string())?;for correction in crate::relation_correction_store::read(&c,id).map_err(|e|e.0)?.1{if let Some(link)=correction.link{match link.key{
    Key::Staff{id,..}=>{related.insert(("person",id));},Key::Voice{id,character,..}=>{related.insert(("person",id));related.insert(("character",character));},Key::Character{id,..}=>{related.insert(("character",id));},Key::Company{id}=>{related.insert(("company",id));},Key::Work{..}=>{}
@@ -79,7 +80,8 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
     let result=crate::exploration::load(a,kind,&id,page,false).await.and_then(|value|{complete(&value,true)?;Ok(value)});
     let value=match result{Ok(value)=>value,Err(error)=>{failure=Some(format!("{kind} {id}: {error}"));break;}};
     Library::open(&a.state_dir)?.save_profile(&format!("exploration.v3.{kind}.{id}.{page}"),&value)?;
-    urls(&value,&mut images);if value["more"]!=true{break;}if page==1000{return Err("VNDB profile exceeds the supported page limit".into());}
+    // Related work lists remain browsable, but their artwork belongs to their own collection jobs.
+    image_url(&value[kind],&mut images);if value["more"]!=true{break;}if page==1000{return Err("VNDB profile exceeds the supported page limit".into());}
    }
   }
  }
@@ -141,6 +143,23 @@ fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
   let request=Request::builder().uri(format!("/api/artwork?url={portrait}")).header("Host","127.0.0.1").header("Authorization",format!("Bearer {}",restored.token)).body(Body::empty()).unwrap();
   let response=crate::router(restored).oneshot(request).await.unwrap();assert_eq!(response.status(),200);assert_eq!(axum::body::to_bytes(response.into_body(),1000).await.unwrap().as_ref(),png);
   let exported=backup.join(crate::artwork_library::FILE);std::fs::OpenOptions::new().append(true).open(exported).unwrap().write_all(b"corrupt").unwrap();assert!(crate::backup::inspect(&backup).is_err());
+ }
+ #[tokio::test]async fn downloads_only_collection_and_direct_entity_images_but_keeps_related_work_lists(){
+  let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();
+  let cover="https://t.vndb.org/cv/01/1.jpg";let portrait="https://t.vndb.org/ch/02/2.jpg";let person_image="https://t.vndb.org/ch/03/3.jpg";
+  let outside=json!({"id":"v999","title":"Outside the collection","image":{"url":"https://invalid.example/unowned-cover"},"va":[{"character":{"image":{"url":"https://invalid.example/unowned-character"}}}]});
+  a.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,vndb_id,cover) VALUES('w','Owned','Owned','v1',?1)",[cover]).unwrap();
+  let mut cache=Cache::open(&a.state_dir).unwrap();for url in [cover,portrait,person_image]{cache.put(url,b"\x89PNG\r\n\x1a\nfixture").unwrap();}
+  let work=json!({"vn":{"id":"v1","image":{"url":cover},"relations":[outside.clone()],"staff":[{"id":"s1"}],"developers":[{"id":"p1"}]},"characters":[{"id":"c1","image":{"url":portrait}}],"more":false,"fetched_at":now()});
+  crate::exploration::save(&a,"exploration.v4.work.v1.1",&work).unwrap();
+  for(kind,id,entity,pages)in [("character","c1",json!({"id":"c1","image":{"url":portrait}}),1),("person","s1",json!({"id":"s1","image":{"url":person_image}}),2),("company","p1",json!({"id":"p1"}),1)]{
+   for page in 1..=pages{let value=json!({(kind):entity,"works":vec![outside.clone();20],"page":page,"more":page<pages,"fetched_at":now()});crate::exploration::save(&a,&format!("exploration.v3.{kind}.{id}.{page}"),&value).unwrap();}
+  }
+  let job=enqueue(&a).unwrap();run_job(a.clone(),job.clone()).await;
+  assert_eq!(a.db.lock().unwrap().query_row("SELECT state FROM jobs WHERE id=?1",[job],|r|r.get::<_,String>(0)).unwrap(),"completed");
+  let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,3);assert_eq!(library.stats().unwrap().profiles,5);
+  assert_eq!(library.profile("exploration.v3.person.s1.2").unwrap().unwrap()["works"][0],outside);
+  for url in [cover,portrait,person_image]{assert!(crate::artwork_library::contains(&a.state_dir,url).unwrap());}
  }
  #[tokio::test]async fn pause_and_restart_preserve_job_progress_and_owner_permissions(){
   let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();a.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w','One','One'),('z','Two','Two')",[]).unwrap();

@@ -80,7 +80,7 @@ pub fn start(a:App)->Worker{
   crate::metadata::apply(&a.db,id,1,&json!({"title":"My title"}),&[],None).unwrap();a.db.lock().unwrap().execute("UPDATE works SET notes='My note',favorite=1 WHERE id=?1",[id]).unwrap();
   {use crate::relation_corrections::{Correction,Key,Link};let mut c=a.db.lock().unwrap();crate::relation_correction_store::change(&mut c,"v1",&crate::relation_correction_store::Edit{revision:0,request_id:"manual-person".into(),corrections:vec![Correction{id:"extra".into(),replaces:None,link:Some(Link{key:Key::Staff{id:"s2".into(),aid:None,role:"music".into(),note:"".into()},name:"Manual person".into(),character_name:None,spoiler:0})}]}).ok().unwrap();}
   let worker=start(a.clone());tokio::time::timeout(std::time::Duration::from_secs(10),async{loop{if status(&a.db.lock().unwrap()).unwrap()["pending"]==0{break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await.unwrap();drop(worker);
-  let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,3);assert_eq!(library.stats().unwrap().profiles,6);
+  let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,2);assert_eq!(library.stats().unwrap().profiles,6);assert!(!crate::artwork_library::contains(&a.state_dir,related).unwrap());
   let personal:(String,String,String,bool)=a.db.lock().unwrap().query_row("SELECT title,description,notes,favorite FROM works WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();assert_eq!(personal,("My title".into(),"Full introduction".into(),"My note".into(),true));
   let snapshot=crate::metadata::snapshot(&a.db,id).unwrap();crate::metadata::apply(&a.db,id,snapshot["revision"].as_i64().unwrap(),&json!({}),&[],Some(json!({"description":"Newer catalog description"}))).unwrap();
   let job=crate::artwork_offline::enqueue_pending(&a).unwrap().unwrap();crate::artwork_offline::run_job(a.clone(),job).await;
@@ -90,7 +90,7 @@ pub fn start(a:App)->Worker{
   for(key,raw)in library.profiles().unwrap(){let mut value:Value=serde_json::from_str(&raw).unwrap();value["fetched_at"]=json!(0);library.save_profile(&key,&value).unwrap();}cache.clear().unwrap();
   let backup=crate::backup::export(&a.db,t.path()).unwrap();let restored=crate::backup::restore_new(&backup,&t.path().join("restored"),None).unwrap();let restored=crate::initialize(restored).unwrap();
   for(kind,id,page)in [("work","v1",1),("character","c1",1),("person","s1",2),("person","s2",1),("company","p1",1)]{let value=crate::exploration::load(&restored,kind,id,page,false).await.unwrap();assert_eq!(value["fetched_at"],0);assert_eq!(value["partial"],Value::Null);}
-  assert_eq!(Library::open(&restored.state_dir).unwrap().stats().unwrap().images,3);assert!(!restored.state_dir.join("artwork-cache.sqlite").exists());
+  assert_eq!(Library::open(&restored.state_dir).unwrap().stats().unwrap().images,2);assert!(!crate::artwork_library::contains(&restored.state_dir,related).unwrap());assert!(!restored.state_dir.join("artwork-cache.sqlite").exists());
  }
  #[tokio::test]async fn partial_download_keeps_good_images_and_retries_after_restart(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("data");let a=crate::initialize(path.clone()).unwrap();let cover="https://t.vndb.org/cv/01/1.jpg";
