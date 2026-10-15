@@ -43,3 +43,5 @@
 Feature notes include dated implementation evidence. They are not blanket release certification. Local test-output references require the original developer workspace and are not shipped as repository data.
 
 `local-history/` holds original planning, acceptance and handoff records in this workspace. Git ignores it; the public documentation above is the fresh-clone entry point.
+
+- [Bangumi 雙向遊玩狀態同步](features/BANGUMI.md)

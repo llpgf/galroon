@@ -1145,3 +1145,12 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
 .suggestion-actions{margin-bottom:14px}
 .suggestion-results{padding:12px;border:1px solid var(--line);border-radius:8px}
 .collection-resource{margin-left:6px}
+
+/* Bangumi account and reviewed two-way sync. */
+.bgm-panel form,.bgm-settings{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:16px 0}
+.bgm-panel label,.bgm-settings label{display:grid;gap:6px}.bgm-panel .checkbox-label{display:flex;align-items:center;gap:8px;margin:12px 0}
+.bgm-row{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--border)}
+.bgm-row>div{min-width:0}.bgm-row a{overflow-wrap:anywhere}.bgm-row p{margin:5px 0}.bgm-row select{max-width:50%}
+@media(max-width:700px){.bgm-row{align-items:stretch;flex-direction:column}.bgm-row select{max-width:100%}}
+.settings-panels .bgm-panel input[type=checkbox]{width:16px;height:16px;flex:none;margin:0}
+.bgm-settings .checkbox-label{flex-basis:100%}

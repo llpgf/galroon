@@ -81,6 +81,7 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     crate::issues::migrate(&tx)?;
     crate::file_audit::migrate(&tx,version)?;
     crate::suggestions::migrate(&tx)?;
+    crate::bangumi::migrate(&tx)?;
     crate::catalog_changes::migrate(&tx)?;
     crate::collection_download::migrate(&tx,version<48)?;
     tx.pragma_update(None,"user_version",SCHEMA_VERSION)?;

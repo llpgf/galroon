@@ -29,6 +29,9 @@ unicode-normalization = "0.1"
 icu_collator = "2.2"
 icu_locale_core = "2.2"
 
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+keyring = { version = "3.6", features = ["windows-native", "apple-native"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

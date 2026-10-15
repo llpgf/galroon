@@ -1,0 +1,5 @@
+export type BangumiRow={subject_id:number;title:string;work_id:string|null;local:number|null;remote:number|null;base:number|null;revision:number|null;kind:string;candidates:{id:string;title:string}[];fingerprint:string};
+export type BangumiState={account:null|{user:{id:number;username:string;nickname:string};mode:'full'|'existing';automatic:boolean;initialized:boolean;last_sync:number|null;error:string};preview:string|null;rows:BangumiRow[];results?:{subject_id:number;ok:boolean;error?:string}[]};
+export const bangumiStatus=(value:number|null)=>value===null?'bgmNotCollected':(['','backlog','completed','playing','on_hold','dropped'][value]||'unknown');
+export function defaultBangumiAction(row:BangumiRow){if(row.kind==='same')return row.base===row.local?'':'same';return ({import:'import',pull:'remote',push:'local'} as Record<string,string>)[row.kind]||'';}
+export function bangumiChoice(row:BangumiRow,action:string){return {subject_id:row.subject_id,fingerprint:row.fingerprint,action:action.startsWith('match:')?'match':action,work_id:action.startsWith('match:')?action.slice(6):null};}
