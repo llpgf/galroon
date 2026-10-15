@@ -10,7 +10,7 @@ const MAMA_CD = '善悪 フルHDリマスター版 Webアンケート特典';
 const resources = () => core.api<Resource[]>('/resources');
 const resource = async (text: string) => { const r = (await resources()).find(r => r.path.includes(text)); expect(r, text).toBeTruthy(); return r!; };
 const current = async (id: string) => (await resources()).find(r => r.id === id)!;
-const idle = async () => expect.poll(async () => (await core.api('/jobs')).filter((j: any) => ['queued', 'running', 'pausing', 'cancelling'].includes(j.state)).length, { timeout: 300_000, intervals: [1000] }).toBe(0);
+const idle = async () => expect.poll(async () => (await core.api('/jobs')).filter((j: any) => j.kind !== 'artwork' && ['queued', 'running', 'pausing', 'cancelling'].includes(j.state)).length, { timeout: 300_000, intervals: [1000] }).toBe(0);
 const suggest = (r: Resource, works = ['v20672'], query = '善悪') => core.api<MatchSuggestion>(`/resources/${r.id}/suggestions`, { revision: r.revision, works, query, rationale: 'Golden identifies this resource with these works; please review the proposed match.' });
 const review = async (page: Page) => { await openApp(page, core); await nav(page, 'organize'); await page.getByRole('button', { name: T('unmatched'), exact: true }).click(); };
 const references = (r: Resource, bindings: Resource['bindings'], primary: string | null) => core.api(`/resources/${r.id}/references`, { revision: r.revision, primary_work_id: primary, bindings });
@@ -104,7 +104,7 @@ async function settle() {
   await waitFor('background tasks and matching idle', async () => {
     const jobs: any = await core.api('/jobs'); const list: any[] = Array.isArray(jobs) ? jobs : (jobs.items || jobs.jobs || []);
     const matching: any = await core.api('/matching');
-    return !list.some(j => ['queued', 'running', 'pending', 'pausing', 'cancelling'].includes(j.state)) && !matching.waiting;
+    return !list.some(j => j.kind !== 'artwork' && ['queued', 'running', 'pending', 'pausing', 'cancelling'].includes(j.state)) && !matching.waiting;
   }, 120_000, 1_000);
 }
 async function regroup(sourceId: string, fileIds: string[], targetId: string | null, title: string) {
