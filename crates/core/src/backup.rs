@@ -47,8 +47,8 @@ pub fn export(db:&Db,destination:&Path)->R<PathBuf>{
  {let c=Connection::open(&file).map_err(|e|e.to_string())?;clean_credentials(&c)?;check(&c)?;}
  let(bytes,sha256)=plans::hash(&file)?;let c=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;
  let artwork=if let Some(base)=data_dir.filter(|p|p.join(crate::artwork_library::FILE).exists()){
-  crate::artwork_library::Library::open(&base)?.snapshot(&folder.join(crate::artwork_library::FILE))?;
-  let stats=crate::artwork_library::Library::open(&folder)?.stats()?;let(bytes,sha256)=plans::hash(&folder.join(crate::artwork_library::FILE))?;
+  let stats=crate::artwork_library::Library::open(&base)?.snapshot(&folder.join(crate::artwork_library::FILE))?;
+  let(bytes,sha256)=plans::hash(&folder.join(crate::artwork_library::FILE))?;
   Some(Artwork{file:crate::artwork_library::FILE.into(),bytes,sha256,images:stats.images,profiles:stats.profiles})
  }else{None};
  let sha256=artwork.as_ref().map(|a|combined(&sha256,&a.sha256)).unwrap_or(sha256);

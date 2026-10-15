@@ -19,7 +19,7 @@ impl Cache{
   let path=base.join("artwork-cache.sqlite");crate::plans::validate_chain(&path)?;
   let connection=Connection::open(path).map_err(|e|e.to_string())?;
   connection.busy_timeout(std::time::Duration::from_secs(2)).map_err(|e|e.to_string())?;
-  connection.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY,mime TEXT NOT NULL,data BLOB NOT NULL,touched INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS images_lru ON images(touched,key);").map_err(|e|e.to_string())?;
+  connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA auto_vacuum=INCREMENTAL; CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY,mime TEXT NOT NULL,data BLOB NOT NULL,touched INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS images_lru ON images(touched,key);").map_err(|e|e.to_string())?;
   Ok(Self{connection,budget})
  }
  pub fn key(url:&str)->String{hex::encode(Sha256::digest(url.as_bytes()))}
