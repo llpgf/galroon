@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=14;
+pub const ALGORITHM_VERSION:i64=15;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -25,6 +25,20 @@ fn useful(text: &str) -> bool {
 }
 fn technical_directory(text:&str)->bool{
     ["html","images","image","plugin","plugins","ysbin","updchk","sjisext","rio","wave","wav","mp3","ogg","flac","savedata","bgm","se"].contains(&normalized(text).as_str())
+}
+// Recognize runtime layouts, not bare words: a work called "Lib" or "Mono" keeps its identity.
+fn runtime_boundary(parts:&[&str])->Option<usize>{
+    let names:Vec<_>=parts.iter().map(|p|p.to_ascii_lowercase()).collect();
+    let file=names.last()?.as_str();
+    let runtime_file=[".dll",".exe",".txt",".pso",".pack",".config",".map",".xml",".browser",".aspx",".ini"].iter().any(|ext|file.ends_with(ext))||file=="config";
+    (1..names.len().saturating_sub(1)).find_map(|i|{
+        let parent=names[i-1].as_str();let name=names[i].as_str();let next=names[i+1].as_str();
+        if parent=="data"&&((name=="lib"&&file.ends_with(".dll"))||(name=="pac"&&file.ends_with(".ypf"))){Some(i)}
+        else if parent=="setup"&&name=="appdata"&&runtime_file{Some(i)}
+        else if parent.ends_with("_data")&&matches!(name,"monobleedingedge"|"mono"|"managed")&&runtime_file{Some(i-1)}
+        else if name=="document"&&(next=="copying"||next.ends_with(".chm")){Some(i)}
+        else{None}
+    })
 }
 /// One " + …" part of a release name that lists bundled extras ("Drama CD", "OST", "Update 1.01", "Tokuten x6", "予約特典").
 fn extras_segment(part: &str) -> bool {
@@ -82,6 +96,8 @@ pub fn clean_name(input: &str) -> String {
 }
 #[derive(Debug, Clone)]
 pub struct Input { pub titles: Vec<String>, pub queries: Vec<String>, pub direct_id: Option<String>,
+    /// Removing runtime noise must not promote a title with an unconfirmed missing subtitle.
+    pub runtime_filtered: bool,
     /// Distribution brands and release dates read from [brackets] in the resource and member names.
     /// They only corroborate a title; they never identify a work by themselves.
     pub brands: Vec<String>, pub dates: Vec<String> }
@@ -459,8 +475,9 @@ fn title_variants(title:&str)->Vec<(String,bool)>{
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
-    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()), brands: vec![], dates: vec![] }); }
+    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()), runtime_filtered: false, brands: vec![], dates: vec![] }); }
     let mut titles = Vec::new(); let mut seen = HashSet::new(); let (mut brands, mut dates) = (Vec::new(), Vec::new());
+    let mut runtime_filtered=false;
     for (index,raw) in std::iter::once(query).chain(hints.iter().take(32).map(String::as_str)).enumerate() {
         // Only a relative name is searched; the caller never supplies the source root.
         // A manually entered title can contain a slash (Fate/stay night).
@@ -470,7 +487,9 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
             let parts:Vec<_>=raw.split(['/', '\\']).collect();
             // Keep work ancestors, not the implementation folders inside media/runtime trees.
             let end=parts.iter().position(|p|technical_directory(p)).unwrap_or(parts.len());
-            parts[..end].iter().rev().take(4).copied().collect()
+            let runtime=runtime_boundary(&parts).filter(|boundary|*boundary<end);runtime_filtered|=runtime.is_some();
+            // Keep the existing ancestor window; do not pull distant installer/vendor names into it.
+            parts[..end].iter().enumerate().rev().take(4).filter(|(i,_)|runtime.is_none_or(|end|*i<end)).map(|(_,p)|*p).collect()
         };
         for part in parts {
             labels(part, &mut brands, &mut dates);
@@ -497,7 +516,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     }
     queries.truncate(3);
     for (title,ranking) in variants{if ranking&&seen.insert(normalized(&title)){titles.push(title);}}
-    Ok(Input { titles, queries, direct_id: None, brands, dates })
+    Ok(Input { titles, queries, direct_id: None, runtime_filtered, brands, dates })
 }
 #[test]fn shiina_rio_members_are_technical_and_do_not_trip_the_short_guard(){
     for member in ["Rio","SysGraphic1.arc","add01.ws2","Graphic2.ARC","Script.arc","Rio/内部タイトル/readme.txt"]{
@@ -637,7 +656,9 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
     if let Some(first) = ranked.first_mut() {
         let score = first["match"]["score"].as_f64().unwrap();
         let short = input.titles.iter().any(|t| normalized(&branded(t).map(|(_,tail)|tail).unwrap_or_else(||t.clone())).chars().count() < 4);
-        if score >= 98.0 && score - runner_up >= 8.0 && (!short || input.direct_id.is_some()) { first["match"]["strength"] = json!("strong"); }
+        let partial=input.runtime_filtered&&first["match"]["reason"]=="exact_main_title";
+        if partial{first["match"]["reason"]=json!("different_subtitle");}
+        if score >= 98.0 && score - runner_up >= 8.0 && (!short || input.direct_id.is_some()) && !partial { first["match"]["strength"] = json!("strong"); }
         if score >= 98.0 && score - runner_up < 8.0 { first["match"]["ambiguous"] = json!(true); }
     }
     if let Some(bundle)=compilation(input,&ranked){let first=&mut ranked[0]["match"];first["compilation"]=bundle;first["strength"]=json!("strong");first["ambiguous"]=json!(false);}
@@ -771,6 +792,38 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         assert_ne!(rank(&prepare("haisonsyoujo2",&[]).unwrap(),vec![c])[0]["match"]["strength"],"strong");
     }
     fn candidate(id:&str,name:&str)->Value { json!({"id":id,"title":name}) }
+    #[test]fn runtime_layouts_do_not_compete_with_exact_work_titles(){
+        for member in ["Moon Garden/Data/Lib/RenderDX.dll","Moon Garden/data/pac/update1.ypf","Moon Garden/Setup/AppData/DLL/sharplinear.pso","Moon Garden/Setup/AppData/GameData/data0.pack","Moon Garden/Setup/AppData/SaveData/SavePath.txt","Moon Garden/Document/COPYING","Moon Garden/Document/Manual.chm","Moon Garden/program files/Studio/MoonGarden_Data/MonoBleedingEdge/etc/mono/4.5/Browsers/Compat.browser","Moon Garden/MoonGarden_Data/Mono/etc/mono/4.0/DefaultWsdlHelpGenerator.aspx","Moon Garden/MoonGarden_Data/Managed/UnityEngine.UnityWebRequestTextureModule.xml"]{
+            for path in [member.to_string(),member.replace('/',"\\")]{
+                let input=prepare("Moon Garden",&[path.clone()]).unwrap();assert!(input.runtime_filtered,"{path}");
+                assert_eq!(input.titles,vec!["Moon Garden"],"{path}");assert_eq!(input.queries,vec!["Moon Garden"],"{path}");
+                let result=json!({"results":rank(&input,vec![candidate("v1","Moon Garden")]),"titles":input.titles});
+                assert_eq!(crate::automatch::review_reason(&result),None,"{path}");
+            }
+        }
+    }
+    #[test]fn runtime_words_do_not_hide_work_names_or_archived_members(){
+        for title in ["DLL","Lib","mono","Document","GameData"]{
+            let input=prepare(title,&[format!("{title}/game.exe")]).unwrap();assert!(!input.runtime_filtered);assert!(input.titles.contains(&title.to_string()));
+        }
+        for member in ["Moon Garden/Other Story/Data/Lib/RenderDX.dll","Moon Garden/Data/Lib/Other Story.rar","Moon Garden/Setup/AppData/Other Story.zip","Moon Garden/MoonGarden_Data/Mono/Other Story.7z"]{
+            let input=prepare("Moon Garden",&[member.into()]).unwrap();assert!(input.titles.iter().any(|t|t=="Other Story"),"{member}: {:?}",input.titles);
+            let result=json!({"results":rank(&input,vec![candidate("v1","Moon Garden")]),"titles":input.titles});assert!(crate::automatch::review_reason(&result).is_some(),"{member}");
+        }
+        assert_eq!(prepare("Fate/stay night",&[]).unwrap().titles,vec!["Fate/stay night"]);
+    }
+    #[test]fn runtime_cleanup_does_not_promote_a_missing_subtitle(){
+        let work=json!({"id":"v1","title":"Moon Garden ~A New Story~","developers":[{"name":"Studio"}]});
+        let input=prepare("Moon Garden",&["[Studio] Moon Garden/Data/Lib/Graphics.dll".into()]).unwrap();
+        let result=json!({"results":rank(&input,vec![work]),"titles":input.titles});
+        assert_eq!(result["results"][0]["match"]["strength"],"review");assert_eq!(crate::automatch::review_reason(&result).as_deref(),Some("Only a partial title matches; the subtitle or edition needs confirmation."));
+    }
+    #[test]fn runtime_cleanup_keeps_short_sequel_and_incomplete_search_guards(){
+        let input=prepare("AIR",&["AIR/Data/Lib/Graphics.dll".into()]).unwrap();assert_eq!(rank(&input,vec![candidate("v1","AIR")])[0]["match"]["strength"],"review");
+        let input=prepare("Moon Garden 2",&["Moon Garden 2/Data/Lib/Graphics.dll".into()]).unwrap();assert_eq!(rank(&input,vec![candidate("v1","Moon Garden")])[0]["match"]["strength"],"review");
+        let input=prepare("Moon Garden",&["Moon Garden/Data/Lib/Graphics.dll".into()]).unwrap();let results=rank(&input,vec![candidate("v1","Moon Garden")]);
+        assert!(crate::automatch::review_reason(&json!({"results":results,"titles":input.titles,"incomplete":true})).is_some());
+    }
     #[test] fn main_title_needs_brand_or_date_corroboration() {
         let mama = json!({"id":"v59911","title":"Mama x Kano EX ~Ryoushu~","alttitle":"ママ×カノEX ～領主貴族に嫁ぎたくない娘の為に～","released":"2025-12-19","developers":[{"name":"Shibasoft","original":"しばそふと"}]});
         let input = prepare("ママ×カノEX 豪華限定版 + Vocal CD + Update", &["[251219] [しばそふと] ママ×カノEX 豪華限定版 + Vocal CD + Update".into()]).unwrap();
