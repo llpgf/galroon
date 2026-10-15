@@ -29,7 +29,7 @@ pub fn kick(db:&Db,refresh:bool)->R<Option<String>> {
     let id=queue(&tx,refresh)?;sql(tx.commit())?;Ok(id)
 }
 fn queue(c:&Connection,refresh:bool)->R<Option<String>> {
-    let busy:bool=sql(c.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind!='match' AND state IN ('queued','running','pausing','cancelling')) OR EXISTS(SELECT 1 FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
+    let busy:bool=sql(c.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind NOT IN ('match','artwork') AND state IN ('queued','running','pausing','cancelling')) OR EXISTS(SELECT 1 FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
     if busy {set(c,"auto_match_requested","1")?;return Ok(None);}
     let filter=format!("r.work_id IS NULL AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.resource_id=r.id) AND EXISTS(SELECT 1 FROM resource_files f WHERE f.resource_id=r.id) AND (?1 OR NOT EXISTS(SELECT 1 FROM match_items m WHERE m.resource_id=r.id AND m.revision=r.revision AND m.state='review' AND json_extract(m.evidence,'$.algorithm_version')={}))",matching::ALGORITHM_VERSION);
     let count:i64=sql(c.query_row(&format!("SELECT count(*) FROM resources r WHERE {filter}"),[refresh],|r|r.get(0)))?;
@@ -805,6 +805,18 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         let upgraded=kick(&db,false).unwrap().unwrap();assert_ne!(upgraded,first);assert_eq!(status(&db).unwrap()["job"]["total"],1);
         run_with(&db,&upgraded,|i|async{Ok(exact(i))}).await.unwrap();assert!(kick(&db,false).unwrap().is_none());
         assert_eq!(scalar(&db,"SELECT count(*) FROM resource_history"),1);assert_eq!(scalar(&db,"SELECT count(*) FROM jobs"),2);
+    }
+    #[test] fn artwork_does_not_block_matching_but_file_operations_do(){
+        for state in ["queued","running","pausing","cancelling"] {
+            let(_t,db)=fixture(&["Clannad"]);
+            db.lock().unwrap().execute("INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('artwork','artwork',?1,'{}',1,1)",[state]).unwrap();
+            db.lock().unwrap().execute_batch("INSERT INTO plans(id,kind,state,items,digest,created) VALUES('move','move','executing','[]','test',1)").unwrap();
+            assert!(kick(&db,false).unwrap().is_none());assert_eq!(status(&db).unwrap()["waiting"],true);
+            db.lock().unwrap().execute("UPDATE plans SET state='completed' WHERE id='move'",[]).unwrap();
+            assert!(kick(&db,false).unwrap().is_some());assert_eq!(status(&db).unwrap()["waiting"],false);
+            assert_eq!(scalar(&db,"SELECT count(*) FROM match_items"),1);
+            assert_eq!(db.lock().unwrap().query_row("SELECT state FROM jobs WHERE id='artwork'",[],|r|r.get::<_,String>(0)).unwrap(),state);
+        }
     }
     #[test] fn refresh_defers_during_scans_and_replaces_paused_runs(){
         let(_t,db)=fixture(&["Clannad"]);db.lock().unwrap().execute_batch("INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('scan','scan','running','{}',1,1)").unwrap();
