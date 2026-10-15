@@ -7,15 +7,15 @@ use serde_json::{Value,json};
 use std::collections::BTreeSet;
 type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]struct Work{id:String,title:String,cover:String,vndb_id:Option<String>}
-fn owner(a:&App,h:&HeaderMap)->Result<(),ApiError>{if crate::access::authenticate(a,h)?.role!="owner"{return Err(ApiError("Local owner access required".into()));}Ok(())}
+fn writer(a:&App,h:&HeaderMap)->Result<(),ApiError>{if crate::access::authenticate(a,h)?.role=="web"{return Err(ApiError("Desktop access required".into()));}Ok(())}
 pub async fn status(State(a):State<App>,h:HeaderMap)->crate::Result<Value>{
- owner(&a,&h)?;
+ writer(&a,&h)?;
  let stats=if a.state_dir.join(crate::artwork_library::FILE).exists(){Library::open(&a.state_dir)?.stats()?}else{crate::artwork_library::Stats{images:0,bytes:0,profiles:0}};
  let job={let c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;let mut s=c.prepare("SELECT id,state,processed,discovered,errors,message FROM jobs WHERE kind='artwork' ORDER BY rowid DESC LIMIT 1")?;let rows=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"processed":r.get::<_,i64>(2)?,"discovered":r.get::<_,i64>(3)?,"errors":r.get::<_,i64>(4)?,"message":r.get::<_,String>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;rows.into_iter().next()};
  Ok(Json(json!({"images":stats.images,"bytes":stats.bytes,"profiles":stats.profiles,"job":job})))
 }
 pub async fn start(State(a):State<App>,h:HeaderMap)->crate::Result<Value>{
- owner(&a,&h)?;let job=enqueue(&a)?;let run=job.clone();tokio::spawn(async move{run_job(a,run).await;});Ok(Json(json!({"id":job})))
+ writer(&a,&h)?;let job=enqueue(&a)?;let run=job.clone();tokio::spawn(async move{run_job(a,run).await;});Ok(Json(json!({"id":job})))
 }
 fn enqueue(a:&App)->R<String>{
  let _gate=a.mutation_lock.lock().map_err(|e|e.to_string())?;
@@ -101,11 +101,11 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
   assert_eq!(a.db.lock().unwrap().query_row("SELECT processed FROM jobs WHERE id=?1",[job],|r|r.get::<_,i64>(0)).unwrap(),2);
   let request=Request::builder().method("POST").uri("/api/artwork/offline").header("Host","127.0.0.1").body(Body::empty()).unwrap();assert_eq!(crate::router(a).oneshot(request).await.unwrap().status(),401);
  }
- #[tokio::test]async fn paired_desktop_cannot_manage_owner_artwork_library(){
+ #[tokio::test]async fn paired_desktop_can_download_collection_artwork(){
   use sha2::{Digest,Sha256};
   let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();let token="d".repeat(72);
   a.db.lock().unwrap().execute("INSERT INTO sessions(token_hash,role,created,id,name,expires) VALUES(?1,'desktop',0,'device','Device',?2)",params![hex::encode(Sha256::digest(token.as_bytes())),now()+3600]).unwrap();
-  for method in ["GET","POST"]{let request=Request::builder().method(method).uri("/api/artwork/offline").header("Host","127.0.0.1").header("Authorization",format!("Bearer {token}")).body(Body::empty()).unwrap();assert_eq!(crate::router(a.clone()).oneshot(request).await.unwrap().status(),403);}
+  for method in ["GET","POST"]{let request=Request::builder().method(method).uri("/api/artwork/offline").header("Host","127.0.0.1").header("Authorization",format!("Bearer {token}")).body(Body::empty()).unwrap();assert_eq!(crate::router(a.clone()).oneshot(request).await.unwrap().status(),200);}
  }
  #[tokio::test]async fn failed_download_resume_reuses_images_and_clears_error_count(){
   let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();let cover="https://t.vndb.org/cv/01/1.jpg";let portrait="https://t.vndb.org/ch/02/2.png";let png=b"\x89PNG\r\n\x1a\nfixture";
