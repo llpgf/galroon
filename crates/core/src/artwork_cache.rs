@@ -19,6 +19,8 @@ impl Cache{
  pub fn open(base:&Path)->Result<Self,String>{Self::with_budget(base,MAX_CACHE_BYTES)}
  fn with_budget(base:&Path,budget:u64)->Result<Self,String>{
   let path=base.join("artwork-cache.sqlite");crate::plans::validate_chain(&path)?;
+  // Opening configures SQLite too; it must not race cache writes or vacuum.
+  let _write=WRITE.lock().map_err(|e|e.to_string())?;
   let connection=Connection::open(path).map_err(|e|e.to_string())?;
   connection.busy_timeout(std::time::Duration::from_secs(2)).map_err(|e|e.to_string())?;
   connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA auto_vacuum=INCREMENTAL; CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY,mime TEXT NOT NULL,data BLOB NOT NULL,touched INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS images_lru ON images(touched,key);").map_err(|e|e.to_string())?;
@@ -56,12 +58,12 @@ impl Cache{
  use super::*;
  fn png(value:u8)->Vec<u8>{let mut b=b"\x89PNG\r\n\x1a\n".to_vec();b.extend([value;24]);b}
  #[test]fn cache_mutations_wait_outside_sqlite_while_readers_remain_available(){
-  for action in ["put","get","clear"]{
+  for action in ["open","put","get","clear"]{
    let t=tempfile::tempdir().unwrap();let mut cache=Cache::open(t.path()).unwrap();cache.put("first",&png(1)).unwrap();
    cache.connection.busy_timeout(std::time::Duration::from_millis(10)).unwrap();
    let writer=Connection::open(t.path().join("artwork-cache.sqlite")).unwrap();let gate=WRITE.lock().unwrap();writer.execute_batch("BEGIN IMMEDIATE").unwrap();
    assert_eq!(cache.stats().unwrap().images,1);
-   let(send,receive)=std::sync::mpsc::channel();let worker=std::thread::spawn(move||{send.send(match action{"put"=>cache.put("second",&png(2)),"get"=>cache.get("first").map(|image|assert_eq!(image.unwrap().bytes,png(1))),_=>cache.clear().map(|stats|assert_eq!(stats.images,0))}).unwrap();});
+   let base=t.path().to_path_buf();let(send,receive)=std::sync::mpsc::channel();let worker=std::thread::spawn(move||{send.send(match action{"open"=>Cache::open(&base).map(|opened|assert_eq!(opened.stats().unwrap().images,1)),"put"=>cache.put("second",&png(2)),"get"=>cache.get("first").map(|image|assert_eq!(image.unwrap().bytes,png(1))),_=>cache.clear().map(|stats|assert_eq!(stats.images,0))}).unwrap();});
    assert!(matches!(receive.recv_timeout(std::time::Duration::from_millis(100)),Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
    writer.execute_batch("COMMIT").unwrap();drop(gate);receive.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();worker.join().unwrap();
   }
