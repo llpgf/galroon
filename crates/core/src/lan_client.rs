@@ -64,12 +64,12 @@ fn field(value:&Value,key:&str)->R<String>{value[key].as_str().filter(|s|!s.is_e
 fn success(response:&ProxyResponse)->R<Value>{if !(200..300).contains(&response.status){return Err(if response.credential_invalid(){"credential_invalid".into()}else{format!("Core request failed ({})",response.status)});}serde_json::from_slice(&response.body).map_err(|_|"Core returned invalid JSON".into())}
 /// Immutable credentials and identity; one HTTP pool and eight in-flight requests per connection.
 /// Dropping a proxy future cancels the upstream request and releases its slot.
-pub struct LanConnection{url:String,token:String,library_id:String,device_id:String,client:reqwest::Client,slots:tokio::sync::Semaphore,cancel:tokio::sync::watch::Sender<bool>}
+pub struct LanConnection{url:String,token:String,library_id:String,device_id:String,client:reqwest::Client,slots:Arc<tokio::sync::Semaphore>,cancel:tokio::sync::watch::Sender<bool>}
 impl LanConnection{
  pub fn new(url:String,fingerprint:String,token:String,library_id:String,device_id:String)->R<Self>{
   let url=endpoint(&url)?;Self::with_client(url,pinned_client(decode_fingerprint(&fingerprint)?)?,token,library_id,device_id)
  }
- fn with_client(url:String,client:reqwest::Client,token:String,library_id:String,device_id:String)->R<Self>{let(cancel,_)=tokio::sync::watch::channel(false);Ok(Self{url,token,library_id,device_id,client,slots:tokio::sync::Semaphore::new(8),cancel})}
+ fn with_client(url:String,client:reqwest::Client,token:String,library_id:String,device_id:String)->R<Self>{let(cancel,_)=tokio::sync::watch::channel(false);Ok(Self{url,token,library_id,device_id,client,slots:Arc::new(tokio::sync::Semaphore::new(8)),cancel})}
  pub fn cancel(&self){self.cancel.send_replace(true);}
  pub fn is_cancelled(&self)->bool{*self.cancel.borrow()}
  pub async fn session(&self)->R<RemoteSession>{
@@ -90,6 +90,7 @@ pub struct ProxyRequest{pub method:String,pub path:String,pub body:Option<Vec<u8
 pub struct ProxyResponse{pub status:u16,pub headers:BTreeMap<String,String>,pub body:Vec<u8>}
 impl ProxyResponse{
  pub fn credential_invalid(&self)->bool{self.status==401&&serde_json::from_slice::<Value>(&self.body).is_ok_and(|v|v["code"]=="credential_invalid")}
+ pub fn into_http(self)->axum::response::Response{use axum::response::IntoResponse;let mut response=(axum::http::StatusCode::from_u16(self.status).unwrap(),self.body).into_response();for(name,value)in self.headers{response.headers_mut().insert(name.parse::<axum::http::HeaderName>().unwrap(),value.parse().unwrap());}response}
  /// Wire format: big-endian u32 JSON metadata length, metadata, then untouched body bytes.
  pub fn into_ipc_bytes(self)->R<Vec<u8>>{let metadata=serde_json::to_vec(&json!({"status":self.status,"headers":self.headers})).map_err(|e|e.to_string())?;let mut result=Vec::with_capacity(4+metadata.len()+self.body.len());result.extend_from_slice(&(metadata.len()as u32).to_be_bytes());result.extend_from_slice(&metadata);result.extend_from_slice(&self.body);Ok(result)}
 }
@@ -112,10 +113,32 @@ pub async fn proxy(conn:&LanConnection,request:ProxyRequest)->R<ProxyResponse>{
   read_response(builder.send().await.map_err(transport_error)?,limit).await
  })=>result.map_err(|_|"Core request timed out")?}
 }
+fn response_headers(response:&reqwest::Response)->BTreeMap<String,String>{let mut headers=BTreeMap::new();for name in ["content-type","x-galroon-library","x-galroon-device","retry-after"]{if let Some(value)=response.headers().get(name).and_then(|v|v.to_str().ok()){headers.insert(name.into(),value.into());}}headers}
 async fn read_response(mut response:reqwest::Response,limit:usize)->R<ProxyResponse>{
- let status=response.status().as_u16();let mut headers=BTreeMap::new();for name in ["content-type","x-galroon-library","x-galroon-device","retry-after"]{if let Some(value)=response.headers().get(name).and_then(|v|v.to_str().ok()){headers.insert(name.into(),value.into());}}
+ let status=response.status().as_u16();let headers=response_headers(&response);
  if response.content_length().is_some_and(|n|n>limit as u64){return Err("Core response exceeds size limit".into());}
- let mut body=Vec::new();while let Some(chunk)=response.chunk().await.map_err(transport_error)?{if chunk.len()>limit-body.len(){return Err("Core response exceeds size limit".into());}body.extend_from_slice(&chunk);}
+ let mut body=Vec::with_capacity(response.content_length().unwrap_or(0)as usize);while let Some(chunk)=response.chunk().await.map_err(transport_error)?{if chunk.len()>limit-body.len(){return Err("Core response exceeds size limit".into());}body.extend_from_slice(&chunk);}
  Ok(ProxyResponse{status,headers,body})
+}
+pub struct HttpProxyResponse{pub response:axum::response::Response,pub credential_invalid:bool}
+/// Large images stay bounded by the network stream instead of a second complete native copy.
+pub async fn http_proxy(conn:Arc<LanConnection>,request:ProxyRequest)->R<HttpProxyResponse>{
+ let method=validate_request(&conn,&request)?;let route=request.path.split('?').next().unwrap();let image=route=="/api/artwork"||route.starts_with("/api/artwork/");let limit=if image{IMAGE_LIMIT}else{JSON_LIMIT};let stream=image&&method==reqwest::Method::GET;
+ let mut cancelled=conn.cancel.subscribe();if *cancelled.borrow(){return Err("Connection changed".into());}let deadline=tokio::time::Instant::now()+Duration::from_secs(60);
+ let (response,permit)=tokio::select!{biased;_=cancelled.changed()=>return Err("Connection changed".into()),result=tokio::time::timeout_at(deadline,async{
+  let permit=conn.slots.clone().acquire_owned().await.map_err(|_|"Connection closed")?;
+  let mut builder=conn.client.request(method,format!("{}{}",conn.url,request.path)).bearer_auth(&conn.token).header("Origin",&conn.url).header("x-galroon-library",&conn.library_id).header("x-galroon-device",&conn.device_id);
+  if let Some(content_type)=request.content_type{builder=builder.header("content-type",content_type);}if let Some(body)=request.body{builder=builder.body(body);}
+  Ok::<_,String>((builder.send().await.map_err(transport_error)?,permit))
+ })=>result.map_err(|_|"Core request timed out")??};
+ if !stream||!response.status().is_success(){let response=tokio::select!{biased;_=cancelled.changed()=>return Err("Connection changed".into()),result=tokio::time::timeout_at(deadline,read_response(response,limit))=>result.map_err(|_|"Core request timed out")??};let credential_invalid=response.credential_invalid();return Ok(HttpProxyResponse{response:response.into_http(),credential_invalid});}
+ if response.content_length().is_some_and(|n|n>limit as u64){return Err("Core response exceeds size limit".into());}
+ let mut result=axum::http::Response::builder().status(response.status().as_u16());for(name,value)in response_headers(&response){result=result.header(name,value);}if let Some(length)=response.content_length(){result=result.header("content-length",length);}
+ let body=futures_util::stream::try_unfold((conn,response,cancelled,permit,limit,deadline),|(conn,mut response,mut cancelled,permit,remaining,deadline)|async move{
+  if *cancelled.borrow(){return Err("Connection changed".to_owned());}
+  let chunk=tokio::select!{biased;_=cancelled.changed()=>return Err("Connection changed".to_owned()),result=tokio::time::timeout_at(deadline,response.chunk())=>result.map_err(|_|"Core request timed out".to_owned())?.map_err(transport_error)?};
+  let Some(chunk)=chunk else{return Ok(None)};if chunk.len()>remaining{return Err("Core response exceeds size limit".into());}let remaining=remaining-chunk.len();Ok(Some((chunk,(conn,response,cancelled,permit,remaining,deadline))))
+ });
+ Ok(HttpProxyResponse{response:result.body(axum::body::Body::from_stream(body)).map_err(|e|e.to_string())?,credential_invalid:false})
 }
 #[cfg(test)]#[path="lan_client_tests.rs"]mod tests;

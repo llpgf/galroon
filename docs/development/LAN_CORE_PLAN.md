@@ -172,7 +172,11 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 
 ### 4.5 桌面客戶端的傳輸方式（R5）
 
-**採用：Tauri IPC 傳輸**。
+**採用：本機轉發代理**（2026-10-15 實機驗收後啟用本節原定備案）。IPC 原型的 5 MiB 圖片延遲與記憶體未通過下列門檻；JSON 分頁已通過。原始 IPC 方案保留於下文，實測記錄見 `LAN_PR5_REPORT.md`。
+
+代理只綁定 `127.0.0.1` 的動態埠，每次桌面啟動使用新的隨機密鑰，接受指定桌面 Origin。`core_session` 的遠端 `token` 仍為空；另外回傳 `proxy_url` 與 `proxy_key`。NAS bearer 只留在原生端，轉送仍經 SPKI verifier，固定到選定的連線並核對 library/device。大型圖片分段轉送，套用同一大小上限、60 秒總逾時、8 請求限制與連線取消。代理不持久化密鑰，不接受任意上游或 redirect，不重送寫入。
+
+**原始 IPC 方案**：
 
 - 前端的網路出口已經集中在 `request()` 和 `artworkBlob()`（`api.ts:66`、`:87`）。遠端連線時，這兩個函式改呼叫一個通用的 Tauri command；由 Rust 端用 4.2 的 verifier 連到 Core。
 - WebView 拿不到真正的 bearer，也不需要開本機轉發埠，CSP 不用改。
@@ -406,7 +410,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 | 暴力嘗試配對碼 | 48 位元配對碼、5 分鐘過期、一次性，加上分層的嘗試次數限制 | 同左 |
 | 讓其他人無法登入或配對 | 分層嘗試次數限制；LAN 上沒有密碼登入 | 同左 |
 | 竊取瀏覽器登入密碼 | 不適用 | LAN 上停用密碼登入 |
-| 本機惡意程式取得遠端憑證 | WebView 拿不到 bearer（IPC 傳輸）；bearer 在 Windows 認證管理員 | 不適用 |
+| 本機惡意程式取得遠端憑證 | WebView 拿不到 NAS bearer（原生轉發；只取得短期本機密鑰）；bearer 在 Windows 認證管理員 | 不適用 |
 | 惡意網頁做 DNS rebinding | Host 限制，加上憑證不符 | 同左 |
 | 被偷走的 `desktop` 憑證 | owner 可撤銷；**持有者可以做所有 Core 檔案操作**（4.7） | 不適用 |
 | 從反向代理繞進 loopback 權限 | 不支援反向代理（4.13） | 同左 |

@@ -1,5 +1,7 @@
 # PR 5 實作報告
 
+> 下文保留原始 IPC 實作與歷次驗收。2026-10-15 的 release 效能驗收未通過大型圖片門檻，因此目前改用計畫 §4.5 的本機轉發代理；最新結果見文末。
+
 實作範圍：桌面透過配對字串連接 LAN Core，SPKI pinning、IPC、持久化重新配對狀態。未新增 crate、未調整 Cargo features／lockfile、未修改 CSP／HTTP API／schema、未執行 cargo fmt、未建立 commit。
 
 ## 變更檔案
@@ -135,3 +137,34 @@ NAS 沿用 `galroon:f0e5b43bcb1f`：它已包含本次使用的 LAN TLS、owner 
 Windows MCP 測試的 watched-scan／automatic-matching 競態已修正，三項 e2e 連跑十次全部通過（30/30）；另將 Windows Core limiter fixture 的 1,000 筆資料改為同一 transaction 並統一 timestamp，避免慢速逐筆 commit 讓資料提前過期。`4a84fb6` 的 CI 四項工作均通過。
 
 原始截圖、檔案指紋、唯讀掛載證據及 probe JSON 保存在執行此驗證的 worktree `test-output/lan-pr5-nas-live/`，不含於 Git。計畫 §4.5 的 IPC／fetch p95 與 5 MB 封面尖峰記憶體比較仍未量測；上述結果不能代替效能驗收。
+
+## 最終 release 效能與安裝包驗收（2026-10-15）
+
+驗證程式碼為 `5a30bf6`，包含最新 master。正常執行 `npm run desktop:build`，未省略 bundle resources；測試的是 NSIS 安裝後的 release App、內嵌前端與完整 Core/MCP。Windows 測試採獨立安裝路徑、profile、WebView profile 和資料庫快照。
+
+### 效能結果與實際採用的傳輸
+
+原始 binary IPC 的 JSON 分頁通過，但 5 MiB 圖片 p95 額外約 46.9 ms、記憶體增加約 80 MB，超過計畫門檻，因此啟用 §4.5 原先規劃的本機代理備案。完整緩衝的代理仍超過記憶體上限（18,247,680 bytes）；原生串流配合 JS TransformStream 也為 18,427,904 bytes。最終原生端分段轉送，有 Content-Length 的圖片直接由瀏覽器讀成 Blob；未知長度仍逐塊限制，兩條路徑都檢查最終大小、取消與收藏切換。
+
+使用安裝後的真實 Tauri/WebView2，由測試頁載入同一版 `src/api.ts` 的 bundle，停止背景 UI 輪詢以量測傳輸。對照為同一台 release Core、相同 desktop role 的直接 HTTP fetch；每項先暖機 5 次，再各取 50 次並交替順序。資料為 620 作品／793 資源的獨立快照，選定資源含 2,021 個索引成員；測試圖片為有效的 5,242,880-byte PNG。
+
+| 項目 | 直接 fetch p95 | 原生代理 p95 | 額外 p95 | 門檻 | 結果 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 60 筆作品 | 135.6 ms | 135.8 ms | 0.2 ms | ≤15 ms | 通過 |
+| 60 筆檔案成員 | 41.8 ms | 43.5 ms | 1.7 ms | ≤15 ms | 通過 |
+| 5 MiB 圖片 | 103.5 ms | 110.7 ms | 7.2 ms | ≤30 ms | 通過 |
+
+- 首次大圖請求的 Private Bytes 每 5 ms 取樣；桌面與此 WebView 的全部程序合計尖峰增加 **6,443,008 bytes（6.14 MiB）**，低於三倍圖片大小的 15,728,640-byte 上限。原生程序增加 446,464 bytes，WebView 增加 5,996,544 bytes；合計使用同時間樣本，未把不同時間的尖峰相加。圖片雜湊在記憶體取樣結束後才計算，與 fixture 完全一致。
+- 8 個並行請求全部回傳正確的 60 筆；取消回 AbortError，切換收藏拒絕舊回應。原生測試另涵蓋 8 個 slot、串流大小上限、取消、丟棄串流後釋放 slot、400/401/403/409/503 原始 body/header 與寫入不重送。
+- WebView 遠端 session 的 token 為空。每次啟動的本機代理 key 不同，舊 key／端點失效；NAS bearer 留在 Credential Manager／原生端。代理的 Host、Origin、key、path/method 與固定上游限制皆有測試。
+
+### 安裝、實機生命週期與清理
+
+- 補齊 pinned `yasna` MIT／Apache license，正常產生 notices／inventory，release NSIS 成功建置。驗收包 SHA-256：`EA88F1F4EF307E1B0128E82977967ACD1F1504EF76CE61708018BD21E4739E65`。
+- 新安裝及升級成功；安裝後 desktop/Core/MCP 與實際 NSIS payload 的 SHA-256 一致。修正 NSIS `FindFirst` 前未清除上一輪 error flag，確認舊 JS/CSS 清除、無關檔案保留。測試曾在 Stop-Process 尚未完全退出時立即升級，雜湊檢查抓到舊 executable；加入等待退出後再驗證成功。
+- 本機測試 Core 撤銷回傳 `401 credential_invalid`，selected 與 needs_repair 保留，重配與重啟後仍開啟同一收藏。
+- 最終安裝包再連 NAS 獨立實例，620 部收藏、60 筆分頁、作品詳情和 203,197-byte 封面皆成功；撤銷後真實 UI 顯示需要重新配對，重新配對恢復同一收藏。NAS 原始遊戲目錄維持唯讀掛載。
+- 測試裝置已撤銷，Windows credentials、測試排程及安裝包已清理，原有安裝註冊與捷徑還原；原有安裝的 85 個檔案雜湊全部不變。NAS 清理時一次 owner CLI 回應逾時，另以唯讀查詢確認該測試 session 已 revoked；未把逾時當作未執行。
+- 未部署正式 NAS Core，未操作原始遊戲檔案。Windows 效能快照的來源改成不存在的測試路徑、監控及自動配對停用。
+
+最終回歸：Core **460 通過、1 忽略**，MCP 6 項通過；前端 **32 檔／188 項通過**；TypeScript／production build 通過；Windows 登入中的工作階段執行 desktop 原生 **9 項全通過**。Windows／Linux CI、frontend 與 repository checks 通過。原始量測、失敗輪次、安裝紀錄、測試輸出與截圖保留在本機 `GalroonTestData/pr59-release-2026-10-15`，不將私人收藏或憑證加入 Git。

@@ -3,7 +3,7 @@ import {clearClientArtwork} from './clientArtworkCache';
 import {revisionConflictText} from './coreText';
 import {reportClientError} from './clientDiagnostics';
 import {invoke,isTauri} from '@tauri-apps/api/core';
-export type Session={url:string;token:string;remote?:boolean;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
+export type Session={url:string;token:string;remote?:boolean;proxy_url?:string;proxy_key?:string;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
 export const isDesktop=isTauri();
 let session:Session|undefined;
 let epoch=0,changing=false,stopRequested=false,everConnected=false;
@@ -78,6 +78,7 @@ export function setSession(s:Session){clearRetry();session=s;bumpEpoch();stopReq
 export function readApi<T=unknown>(path:string,signal:AbortSignal):Promise<T>{return request<T>(path,undefined,signal);}
 export function api<T=unknown>(path:string,body?:unknown):Promise<T>{return request<T>(path,body);}
 async function ipcResponse(current:Session,path:string,method:string,body:unknown,signal?:AbortSignal):Promise<Response>{
+ if(current.proxy_url)return fetch(`${current.proxy_url}${path}`,{method,signal,credentials:'omit',headers:{'Authorization':`Bearer ${current.proxy_key}`,'Content-Type':'application/json','X-Galroon-Library':current.library_id!,'X-Galroon-Device':current.device_id!},body:body===undefined?undefined:JSON.stringify(body)});
  if(signal?.aborted)throw new DOMException('Request cancelled','AbortError');
  const pending=invoke<ArrayBuffer>('core_request',{method,path,body:body===undefined?null:Array.from(new TextEncoder().encode(JSON.stringify(body))),contentType:body===undefined?null:'application/json',libraryId:current.library_id,deviceId:current.device_id});
  let abort:(()=>void)|undefined;
@@ -104,9 +105,12 @@ export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  if(response.status===401){const data=await response.json().catch(()=>null);if(data?.code==='credential_invalid')throw repairRequired();}
  const type=response.headers.get('content-type')?.split(';')[0];
  if(!response.ok||!type||!['image/png','image/jpeg','image/webp'].includes(type)||!response.body)throw new Error('Artwork unavailable');
- const reader=response.body.getReader(),parts:Uint8Array<ArrayBuffer>[]= [];let size=0;
- try{for(;;){const item=await reader.read();if(item.done)break;check();size+=item.value.byteLength;if(size>(current.remote?16:8)*1024*1024)throw new Error('Artwork exceeds size limit');parts.push(new Uint8Array(item.value));}check();return new Blob(parts,{type});}
- finally{try{await reader.cancel();}catch{/* Preserve the original read failure. */}reader.releaseLock();}
+ const limit=(current.remote?16:8)*1024*1024,length=response.headers.get('content-length');
+ if(length!==null&&Number(length)>limit)throw new Error('Artwork exceeds size limit');
+ // Known-length HTTP bodies can go straight to the browser's Blob storage without JS chunk copies.
+ let body=response;
+ if(length===null){let size=0;const limited=response.body.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk,controller){check();size+=chunk.byteLength;if(size>limit)throw new Error('Artwork exceeds size limit');controller.enqueue(chunk);}}));body=new Response(limited,{headers:{'Content-Type':type}});}
+ const blob=await body.blob();check();if(blob.size>limit)throw new Error('Artwork exceeds size limit');return blob;
  }finally{clearTimeout(timeout);signal.removeEventListener('abort',abort);if(response?.body&&!response.body.locked){try{await response.body.cancel();}catch{/* A failed response may already be closed. */}}}
 }
 export function previewGrouping<T=unknown>(id:string,selection:unknown,signal:AbortSignal):Promise<T>{return request<T>(`/resources/${encodeURIComponent(id)}/regroup/preview/page`,selection,signal);}
@@ -124,6 +128,7 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
  catch(error){if(callerSignal?.aborted)throw error;stale();if(String(error)==='credential_invalid')throw repairRequired();if(String(error).startsWith('409 collection_changed')){collectionChanged();throw new CollectionChangedError();}if(isDesktop){lostConnection();throw readOnly?new ConnectionLostError():new UncertainOperationError();}throw error;}finally{if(timeout!==undefined)clearTimeout(timeout);callerSignal?.removeEventListener('abort',abort);}
  stale();
  if(data?.code==='collection_changed'){collectionChanged();throw new CollectionChangedError();}
+ if(current.proxy_url&&data?.code==='transport_unavailable'){lostConnection();throw readOnly?new ConnectionLostError():new UncertainOperationError();}
  const library=response.headers.get('x-galroon-library'),device=response.headers.get('x-galroon-device');
  if((library&&current.library_id&&library!==current.library_id)||(device&&current.device_id&&device!==current.device_id)){collectionChanged();throw readOnly?new CollectionChangedError():new UncertainOperationError();}
  if(library)current.library_id=library;if(device)current.device_id=device;

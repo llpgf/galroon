@@ -71,9 +71,10 @@ fn conn(f:&Fixture,token:String,library_id:String,device_id:String)->LanConnecti
 #[tokio::test]async fn proxy_preserves_errors_headers_binary_and_never_retries_post(){
  let count=Arc::new(AtomicUsize::new(0));let calls=count.clone();
  let extra=Router::new().route("/api/test/{status}",post(move|axum::extract::Path(status):axum::extract::Path<u16>,r:Request<Body>|{let calls=calls.clone();async move{calls.fetch_add(1,Ordering::SeqCst);assert_eq!(r.headers()["x-galroon-library"],"library");assert_eq!(r.headers()["x-galroon-device"],"device");(StatusCode::from_u16(status).unwrap(),[("content-type","application/json"),("retry-after","7"),("x-galroon-library","library"),("x-galroon-device","device"),("set-cookie","do-not-forward")],r#"{ "code":"credential_invalid", "error":"untouched" }"#)}})).route("/api/binary",get(||async{([( "content-type","image/png")],vec![0u8,255,128,1])}));
- let f=fixture(extra).await;let c=conn(&f,"token".into(),"library".into(),"device".into());
- for status in [401,403,409,503]{let response=proxy(&c,request("POST",&format!("/api/test/{status}"))).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,br#"{ "code":"credential_invalid", "error":"untouched" }"#);assert_eq!(response.headers.len(),4);assert_eq!(response.headers["retry-after"],"7");}
- assert_eq!(count.load(Ordering::SeqCst),4);let response=proxy(&c,request("GET","/api/binary")).await.unwrap();assert_eq!(response.body,[0,255,128,1]);
+ let f=fixture(extra).await;let c=Arc::new(conn(&f,"token".into(),"library".into(),"device".into()));
+ for status in [400,401,403,409,503]{let response=proxy(&c,request("POST",&format!("/api/test/{status}"))).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,br#"{ "code":"credential_invalid", "error":"untouched" }"#);assert_eq!(response.headers.len(),4);assert_eq!(response.headers["retry-after"],"7");}
+ for status in [400,401,403,409,503]{let result=http_proxy(c.clone(),request("POST",&format!("/api/test/{status}"))).await.unwrap();assert_eq!(result.credential_invalid,status==401);assert_eq!(result.response.status().as_u16(),status);assert_eq!(axum::body::to_bytes(result.response.into_body(),4096).await.unwrap().as_ref(),br#"{ "code":"credential_invalid", "error":"untouched" }"#);}
+ assert_eq!(count.load(Ordering::SeqCst),10);let response=proxy(&c,request("GET","/api/binary")).await.unwrap();assert_eq!(response.body,[0,255,128,1]);
  assert!(proxy(&c,request("HEAD","/api/binary")).await.unwrap().body.is_empty());
 }
 #[tokio::test]async fn response_limits_include_chunked_bodies(){
@@ -94,9 +95,18 @@ fn conn(f:&Fixture,token:String,library_id:String,device_id:String)->LanConnecti
  assert_eq!(c.slots.available_permits(),8);assert_eq!(proxy(&c,request("GET","/api/context")).await.unwrap_err(),"Connection changed");
 }
 #[tokio::test]async fn response_reader_preserves_errors_and_enforces_limits_without_sockets(){
- for status in [401,403,409,503]{let raw=br#"{ "code": "credential_invalid", "error": "original" }"#.to_vec();
+ for status in [400,401,403,409,503]{let raw=br#"{ "code": "credential_invalid", "error": "original" }"#.to_vec();
   let response=reqwest::Response::from(axum::http::Response::builder().status(status).header("content-type","application/json").header("retry-after","7").header("set-cookie","secret").body(raw.clone()).unwrap());
   let response=read_response(response,1024).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,raw);assert_eq!(response.headers.len(),2);assert_eq!(response.credential_invalid(),status==401);
  }
  for limit in [IMAGE_LIMIT,JSON_LIMIT]{for size in [limit,limit+1]{let response=reqwest::Response::from(axum::http::Response::new(vec![0u8;size]));let result=read_response(response,limit).await;if size==limit{assert_eq!(result.unwrap().body.len(),size);}else{assert!(result.unwrap_err().contains("size limit"));}}}
+}
+#[tokio::test]async fn http_images_stream_with_limits_and_release_slots_on_cancel_or_drop(){
+ use futures_util::StreamExt;
+ async fn large(axum::extract::Path(size):axum::extract::Path<usize>)->axum::response::Response{Body::from_stream(Body::from(vec![b'x';size]).into_data_stream()).into_response()}
+ let slow=get(||async{Body::from_stream(futures_util::stream::unfold(false,|sent|async move{if sent{tokio::time::sleep(Duration::from_secs(30)).await;}Some((Ok::<_,std::io::Error>(axum::body::Bytes::from_static(b"chunk")),true))})).into_response()});
+ let f=fixture(Router::new().route("/api/artwork/size/{size}",get(large)).route("/api/artwork/slow",slow)).await;let c=Arc::new(conn(&f,"token".into(),"library".into(),"device".into()));
+ for size in [IMAGE_LIMIT,IMAGE_LIMIT+1]{let result=http_proxy(c.clone(),request("GET",&format!("/api/artwork/size/{size}"))).await.unwrap();let body=axum::body::to_bytes(result.response.into_body(),IMAGE_LIMIT+1).await;if size==IMAGE_LIMIT{assert_eq!(body.unwrap().len(),size);}else{assert!(body.is_err());}}
+ let response=http_proxy(c.clone(),request("GET","/api/artwork/slow")).await.unwrap();assert_eq!(c.slots.available_permits(),7);drop(response);assert_eq!(c.slots.available_permits(),8);
+ let response=http_proxy(c.clone(),request("GET","/api/artwork/slow")).await.unwrap();let mut body=response.response.into_body().into_data_stream();assert_eq!(body.next().await.unwrap().unwrap(),"chunk");c.cancel();assert!(tokio::time::timeout(Duration::from_secs(1),body.next()).await.unwrap().unwrap().is_err());drop(body);assert_eq!(c.slots.available_permits(),8);
 }
