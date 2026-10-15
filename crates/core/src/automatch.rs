@@ -90,7 +90,7 @@ fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapsho
     let mut rows=sql(s.query([rid]))?;let mut members=Vec::new();
     while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());members.push(path);}
     if members.is_empty(){return Ok(None);}hints.extend(member_hints(members).iter().map(|p|local(p)));
-    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
+    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,runtime_filtered:false,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{
