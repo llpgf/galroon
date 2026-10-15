@@ -21,8 +21,37 @@ pub(crate) fn cached(a: &App, key: &str) -> Result<Option<Value>, String> {
 }
 pub(crate) fn save(a: &App, key: &str, value: &Value) -> Result<(), String> {
     a.db.lock().map_err(|e|e.to_string())?.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)", params![key,value.to_string()]).map_err(|e|e.to_string())?;
-    if crate::artwork_library::profile(&a.state_dir,key)?.is_some(){crate::artwork_library::Library::open(&a.state_dir)?.save_profile(key,value)?;crate::collection_download::refresh(&*a.db.lock().map_err(|e|e.to_string())?,key).map_err(|e|e.to_string())?;}
+    if key.starts_with("exploration.v4.work.")&&crate::artwork_library::profile(&a.state_dir,key)?.is_some(){crate::artwork_library::Library::open(&a.state_dir)?.save_profile(key,value)?;crate::collection_download::refresh(&*a.db.lock().map_err(|e|e.to_string())?,key).map_err(|e|e.to_string())?;}
+    let parts:Vec<_>=key.split('.').collect();
+    if let ["exploration","v3",kind,id,"1"]=parts.as_slice(){
+        let permanent=crate::collection_profiles::key(kind,id);
+        if crate::artwork_library::profile(&a.state_dir,&permanent)?.is_some(){
+            let basic=crate::collection_profiles::basic(value,kind,&crate::collection_profiles::owned(&*a.db.lock().map_err(|e|e.to_string())?)?);
+            crate::artwork_library::Library::open(&a.state_dir)?.save_profile(&permanent,&basic)?;
+            crate::collection_download::refresh(&*a.db.lock().map_err(|e|e.to_string())?,key).map_err(|e|e.to_string())?;
+        }
+    }
     Ok(())
+}
+// A background collection download needs one biography request, never a VN list.
+pub(crate) async fn load_entity(a:&App,kind:&str,id:&str)->Result<Value,String>{
+    if let Some(value)=crate::artwork_library::profile(&a.state_dir,&crate::collection_profiles::key(kind,id))?{return Ok(value);}
+    if let Some(value)=cached(a,&format!("exploration.v3.{kind}.{id}.1"))?{if value[kind]["id"]==id{return Ok(value);}}
+    let mut gate=PROVIDER.get_or_init(||tokio::sync::Mutex::new(0)).lock().await;
+    let profile=entity(a,kind,id,false,&mut gate).await?;
+    Ok(json!({(kind):profile,"fetched_at":crate::db::now()}))
+}
+async fn entity(a:&App,kind:&str,id:&str,refresh:bool,gate:&mut i64)->Result<Value,String>{
+    let profile_key=format!("exploration.v3.profile.{kind}.{id}");
+    if !refresh{if let Some(value)=cached(a,&profile_key)?{if crate::db::now()-value["fetched_at"].as_i64().unwrap_or(0)<TTL{return Ok(value["profile"].clone());}}}
+    let (endpoint,fields,filters)=match kind {
+        "character"=>("character",CHARACTER_DETAIL_FIELDS,json!(["id","=",id])),
+        "company"=>("producer","name,original,description,aliases,lang,type,extlinks.url,extlinks.label",json!(["id","=",id])),
+        _=>("staff","name,original,description,lang,gender,aliases.aid,aliases.name,aliases.latin,aliases.ismain,extlinks.url,extlinks.label",json!(["and",["id","=",id],["ismain","=",1]])),
+    };
+    let response=query(endpoint,json!({"filters":filters,"fields":fields,"results":1}),gate).await?;
+    let profile=response["results"].as_array().and_then(|v|v.first()).ok_or("VNDB entry not found")?.clone();
+    save(a,&profile_key,&json!({"profile":profile,"fetched_at":crate::db::now()}))?;Ok(profile)
 }
 pub(crate) async fn query(endpoint: &str, body: Value, cooldown: &mut i64) -> Result<Value, String> {
     if *cooldown > crate::db::now() { return Err("VNDB is cooling down. Try again in a few minutes.".into()); }
@@ -46,7 +75,7 @@ fn retain_complete(previous:Option<Value>,result:Result<Value,String>)->Result<V
 pub(crate) async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool) -> Result<Value, String> {
     let version=if kind=="work"{4}else{3};
     let key=format!("exploration.v{version}.{kind}.{id}.{page}");
-    if !refresh{if let Some(value)=crate::artwork_library::profile(&a.state_dir,&key)?{return Ok(value);}}
+    if kind=="work"&&!refresh{if let Some(value)=crate::artwork_library::profile(&a.state_dir,&key)?{return Ok(value);}}
     let previous=cached(a,&key)?;
     if let Some(v)=&previous { if !refresh && crate::db::now()-v["fetched_at"].as_i64().unwrap_or(0)<TTL {return Ok(v.clone());} }
     // Bound demand and deduplicate concurrent cache misses across clients.
@@ -64,18 +93,7 @@ pub(crate) async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool
             }
             json!({"vn":vn,"characters":characters,"more":more,"partial":warning.is_some(),"warning":warning})
         } else {
-            let (endpoint,fields,filters)=match kind {
-                "character"=>("character",CHARACTER_DETAIL_FIELDS,json!(["id","=",id])),
-                "company"=>("producer","name,original,description,aliases,lang,type,extlinks.url,extlinks.label",json!(["id","=",id])),
-                _=>("staff","name,original,description,lang,gender,aliases.aid,aliases.name,aliases.latin,aliases.ismain,extlinks.url,extlinks.label",json!(["and",["id","=",id],["ismain","=",1]])),
-            };
-            let profile_key=format!("exploration.v3.profile.{kind}.{id}");
-            let saved=cached(a,&profile_key)?;
-            let profile=if !refresh&&saved.as_ref().is_some_and(|v|crate::db::now()-v["fetched_at"].as_i64().unwrap_or(0)<TTL){saved.unwrap()["profile"].clone()}else{
-                let response=query(endpoint,json!({"filters":filters,"fields":fields,"results":1}),&mut gate).await?;
-                let profile=response["results"].as_array().and_then(|v|v.first()).ok_or("VNDB entry not found")?.clone();
-                save(a,&profile_key,&json!({"profile":profile,"fetched_at":crate::db::now()}))?;profile
-            };
+            let profile=entity(a,kind,id,refresh,&mut gate).await?;
             let filter=match kind {"character"=>json!(["character","=",["id","=",id]]),"company"=>json!(["developer","=",["id","=",id]]),_=>json!(["staff","=",["id","=",id]])};
             let fields=if kind=="company"{"title,alttitle,released,image.url,image.sexual,image.violence"}else{PROFILE_WORK_FIELDS};
             // Keep the profile visible if its separately loaded work list fails.
@@ -87,7 +105,12 @@ pub(crate) async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool
         };
         value["fetched_at"]=json!(crate::db::now());value["stale"]=json!(false);if value["partial"]!=true {save(a,&key,&value)?;}Ok::<Value,String>(value)
     }.await;
-    retain_complete(previous,result)
+    drop(gate);
+    if result.as_ref().is_ok_and(|v|v["partial"]!=true){return result;}
+    let previous=match previous{Some(value)=>Some(value),None if kind!="work"=>crate::collection_profiles::offline_page(a,kind,id,page)?,None=>None};
+    let mut value=retain_complete(previous,result)?;
+    if value["collection_only"]==true{value["stale"]=json!(true);value["warning"]=json!("Showing saved collection credits only. Connect to VNDB to load the full works list.");}
+    Ok(value)
 }
 pub async fn work(State(a):State<App>, h:HeaderMap, Path(id):Path<String>, Query(page):Query<Page>) -> Result<Json<Value>,ApiError> {
     crate::auth(&a,&h)?;

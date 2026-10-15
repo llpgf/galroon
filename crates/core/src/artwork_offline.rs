@@ -67,22 +67,20 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
  if !work.cover.is_empty(){images.insert(work.cover.clone());}
  if let Some(id)=&work.vndb_id{
   let profile=crate::exploration::load(a,"work",id,1,false).await?;
-  match complete(&profile,false){Ok(())=>{Library::open(&a.state_dir)?.save_profile(&format!("exploration.v4.work.{id}.1"),&profile)?;update_catalog(a,work,&profile)?;},Err(error)=>failure=Some(error)}
+  match complete(&profile){Ok(())=>{Library::open(&a.state_dir)?.save_profile(&format!("exploration.v4.work.{id}.1"),&profile)?;update_catalog(a,work,&profile)?;},Err(error)=>failure=Some(error)}
   image_url(&profile["vn"],&mut images);
   if let Some(characters)=profile["characters"].as_array(){for character in characters{image_url(character,&mut images);}}
   let mut related=entities(&profile);
   {use crate::relation_corrections::Key;let c=a.db.lock().map_err(|e|e.to_string())?;for correction in crate::relation_correction_store::read(&c,id).map_err(|e|e.0)?.1{if let Some(link)=correction.link{match link.key{
    Key::Staff{id,..}=>{related.insert(("person",id));},Key::Voice{id,character,..}=>{related.insert(("person",id));related.insert(("character",character));},Key::Character{id,..}=>{related.insert(("character",id));},Key::Company{id}=>{related.insert(("company",id));},Key::Work{..}=>{}
   }}}}
+  let owned=crate::collection_profiles::owned(&*a.db.lock().map_err(|e|e.to_string())?)?;
   for(kind,id)in related{
-   for page in 1..=1000{
-    if !running(a,job)?{return Ok(bytes);}
-    let result=crate::exploration::load(a,kind,&id,page,false).await.and_then(|value|{complete(&value,true)?;Ok(value)});
-    let value=match result{Ok(value)=>value,Err(error)=>{failure=Some(format!("{kind} {id}: {error}"));break;}};
-    Library::open(&a.state_dir)?.save_profile(&format!("exploration.v3.{kind}.{id}.{page}"),&value)?;
-    // Related work lists remain browsable, but their artwork belongs to their own collection jobs.
-    image_url(&value[kind],&mut images);if value["more"]!=true{break;}if page==1000{return Err("VNDB profile exceeds the supported page limit".into());}
-   }
+   if !running(a,job)?{return Ok(bytes);}
+   let value=match crate::exploration::load_entity(a,kind,&id).await{Ok(value)=>value,Err(error)=>{failure=Some(format!("{kind} {id}: {error}"));continue;}};
+   let value=crate::collection_profiles::basic(&value,kind,&owned);
+   Library::open(&a.state_dir)?.save_profile(&crate::collection_profiles::key(kind,&id),&value)?;
+   image_url(&value[kind],&mut images);
   }
  }
  let images:Vec<_>=images.into_iter().collect();
@@ -93,7 +91,7 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
  }
  match failure{Some(error)=>Err(error),None=>Ok(bytes)}
 }
-fn complete(value:&Value,paged:bool)->R<()>{if value["partial"]==true||value["stale"]==true||(!paged&&value["more"]==true){return Err("VNDB returned incomplete information; this download will be retried".into());}Ok(())}
+fn complete(value:&Value)->R<()>{if value["partial"]==true||value["stale"]==true||value["more"]==true{return Err("VNDB returned incomplete information; this download will be retried".into());}Ok(())}
 fn update_catalog(a:&App,work:&Work,profile:&Value)->R<()>{
  let vn=&profile["vn"];let Some(title)=vn["title"].as_str()else{return Ok(());};
  let snapshot=crate::metadata::snapshot(&a.db,&work.id)?;
@@ -110,13 +108,13 @@ fn update_catalog(a:&App,work:&Work,profile:&Value)->R<()>{
  }
  Ok(())
 }
-fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
+pub(crate) fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
  let mut out=BTreeSet::new();
  for(field,kind,prefix)in [("characters","character",'c'),("staff","person",'s'),("developers","company",'p')]{
   let values=if field=="characters"{&profile[field]}else{&profile["vn"][field]};
   if let Some(values)=values.as_array(){for value in values{if let Some(id)=value["id"].as_str().filter(|id|crate::exploration::valid_id(id,prefix)){out.insert((kind,id.into()));}}}
  }
- if let Some(voices)=profile["vn"]["va"].as_array(){for voice in voices{if let Some(id)=voice["staff"]["id"].as_str().filter(|id|crate::exploration::valid_id(id,'s')){out.insert(("person",id.into()));}}}
+ if let Some(voices)=profile["vn"]["va"].as_array(){for voice in voices{for(field,kind,prefix)in [("staff","person",'s'),("character","character",'c')]{if let Some(id)=voice[field]["id"].as_str().filter(|id|crate::exploration::valid_id(id,prefix)){out.insert((kind,id.into()));}}}}
  out
 }
 
@@ -144,7 +142,7 @@ fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
   let response=crate::router(restored).oneshot(request).await.unwrap();assert_eq!(response.status(),200);assert_eq!(axum::body::to_bytes(response.into_body(),1000).await.unwrap().as_ref(),png);
   let exported=backup.join(crate::artwork_library::FILE);std::fs::OpenOptions::new().append(true).open(exported).unwrap().write_all(b"corrupt").unwrap();assert!(crate::backup::inspect(&backup).is_err());
  }
- #[tokio::test]async fn downloads_only_collection_and_direct_entity_images_but_keeps_related_work_lists(){
+ #[tokio::test]async fn downloads_only_collection_images_and_direct_entity_basics(){
   let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();
   let cover="https://t.vndb.org/cv/01/1.jpg";let portrait="https://t.vndb.org/ch/02/2.jpg";let person_image="https://t.vndb.org/ch/03/3.jpg";
   let outside=json!({"id":"v999","title":"Outside the collection","image":{"url":"https://invalid.example/unowned-cover"},"va":[{"character":{"image":{"url":"https://invalid.example/unowned-character"}}}]});
@@ -157,8 +155,9 @@ fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
   }
   let job=enqueue(&a).unwrap();run_job(a.clone(),job.clone()).await;
   assert_eq!(a.db.lock().unwrap().query_row("SELECT state FROM jobs WHERE id=?1",[job],|r|r.get::<_,String>(0)).unwrap(),"completed");
-  let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,3);assert_eq!(library.stats().unwrap().profiles,5);
-  assert_eq!(library.profile("exploration.v3.person.s1.2").unwrap().unwrap()["works"][0],outside);
+  let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,3);assert_eq!(library.stats().unwrap().profiles,4);
+  assert!(library.profile("exploration.v3.person.s1.2").unwrap().is_none());
+  let person=library.profile("collection.v1.person.s1").unwrap().unwrap();assert_eq!(person["person"]["id"],"s1");assert!(person.get("works").is_none());
   for url in [cover,portrait,person_image]{assert!(crate::artwork_library::contains(&a.state_dir,url).unwrap());}
  }
  #[tokio::test]async fn pause_and_restart_preserve_job_progress_and_owner_permissions(){
