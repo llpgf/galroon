@@ -33,23 +33,53 @@ pub(crate) fn save(a: &App, key: &str, value: &Value) -> Result<(), String> {
     }
     Ok(())
 }
-// A background collection download needs one biography request, never a VN list.
-pub(crate) async fn load_entity(a:&App,kind:&str,id:&str)->Result<Value,String>{
-    if let Some(value)=crate::artwork_library::profile(&a.state_dir,&crate::collection_profiles::key(kind,id))?{return Ok(value);}
-    if let Some(value)=cached(a,&format!("exploration.v3.{kind}.{id}.1"))?{if value[kind]["id"]==id{return Ok(value);}}
+// A background collection download fetches only explicitly requested biographies.
+fn cached_entity(a:&App,kind:&str,id:&str)->Result<Option<Value>,String>{
+    if let Some(value)=crate::artwork_library::profile(&a.state_dir,&crate::collection_profiles::key(kind,id))?{return Ok(Some(value));}
+    if let Some(value)=cached(a,&format!("exploration.v3.{kind}.{id}.1"))?{if value[kind]["id"]==id{return Ok(Some(value));}}
+    if let Some(value)=cached(a,&format!("exploration.v3.profile.{kind}.{id}"))?{if value["profile"]["id"]==id&&crate::db::now()-value["fetched_at"].as_i64().unwrap_or(0)<TTL{return Ok(Some(json!({(kind):value["profile"],"fetched_at":value["fetched_at"]})));}}
+    Ok(None)
+}
+#[cfg(test)]pub(crate) async fn load_entity(a:&App,kind:&str,id:&str)->Result<Value,String>{
+    let (mut values,error)=load_entities(a,kind,&[id.to_owned()]).await?;
+    if let Some(error)=error{return Err(error);}values.pop().ok_or_else(||"VNDB entry not found".into())
+}
+fn entity_fields(kind:&str)->(&'static str,&'static str){match kind {
+    "character"=>("character",CHARACTER_DETAIL_FIELDS),
+    "company"=>("producer","name,original,description,aliases,lang,type,extlinks.url,extlinks.label"),
+    _=>("staff","name,original,description,lang,gender,aliases.aid,aliases.name,aliases.latin,aliases.ismain,extlinks.url,extlinks.label"),
+}}
+fn entity_filter(kind:&str,ids:&[String])->Value{
+    let filters=if ids.len()==1{json!(["id","=",ids[0]])}else{let mut filters=vec![json!("or")];filters.extend(ids.iter().map(|id|json!(["id","=",id])));json!(filters)};
+    if kind=="person"{json!(["and",filters,["ismain","=",1]])}else{filters}
+}
+fn batch_profiles(response:&Value,ids:&[String])->Result<(Vec<Value>,Option<String>),String>{
+    if response["more"]==true{return Err("VNDB returned an incomplete biography batch; this download will be retried".into());}
+    let rows=response["results"].as_array().ok_or("Invalid VNDB biography response")?;let mut seen=std::collections::BTreeSet::new();
+    for value in rows{let id=value["id"].as_str().ok_or("VNDB biography has no ID")?;if !ids.iter().any(|wanted|wanted==id)||!seen.insert(id){return Err("VNDB biography batch contains unexpected or duplicate IDs".into());}}
+    let missing:Vec<_>=ids.iter().filter(|id|!seen.contains(id.as_str())).cloned().collect();
+    Ok((rows.clone(),if missing.is_empty(){None}else{Some(format!("VNDB biographies missing: {}; this download will be retried",missing.join(", ")))}))
+}
+pub(crate) const ENTITY_BATCH:usize=20;
+pub(crate) async fn load_entities(a:&App,kind:&str,ids:&[String])->Result<(Vec<Value>,Option<String>),String>{
+    let mut values=vec![];let mut missing=vec![];
+    for id in ids{match cached_entity(a,kind,id)?{Some(value)=>values.push(value),None=>missing.push(id.clone())}}
+    if missing.is_empty(){return Ok((values,None));}
     let mut gate=PROVIDER.get_or_init(||tokio::sync::Mutex::new(0)).lock().await;
-    let profile=entity(a,kind,id,false,&mut gate).await?;
-    Ok(json!({(kind):profile,"fetched_at":crate::db::now()}))
+    // A foreground request may have filled a biography while we waited for the provider.
+    let mut wanted=vec![];for id in missing{match cached_entity(a,kind,&id)?{Some(value)=>values.push(value),None=>wanted.push(id)}}
+    if wanted.is_empty(){return Ok((values,None));}
+    let (endpoint,fields)=entity_fields(kind);
+    let result=query(endpoint,json!({"filters":entity_filter(kind,&wanted),"fields":fields,"results":wanted.len()}),&mut gate).await.and_then(|response|batch_profiles(&response,&wanted));
+    let (profiles,error)=match result{Ok(value)=>value,Err(error)=>return Ok((values,Some(error)))};
+    let now=crate::db::now();for profile in profiles{let id=profile["id"].as_str().unwrap();save(a,&format!("exploration.v3.profile.{kind}.{id}"),&json!({"profile":profile,"fetched_at":now}))?;values.push(json!({(kind):profile,"fetched_at":now}));}
+    Ok((values,error))
 }
 async fn entity(a:&App,kind:&str,id:&str,refresh:bool,gate:&mut i64)->Result<Value,String>{
     let profile_key=format!("exploration.v3.profile.{kind}.{id}");
     if !refresh{if let Some(value)=cached(a,&profile_key)?{if crate::db::now()-value["fetched_at"].as_i64().unwrap_or(0)<TTL{return Ok(value["profile"].clone());}}}
-    let (endpoint,fields,filters)=match kind {
-        "character"=>("character",CHARACTER_DETAIL_FIELDS,json!(["id","=",id])),
-        "company"=>("producer","name,original,description,aliases,lang,type,extlinks.url,extlinks.label",json!(["id","=",id])),
-        _=>("staff","name,original,description,lang,gender,aliases.aid,aliases.name,aliases.latin,aliases.ismain,extlinks.url,extlinks.label",json!(["and",["id","=",id],["ismain","=",1]])),
-    };
-    let response=query(endpoint,json!({"filters":filters,"fields":fields,"results":1}),gate).await?;
+    let (endpoint,fields)=entity_fields(kind);
+    let response=query(endpoint,json!({"filters":entity_filter(kind,&[id.to_owned()]),"fields":fields,"results":1}),gate).await?;
     let profile=response["results"].as_array().and_then(|v|v.first()).ok_or("VNDB entry not found")?.clone();
     save(a,&profile_key,&json!({"profile":profile,"fetched_at":crate::db::now()}))?;Ok(profile)
 }
@@ -207,5 +237,24 @@ pub async fn company(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Query
   {let mut c=a.db.lock().unwrap();c.execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('w','Work','Work','v1')",[]).unwrap();change(&mut c,"v1",&Edit{revision:0,request_id:"forward".into(),corrections:vec![Correction{id:"hide".into(),replaces:Some(Key::Staff{id:"s1".into(),aid:Some(1),role:"music".into(),note:"".into()}),link:None},Correction{id:"secret".into(),replaces:None,link:Some(Link{key:Key::Company{id:"p9".into()},name:"Secret studio".into(),character_name:None,spoiler:2})}]}).ok().unwrap();}
   for spoilers in [false,true]{let q=||Query(Page{page:1,refresh:false,spoilers,revision:None});let reference=reference_work(State(a.clone()),h.clone(),Path("v1".into()),q()).await.ok().unwrap().0;let local=work(State(a.clone()),h.clone(),Path("w".into()),q()).await.ok().unwrap().0;assert_eq!(reference,local);assert_eq!(reference["vn"]["staff"].as_array().unwrap().len(),1);assert_eq!(reference["vn"]["staff"][0]["aid"],2);assert_eq!(reference.to_string().contains("Secret studio"),spoilers);}
   assert_eq!(cached(&a,"exploration.v4.work.v1.1").unwrap().unwrap(),raw);
+ }
+}
+
+#[cfg(test)]mod biography_batch_tests{
+ use super::*;
+ #[test]fn batch_identity_is_independent_of_order_and_missing_ids_remain_retryable(){
+  let ids=vec!["s1".to_owned(),"s2".to_owned(),"s3".to_owned()];
+  let (rows,error)=batch_profiles(&json!({"results":[{"id":"s3","name":"Third"},{"id":"s1","name":"First"}],"more":false}),&ids).unwrap();
+  assert_eq!(rows[0]["id"],"s3");assert_eq!(rows[1]["id"],"s1");assert!(error.unwrap().contains("s2"));
+  assert!(batch_profiles(&json!({"results":[{"id":"s1"},{"id":"s2"},{"id":"s3"}],"more":false}),&ids).unwrap().1.is_none());
+  assert!(batch_profiles(&json!({"results":[],"more":false}),&ids).unwrap().1.is_some());
+ }
+ #[test]fn unexpected_duplicate_and_truncated_batches_cannot_be_saved_as_complete(){
+  let ids=vec!["c1".to_owned(),"c2".to_owned()];
+  for response in [json!({"results":[{"id":"c999"}]}),json!({"results":[{"id":"c1"},{"id":"c1"}]}),json!({"results":[{"id":"c1"}],"more":true}),json!({"results":[{"name":"Missing ID"}]}),json!({"results":null})]{assert!(batch_profiles(&response,&ids).is_err());}
+ }
+ #[test]fn filters_request_exact_ids_and_main_person_aliases_only(){
+  let ids=vec!["s1".to_owned(),"s2".to_owned()];assert_eq!(entity_filter("person",&ids),json!(["and",["or",["id","=","s1"],["id","=","s2"]],["ismain","=",1]]));
+  assert_eq!(entity_filter("character",&["c1".to_owned()]),json!(["id","=","c1"]));assert_eq!(ENTITY_BATCH,20);
  }
 }
