@@ -11,6 +11,7 @@ pub fn merge(db:&Db,source:&str,target:&str,source_revision:i64,target_revision:
     tx.execute("INSERT OR IGNORE INTO work_releases(work_id,release_id) SELECT ?2,release_id FROM work_releases WHERE work_id=?1",params![source,target]).map_err(|e|e.to_string())?;
     for member in &resources{transfer(&tx,member,source,target)?;}
     crate::bangumi::store::merge(&tx,source,target).map_err(|e|e.0)?;
+    crate::vndb_sync::store::merge(&tx,source,target).map_err(|e|e.0)?;
     crate::lists::merge_work(&tx,source,target).map_err(|e|e.0)?;
     tx.execute("UPDATE works SET merged_into=?2,revision=revision+1 WHERE id=?1",params![source,target]).map_err(|e|e.to_string())?;
     tx.execute("UPDATE works SET revision=revision+1 WHERE id=?1",[target]).map_err(|e|e.to_string())?;

@@ -137,7 +137,7 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
 }
 export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};
-export interface Work{bangumi_id?:number|null;bangumi_hidden?:boolean;added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number;
+export interface Work{personal_rating?:number|null;vndb_sync_id?:number|null;vndb_sync_hidden?:boolean;bangumi_id?:number|null;bangumi_hidden?:boolean;added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number;
  /** Set on a remake card: the VNDB release it was identified by. */vndb_release?:string|null;
  /** Every local file bound to this work is bonus material. */bonus_only?:boolean;
  /** Other local cards for the same VNDB work, such as an original and its remake. */same_work?:{id:string;title:string;original_title:string;released:string;vndb_release:string|null}[]}

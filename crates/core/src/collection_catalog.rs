@@ -42,7 +42,7 @@ fn digest<T: Serialize>(value: &T) -> Result<String, ApiError> {
 }
 fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Result<Vec<Entry>, ApiError> {
     // O(collection) compact metadata only: descriptions, notes and full resource/release payloads stay out.
-    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
+    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
     let mut entries=statement.query_map([],|r| {
         let title:String=r.get(1)?;let original:String=r.get(2)?;let studio:String=r.get(3)?;let released:String=r.get(4)?;
         let tags=filter::tag_names(&serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or_default());

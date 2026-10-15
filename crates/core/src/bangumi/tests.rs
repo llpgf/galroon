@@ -105,7 +105,7 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     let folder=crate::backup::export(&a.db,t.path()).unwrap();let saved=rusqlite::Connection::open(folder.join("collection.sqlite")).unwrap();assert!(store::account(&saved).unwrap().is_none());assert_eq!(crate::work_catalog::all(&saved).unwrap().len(),1);
     let raw=std::fs::read(folder.join("collection.sqlite")).unwrap();assert!(!raw.windows(b"not-a-real-credential".len()).any(|w|w==b"not-a-real-credential"));
     let path=t.path().join("upgrade.sqlite");{let db=crate::db::open(&path).unwrap();db.lock().unwrap().execute_batch("DROP TABLE bangumi_links;DROP TABLE bangumi_remote;DROP TABLE bangumi_ignored;PRAGMA user_version=48;INSERT INTO works(id,title,original_title) VALUES('old','Saved','Saved');").unwrap();}
-    let db=crate::db::open(&path).unwrap();let c=db.lock().unwrap();assert_eq!(crate::work_catalog::all(&c).unwrap().len(),1);assert!(store::rows(&c,"full").unwrap().is_empty());assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),49);
+    let db=crate::db::open(&path).unwrap();let c=db.lock().unwrap();assert_eq!(crate::work_catalog::all(&c).unwrap().len(),1);assert!(store::rows(&c,"full").unwrap().is_empty());assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),crate::db::SCHEMA_VERSION);
 }
 #[tokio::test]async fn status_does_not_expose_credential_and_unauthenticated_routes_are_denied(){
     let(_t,a,_)=fixture();assert!(!state(&a).unwrap().to_string().contains("not-a-real-credential"));
