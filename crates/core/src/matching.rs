@@ -667,18 +667,18 @@ pub fn rank(input: &Input, candidates: Vec<Value>) -> Vec<Value> {
 
 /// VNDB Kana base URL. GALROON_VNDB_API overrides it so acceptance tests can inject provider outages.
 pub fn vndb_api() -> String { std::env::var("GALROON_VNDB_API").ok().filter(|v|!v.is_empty()).unwrap_or_else(||"https://api.vndb.org/kana".into()).trim_end_matches('/').to_string() }
-struct Provider { client: reqwest::Client, cache: HashMap<String, (Instant,Value)>, last: Option<Instant> }
+struct Provider { client: reqwest::Client, cache: HashMap<String, (Instant,Value)> }
 static PROVIDER: OnceLock<tokio::sync::Mutex<Provider>> = OnceLock::new();
 pub(crate) async fn known_artwork(url:&str)->bool{let Some(provider)=PROVIDER.get()else{return false;};provider.lock().await.cache.values().any(|(_,data)|crate::artwork::referenced(data,url))}
 pub async fn search(input: Input) -> Result<Value,String> {
-    let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new(), last:None }));
+    let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new() }));
     let mut provider = shared.try_lock().map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
     retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
 }
 /// Exact work lookup shares search's provider cache, request spacing and field shape.
 pub async fn fetch_work(id:&str)->Result<Value,String>{
     if !id.strip_prefix('v').is_some_and(|s|!s.is_empty()&&s.bytes().all(|b|b.is_ascii_digit())){return Err("Invalid VNDB work identifier".into());}
-    let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None}));
+    let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new()}));
     let mut provider=shared.lock().await;provider.cache.retain(|_,(at,_)|at.elapsed()<Duration::from_secs(600));
     let data=request(&mut provider,&format!("{}/vn",vndb_api()),json!({"filters":["id","=",id],"sort":"id","fields":WORK_FIELDS,"results":30}),Duration::from_millis(1600)).await?;
     data["results"].as_array().and_then(|rows|rows.iter().find(|v|v["id"]==id)).cloned().ok_or_else(||"VNDB work not found".into())
@@ -687,8 +687,7 @@ const WORK_FIELDS: &str = "title,alttitle,titles.title,titles.latin,aliases,desc
 async fn request(provider: &mut Provider, endpoint: &str, body: Value, spacing: Duration) -> Result<Value,String> {
     let key=format!("{endpoint}:{body}");
     if let Some((_,data))=provider.cache.get(&key) { return Ok(data.clone()); }
-    if let Some(last)=provider.last { if last.elapsed()<spacing { tokio::time::sleep(spacing-last.elapsed()).await; } }
-    provider.last=Some(Instant::now());
+    crate::vndb_rate::wait(spacing).await;
     let result=provider.client.post(endpoint).timeout(Duration::from_secs(8)).json(&body).send().await;
     let data=match result {
         Ok(response) if response.status().is_success()=>response.json::<Value>().await.map_err(|_|"VNDB returned an unreadable response".to_string())?,
@@ -1072,12 +1071,12 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
     #[tokio::test]async fn compilation_retrieval_retains_full_membership_and_rejects_incomplete_or_missing_works(){
         let endpoint="http://cached.invalid/vn";let mut input=prepare("Collection Box",&[]).unwrap();input.queries=vec!["Collection Box".into()];
         for (more,missing) in [(false,false),(true,false),(false,true)]{
-            let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};let mut cache=|url:&str,body:Value,data:Value|{provider.cache.insert(format!("{url}:{body}"),(Instant::now(),data));};
+            let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new()};let mut cache=|url:&str,body:Value,data:Value|{provider.cache.insert(format!("{url}:{body}"),(Instant::now(),data));};
             cache(endpoint,json!({"filters":["search","=","Collection Box"],"sort":"searchrank","fields":WORK_FIELDS,"results":30}),json!({"results":[{"id":"v1","title":"Alpha Story"},{"id":"v2","title":"Beta Story"}],"more":more}));
             let mut vns=json!([{"id":"v1"},{"id":"v2"}]);if missing{vns.as_array_mut().unwrap().push(json!({"id":"v3"}));cache(endpoint,json!({"filters":["id","=","v3"],"fields":WORK_FIELDS,"results":30}),json!({"results":[],"more":false}));}
             cache("http://cached.invalid/release",json!({"filters":["search","=","Collection Box"],"sort":"searchrank","fields":"title,alttitle,vns.id,released,producers.name,producers.original,producers.developer,producers.publisher,images.url,images.type","results":100}),json!({"results":[{"id":"r123","title":"Collection Box","vns":vns}],"more":false}));
             let result=retrieve(&input,&mut provider,endpoint,Duration::ZERO).await.unwrap();assert_eq!(result["incomplete"],more||missing);assert_eq!(result["results"][0]["release_matches"][0]["vns"],vns);
-            assert_eq!(crate::automatch::review_reason(&result).is_none(),!more&&!missing);assert!(provider.last.is_none());
+            assert_eq!(crate::automatch::review_reason(&result).is_none(),!more&&!missing);
         }
     }
     #[tokio::test] async fn release_identity_is_followed_and_compilations_bind_all_members() {
@@ -1091,7 +1090,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             else {(axum::http::StatusCode::BAD_REQUEST,Json(json!({})))}
         })).route("/release",post(||async{Json(json!({"results":[{"id":"r1","alttitle":"Different release name DL版","vns":[{"id":"v1"},{"id":"v2"}]}],"more":false}))}));
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/vn",listener.local_addr().unwrap());let task=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
-        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
+        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new()};
         let result=retrieve(&prepare("Different release name",&[]).unwrap(),&mut provider,&url,Duration::ZERO).await.unwrap();
         let candidates=result["results"].as_array().unwrap();assert_eq!(candidates.len(),2);
         for c in candidates {assert_eq!(c["match"]["reason"],"exact_release");assert_eq!(c["release_matches"][0]["id"],"r1");}
@@ -1114,7 +1113,7 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
             if v["filters"][2]=="Second title" {(axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({}))) }else {(axum::http::StatusCode::OK,Json(json!({"results":[{"id":"v1","title":"Possible title"}],"more":false})))}
         }})).route("/release",post(||async{Json(json!({"results":[],"more":false}))}));
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/vn",listener.local_addr().unwrap());let task=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
-        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None};
+        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new()};
         let input=prepare("First title",&["Second title".into(),"Third title".into()]).unwrap();
         let result=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(result["incomplete"],true);assert!(result["warning"].as_str().unwrap().contains("429"));assert_eq!(result["results"].as_array().unwrap().len(),1);assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),2);
         let _=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),3);task.abort();
@@ -1122,5 +1121,5 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
 }
 
 #[cfg(test)]pub(crate) async fn cache_work_for_test(work:Value){
- let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new(),last:None}));let body=json!({"filters":["id","=",work["id"]],"sort":"id","fields":WORK_FIELDS,"results":30});shared.lock().await.cache.insert(format!("{}/vn:{body}",vndb_api()),(Instant::now(),json!({"results":[work]})));
+ let shared=PROVIDER.get_or_init(||tokio::sync::Mutex::new(Provider{client:reqwest::Client::new(),cache:HashMap::new()}));let body=json!({"filters":["id","=",work["id"]],"sort":"id","fields":WORK_FIELDS,"results":30});shared.lock().await.cache.insert(format!("{}/vn:{body}",vndb_api()),(Instant::now(),json!({"results":[work]})));
 }

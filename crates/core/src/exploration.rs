@@ -26,7 +26,7 @@ pub(crate) fn save(a: &App, key: &str, value: &Value) -> Result<(), String> {
 }
 pub(crate) async fn query(endpoint: &str, body: Value, cooldown: &mut i64) -> Result<Value, String> {
     if *cooldown > crate::db::now() { return Err("VNDB is cooling down. Try again in a few minutes.".into()); }
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    crate::vndb_rate::wait(std::time::Duration::from_millis(1600)).await;
     let response = reqwest::Client::new().post(format!("{}/{endpoint}",crate::matching::vndb_api()))
         .timeout(std::time::Duration::from_secs(12)).json(&body).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success() {

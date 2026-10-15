@@ -46,6 +46,7 @@ pub mod diagnostics;
 pub mod issue_scan;
 pub mod match_history;
 pub mod matching;
+mod vndb_rate;
 pub mod context;
 pub mod membership;
 pub mod db;
