@@ -35,3 +35,13 @@ it('discards late IPC results after cancellation or a session switch',async()=>{
  let resolve!:(value:ArrayBuffer)=>void;native.invoke.mockReturnValue(new Promise<ArrayBuffer>(r=>{resolve=r;}));const abort=new AbortController();const read=readApi('/works',abort.signal);const checked=expect(read).rejects.toMatchObject({name:'AbortError'});abort.abort();await checked;resolve(envelope(200,'[]'));expect(connectionSnapshot().phase).toBe('connected');
  native.invoke.mockReturnValue(new Promise<ArrayBuffer>(r=>{resolve=r;}));const stale=api('/works');const rejected=expect(stale).rejects.toBeInstanceOf(SessionChangedError);setSession({...remote,device_id:'other'});resolve(envelope(200,'[]'));await rejected;
 });
+it('uses a per-launch loopback key without exposing the NAS bearer or retrying writes',async()=>{
+ setSession({...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'local-key'});
+ vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}',{headers:{'x-galroon-library':'library','x-galroon-device':'device'}}));
+ await expect(api('/works',{title:'Example'})).resolves.toEqual({ok:true});
+ expect(fetch).toHaveBeenCalledOnce();expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:43210/api/works',expect.objectContaining({method:'POST',credentials:'omit',headers:expect.objectContaining({Authorization:'Bearer local-key','X-Galroon-Library':'library','X-Galroon-Device':'device'})}));expect(native.invoke).not.toHaveBeenCalled();expect(remote.token).toBe('');
+});
+it('keeps revocation and uncertain writes across the loopback transport',async()=>{
+ setSession({...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'local-key'});vi.mocked(fetch).mockResolvedValue(new Response('{"code":"credential_invalid"}',{status:401}));await expect(api('/works')).rejects.toBeInstanceOf(RepairRequiredError);expect(connectionSnapshot().phase).toBe('repair_required');
+ setSession({...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'local-key'});vi.mocked(fetch).mockResolvedValue(new Response('{"code":"transport_unavailable"}',{status:502}));await expect(api('/works',{title:'Example'})).rejects.toMatchObject({name:'Error',message:expect.stringContaining('was not sent again')});expect(fetch).toHaveBeenCalledTimes(2);
+});

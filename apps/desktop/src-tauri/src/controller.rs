@@ -1,18 +1,20 @@
 use std::{path::PathBuf,fs,io::Write,time::Duration};
 use galroon_core::{local_core,backup,plans};
-pub struct Controller{pub base:PathBuf,pub exe:PathBuf,pub gate:tokio::sync::Mutex<()>,remote:tokio::sync::Mutex<Option<Remote>>}
+pub struct Controller{pub base:PathBuf,pub exe:PathBuf,pub gate:tokio::sync::Mutex<()>,remote:tokio::sync::Mutex<Option<Remote>>,proxy:tokio::sync::Mutex<Option<galroon_core::lan_proxy::LocalProxy>>}
 struct Remote{entry:crate::paired::Connection,connection:std::sync::Arc<galroon_core::lan_client::LanConnection>}
 impl Drop for Remote{fn drop(&mut self){self.connection.cancel();}}
 impl Controller{
- pub fn new(base:PathBuf,exe:PathBuf)->Self{Self{base,exe,gate:tokio::sync::Mutex::new(()),remote:tokio::sync::Mutex::new(None)}}
- pub async fn client_session(&self)->Result<serde_json::Value,String>{
+ pub fn new(base:PathBuf,exe:PathBuf)->std::sync::Arc<Self>{std::sync::Arc::new(Self{base,exe,gate:tokio::sync::Mutex::new(()),remote:tokio::sync::Mutex::new(None),proxy:tokio::sync::Mutex::new(None)})}
+ pub async fn client_session(self:&std::sync::Arc<Self>)->Result<serde_json::Value,String>{
   let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let saved=crate::paired::read(&self.base)?;
   if let Some(id)=&saved.selected{let entry=saved.entries.iter().find(|e|&e.id==id).ok_or("Selected connection is missing")?;
    if entry.fingerprint.is_some(){
     let conn=self.remote_connection(entry).await?;
     let result=conn.session().await;
     if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,id)?;self.remote.lock().await.take();}
-    return serde_json::to_value(result?).map_err(|e|e.to_string());
+    let mut session=serde_json::to_value(result?).map_err(|e|e.to_string())?;let mut proxy=self.proxy.lock().await;
+    if proxy.is_none(){let weak=std::sync::Arc::downgrade(self);*proxy=Some(galroon_core::lan_proxy::LocalProxy::start(move|request|{let weak=weak.clone();async move{weak.upgrade().ok_or("Desktop closed")?.proxy_request(request).await}}).await?);}
+    let proxy=proxy.as_ref().unwrap();session["proxy_url"]=serde_json::json!(proxy.url);session["proxy_key"]=serde_json::json!(proxy.key);return Ok(session);
    }
    return serde_json::to_value(crate::paired::connect(entry).await?).map_err(|e|e.to_string());
   }
@@ -23,13 +25,14 @@ impl Controller{
   if !remote.as_ref().is_some_and(|r|r.entry==*entry){*remote=Some(Remote{entry:entry.clone(),connection:std::sync::Arc::new(crate::paired::lan_connection(entry)?)});}
   Ok(remote.as_ref().unwrap().connection.clone())
  }
- pub async fn core_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<Vec<u8>,String>{
+ pub async fn core_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<Vec<u8>,String>{self.proxy_request(request).await?.into_ipc_bytes()}
+ pub async fn proxy_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<galroon_core::lan_client::ProxyResponse,String>{
   let (id,conn)={let _gate=self.gate.lock().await;let saved=crate::paired::read(&self.base)?;let id=saved.selected.ok_or("No LAN Core selected")?;let entry=saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?;let conn=self.remote_connection(entry).await?;(id,conn)};
   let response=galroon_core::lan_client::proxy(&conn,request).await?;
   let _gate=self.gate.lock().await;
   if conn.is_cancelled(){return Err("Connection changed".into());}
   if response.credential_invalid(){let _lock=self.launch_lock()?;crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}
-  response.into_ipc_bytes()
+  Ok(response)
  }
  pub async fn pair_lan(&self,pairing:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::pair_lan(&self.base,&pairing).await}
 

@@ -115,7 +115,7 @@ pub async fn proxy(conn:&LanConnection,request:ProxyRequest)->R<ProxyResponse>{
 async fn read_response(mut response:reqwest::Response,limit:usize)->R<ProxyResponse>{
  let status=response.status().as_u16();let mut headers=BTreeMap::new();for name in ["content-type","x-galroon-library","x-galroon-device","retry-after"]{if let Some(value)=response.headers().get(name).and_then(|v|v.to_str().ok()){headers.insert(name.into(),value.into());}}
  if response.content_length().is_some_and(|n|n>limit as u64){return Err("Core response exceeds size limit".into());}
- let mut body=Vec::new();while let Some(chunk)=response.chunk().await.map_err(transport_error)?{if chunk.len()>limit-body.len(){return Err("Core response exceeds size limit".into());}body.extend_from_slice(&chunk);}
+ let mut body=Vec::with_capacity(response.content_length().unwrap_or(0)as usize);while let Some(chunk)=response.chunk().await.map_err(transport_error)?{if chunk.len()>limit-body.len(){return Err("Core response exceeds size limit".into());}body.extend_from_slice(&chunk);}
  Ok(ProxyResponse{status,headers,body})
 }
 #[cfg(test)]#[path="lan_client_tests.rs"]mod tests;
