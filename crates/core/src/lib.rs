@@ -23,6 +23,8 @@ pub mod relation_projection;
 pub mod relation_correction_store;
 pub mod relation_corrections;
 pub mod artwork_cache;
+pub mod artwork_library;
+pub mod artwork_offline;
 pub mod artwork;
 mod artwork_queue;
 mod artwork_references;
@@ -175,6 +177,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/discover/manual",get(discovery_relations::manual))
     .route("/api/artwork",get(artwork::read))
     .route("/api/artwork/cache",get(artwork::stats).post(artwork::clear))
+    .route("/api/artwork/offline",get(artwork_offline::status).post(artwork_offline::start))
     .route("/api/vns/{id}/exploration",get(exploration::reference_work))
     .route("/api/lists",get(lists::index)).route("/api/lists/{id}",get(lists::read).post(lists::edit))
     .route("/api/vns/{id}/related-tags",get(entity_tags::reference_reasons))
@@ -241,7 +244,7 @@ async fn matching_history(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,
  let who=access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Desktop access required".into()));}
  let c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;Ok(Json(if q.attempts{match_history::attempts(&c,&id,q.before)?}else{match_history::page(&c,&id,q.before)?}))
 }
-async fn control_job(State(a):State<App>,h:HeaderMap,Path((jid,action)):Path<(String,String)>,Json(body):Json<Value>)->Result<Value>{auth(&a,&h)?;{let mut c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;let tx=c.transaction()?;timeline::control(&tx,&jid,&action)?;tx.commit()?;}if action=="resume"{let kind:String=a.db.lock().unwrap().query_row("SELECT kind FROM jobs WHERE id=?1",[&jid],|r|r.get(0))?;let db=a.db.clone();let run=jid.clone();tokio::task::spawn_blocking(move||{if kind=="match"{}else if kind=="acquire"{acquire::run(db,run,body["password"].as_str().map(str::to_owned))}else if kind=="hash"{hashing::run(db,run)}else{scan::run(db,run)}});}Ok(Json(json!({"id":jid})))}
+async fn control_job(State(a):State<App>,h:HeaderMap,Path((jid,action)):Path<(String,String)>,Json(body):Json<Value>)->Result<Value>{auth(&a,&h)?;{let mut c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;let tx=c.transaction()?;timeline::control(&tx,&jid,&action)?;tx.commit()?;}if action=="resume"{let kind:String=a.db.lock().unwrap().query_row("SELECT kind FROM jobs WHERE id=?1",[&jid],|r|r.get(0))?;let db=a.db.clone();let run=jid.clone();if kind=="artwork"{tokio::spawn(artwork_offline::run_job(a.clone(),run));}else{tokio::task::spawn_blocking(move||{if kind=="match"{}else if kind=="acquire"{acquire::run(db,run,body["password"].as_str().map(str::to_owned))}else if kind=="hash"{hashing::run(db,run)}else{scan::run(db,run)}});}}Ok(Json(json!({"id":jid})))}
 async fn resources(State(a):State<App>,h:HeaderMap)->Result<Value>{auth(&a,&h)?;let c=a.db.lock().unwrap();Ok(Json(json!(resource_catalog::rows(&c,None)?)))}
 async fn create_work(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;Ok(Json(create_work_in(&a.db.lock().unwrap(),&v)?))}
 pub(crate) fn create_work_in(c:&rusqlite::Connection,v:&Value)->std::result::Result<Value,ApiError>{let title=v["title"].as_str().filter(|s|!s.trim().is_empty()).ok_or(ApiError("A title is required".into()))?;let wid=db::id();if let Some(external)=v["vndb_id"].as_str(){use rusqlite::OptionalExtension;let existing:Option<String>=c.query_row("SELECT id FROM works WHERE vndb_id=?1 AND vndb_release IS NULL",[external],|r|r.get(0)).optional()?;if let Some(mut current)=existing{loop{let merged:Option<String>=c.query_row("SELECT merged_into FROM works WHERE id=?1",[&current],|r|r.get(0))?;if let Some(next)=merged{current=next;}else{return Ok(json!({"id":current}));}}}}c.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,developer,released,tags,source_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![wid,title,v["original_title"].as_str().unwrap_or(title),v["vndb_id"].as_str(),v["description"].as_str().unwrap_or(""),v["cover"].as_str().unwrap_or(""),v["developer"].as_str().unwrap_or(""),v["released"].as_str().unwrap_or(""),v.get("tags").unwrap_or(&json!([])).to_string(),v.to_string()])?;Ok(json!({"id":wid}))}

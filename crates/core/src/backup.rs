@@ -1,4 +1,4 @@
-//! Consistent catalog-only snapshots. Original game files are never copied.
+//! Consistent catalog and offline artwork snapshots. Game files are never copied.
 use crate::{db::{Db,id,now},plans};
 use rusqlite::{Connection,MAIN_DB,OpenFlags};
 use serde::{Serialize,Deserialize};
@@ -7,7 +7,23 @@ type R<T>=Result<T,String>;
 /// Reserved export directory names are excluded even while a backup is being written.
 pub fn protected_path(path:&Path)->bool{path.components().any(|part|{let name=part.as_os_str().to_string_lossy().to_ascii_lowercase();name.starts_with("galroon-backup-")||name.starts_with(".galroon-backup-")})}
 #[derive(Serialize,Deserialize,Debug)]pub struct Manifest{pub format:String,pub version:u32,pub created:i64,pub database:String,pub bytes:u64,pub sha256:String,pub includes_game_files:bool,pub includes_credentials:bool,
- #[serde(default)]pub library:Option<crate::context::Library>,#[serde(default)]pub schema:Option<i64>,#[serde(default)]pub tables:Vec<String>,#[serde(default)]pub verification:String}
+ #[serde(default)]pub library:Option<crate::context::Library>,#[serde(default)]pub schema:Option<i64>,#[serde(default)]pub tables:Vec<String>,#[serde(default)]pub verification:String,
+ #[serde(default,skip_serializing_if="Option::is_none")]pub artwork:Option<Artwork>}
+#[derive(Serialize,Deserialize,Debug)]pub struct Artwork{pub file:String,pub bytes:u64,pub sha256:String,pub images:i64,pub profiles:i64}
+fn combined(catalog:&str,artwork:&str)->String{use sha2::{Digest,Sha256};hex::encode(Sha256::digest(format!("{catalog}:{artwork}").as_bytes()))}
+fn verify_content(folder:&Path,file:&Path,manifest:&Manifest)->R<()>{
+ plans::validate_chain(file)?;let(size,mut hash)=plans::hash(file)?;
+ if let Some(art)=&manifest.artwork{
+  if manifest.version!=3||art.file!=crate::artwork_library::FILE{return Err("Unsupported artwork backup".into());}
+  let path=folder.join(&art.file);plans::validate_chain(&path)?;let(bytes,sha256)=plans::hash(&path)?;
+  if bytes!=art.bytes||sha256!=art.sha256{return Err("Backup artwork changed or is incomplete".into());}
+  let c=Connection::open_with_flags(&path,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;c.execute_batch("PRAGMA trusted_schema=OFF;").map_err(|e|e.to_string())?;
+  let integrity:String=c.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+  let counts:(i64,i64)=c.query_row("SELECT (SELECT count(*) FROM images),(SELECT count(*) FROM profiles)",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+  if integrity!="ok"||counts!=(art.images,art.profiles){return Err("Invalid offline artwork backup".into());}hash=combined(&hash,&sha256);
+ }else if manifest.version==3{return Err("Offline artwork is missing from backup".into());}
+ if size!=manifest.bytes||hash!=manifest.sha256{return Err("Backup content changed or is incomplete".into());}Ok(())
+}
 pub fn migrate(c:&Connection)->rusqlite::Result<()>{c.execute_batch("CREATE TABLE IF NOT EXISTS backup_history(id TEXT PRIMARY KEY,path TEXT NOT NULL,created INTEGER NOT NULL,manifest TEXT NOT NULL);")}
 fn tables(c:&Connection)->R<Vec<String>>{let mut q=c.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(|e|e.to_string())?;let rows=q.query_map([],|r|r.get(0)).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<String>>>().map_err(|e|e.to_string())?;Ok(rows)}
 pub fn history(db:&Db)->R<serde_json::Value>{let c=db.lock().map_err(|e|e.to_string())?;let mut q=c.prepare("SELECT id,path,created,manifest FROM backup_history ORDER BY created DESC,rowid DESC LIMIT 50").map_err(|e|e.to_string())?;let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;Ok(serde_json::json!(rows.into_iter().map(|(id,path,created,manifest)|serde_json::json!({"id":id,"path":path,"created":created,"manifest":serde_json::from_str::<serde_json::Value>(&manifest).unwrap_or_default()})).collect::<Vec<_>>()))}
@@ -27,10 +43,16 @@ fn check(c:&Connection)->R<()>{
 pub fn export(db:&Db,destination:&Path)->R<PathBuf>{
  let parent=destination.canonicalize().map_err(|e|match e.kind(){std::io::ErrorKind::NotFound=>"Choose an existing backup destination folder".to_owned(),std::io::ErrorKind::PermissionDenied=>"Cannot access the backup destination folder. Check its permissions or choose another folder.".to_owned(),_=>format!("Could not access the backup destination folder: {e}")})?;plans::validate_chain(&parent)?;if !parent.is_dir(){return Err("Choose an existing backup destination folder".into());}
  let folder=parent.join(format!("Galroon-backup-{}-{}",now(),id()));fs::create_dir(&folder).map_err(|e|e.to_string())?;let file=folder.join("collection.sqlite");
- {let c=db.lock().map_err(|e|e.to_string())?;c.backup(MAIN_DB,&file,None).map_err(|e|e.to_string())?;}
+ let data_dir={let c=db.lock().map_err(|e|e.to_string())?;c.backup(MAIN_DB,&file,None).map_err(|e|e.to_string())?;c.path().and_then(|p|Path::new(p).parent()).map(Path::to_path_buf)};
  {let c=Connection::open(&file).map_err(|e|e.to_string())?;clean_credentials(&c)?;check(&c)?;}
  let(bytes,sha256)=plans::hash(&file)?;let c=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;
- let manifest=Manifest{format:"galroon-catalog-backup".into(),version:2,created:now(),database:"collection.sqlite".into(),bytes,sha256,includes_game_files:false,includes_credentials:false,library:Some(crate::context::library(&c).map_err(|e|e.to_string())?),schema:Some(c.query_row("PRAGMA user_version",[],|r|r.get(0)).map_err(|e|e.to_string())?),tables:tables(&c)?,verification:"integrity-and-hash".into()};drop(c);
+ let artwork=if let Some(base)=data_dir.filter(|p|p.join(crate::artwork_library::FILE).exists()){
+  crate::artwork_library::Library::open(&base)?.snapshot(&folder.join(crate::artwork_library::FILE))?;
+  let stats=crate::artwork_library::Library::open(&folder)?.stats()?;let(bytes,sha256)=plans::hash(&folder.join(crate::artwork_library::FILE))?;
+  Some(Artwork{file:crate::artwork_library::FILE.into(),bytes,sha256,images:stats.images,profiles:stats.profiles})
+ }else{None};
+ let sha256=artwork.as_ref().map(|a|combined(&sha256,&a.sha256)).unwrap_or(sha256);
+ let manifest=Manifest{format:"galroon-catalog-backup".into(),version:if artwork.is_some(){3}else{2},created:now(),database:"collection.sqlite".into(),bytes,sha256,includes_game_files:false,includes_credentials:false,library:Some(crate::context::library(&c).map_err(|e|e.to_string())?),schema:Some(c.query_row("PRAGMA user_version",[],|r|r.get(0)).map_err(|e|e.to_string())?),tables:tables(&c)?,verification:"integrity-and-hash".into(),artwork};drop(c);
  let mut f=fs::OpenOptions::new().write(true).create_new(true).open(folder.join("manifest.json")).map_err(|e|e.to_string())?;f.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;f.sync_all().map_err(|e|e.to_string())?;drop(f);
  inspect(&folder)?;
  db.lock().map_err(|e|e.to_string())?.execute("INSERT INTO backup_history(id,path,created,manifest) VALUES(?1,?2,?3,?4)",rusqlite::params![id(),folder.to_string_lossy(),manifest.created,serde_json::to_string(&manifest).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;Ok(folder)
@@ -38,10 +60,10 @@ pub fn export(db:&Db,destination:&Path)->R<PathBuf>{
 pub fn inspect(folder:&Path)->R<Manifest>{
  let folder=folder.canonicalize().map_err(|e|e.to_string())?;plans::validate_chain(&folder)?;let path=folder.join("manifest.json");plans::validate_chain(&path)?;if fs::metadata(&path).map_err(|e|e.to_string())?.len()>16384{return Err("Invalid backup manifest size".into());}
  let manifest:Manifest=serde_json::from_slice(&fs::read(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
- if manifest.format!="galroon-catalog-backup"||!(1..=2).contains(&manifest.version)||manifest.database!="collection.sqlite"||manifest.includes_game_files||manifest.includes_credentials{return Err("Unsupported backup format".into());}
- let file=folder.join(&manifest.database);plans::validate_chain(&file)?;let(size,hash)=plans::hash(&file)?;if size!=manifest.bytes||hash!=manifest.sha256{return Err("Backup content changed or is incomplete".into());}
+ if manifest.format!="galroon-catalog-backup"||!(1..=3).contains(&manifest.version)||manifest.database!="collection.sqlite"||manifest.includes_game_files||manifest.includes_credentials{return Err("Unsupported backup format".into());}
+ let file=folder.join(&manifest.database);verify_content(&folder,&file,&manifest)?;
  let c=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;check(&c)?;
- if manifest.version==2 {
+ if manifest.version>=2 {
   let schema:i64=c.query_row("PRAGMA user_version",[],|r|r.get(0)).map_err(|e|e.to_string())?;
   if manifest.schema!=Some(schema)||manifest.library.as_ref()!=Some(&crate::context::library(&c).map_err(|e|e.to_string())?)||manifest.tables!=tables(&c)?||manifest.verification!="integrity-and-hash"{return Err("Backup manifest does not match its collection".into());}
  }
@@ -52,8 +74,13 @@ pub fn inspect(folder:&Path)->R<Manifest>{
 pub fn restore_new(folder:&Path,destination:&Path,expected_hash:Option<&str>)->R<PathBuf>{
  let manifest=inspect(folder)?;if expected_hash.is_some_and(|h|h!=manifest.sha256){return Err("Backup changed since preview. Inspect it again.".into());}plans::validate_chain(destination)?;if destination.exists(){return Err("Restore requires a new, unused data directory".into());}
  fs::create_dir(destination).map_err(|e|e.to_string())?;let marker=destination.join("restore-incomplete");fs::File::create(&marker).map_err(|e|e.to_string())?.sync_all().map_err(|e|e.to_string())?;let file=destination.join("library.sqlite");let mut source=fs::File::open(folder.join("collection.sqlite")).map_err(|e|e.to_string())?;let mut dest=fs::OpenOptions::new().create_new(true).write(true).open(&file).map_err(|e|e.to_string())?;std::io::copy(&mut source,&mut dest).map_err(|e|e.to_string())?;dest.sync_all().map_err(|e|e.to_string())?;drop(dest);
- let(size,hash)=plans::hash(&file)?;if size!=manifest.bytes||hash!=manifest.sha256{return Err("Backup changed during restore".into());}
+ if let Some(art)=&manifest.artwork{
+  let mut source=fs::File::open(folder.join(&art.file)).map_err(|e|e.to_string())?;let mut dest=fs::OpenOptions::new().create_new(true).write(true).open(destination.join(&art.file)).map_err(|e|e.to_string())?;
+  std::io::copy(&mut source,&mut dest).map_err(|e|e.to_string())?;dest.sync_all().map_err(|e|e.to_string())?;
+ }
+ verify_content(destination,&file,&manifest)?;
  let c=Connection::open(&file).map_err(|e|e.to_string())?;check(&c)?;clean_credentials(&c)?;
+ if manifest.artwork.is_some(){for(key,value)in crate::artwork_library::Library::open(destination)?.profiles()?{c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",rusqlite::params![key,value]).map_err(|e|e.to_string())?;}}
  c.execute_batch("UPDATE jobs SET state='interrupted',message='Restored from backup; verify source paths before resuming.' WHERE state IN ('queued','running','pausing','cancelling'); UPDATE frontier SET state='pending' WHERE state='running'; UPDATE plans SET state='ready',approved=NULL WHERE state IN ('approved','executing','partial');").map_err(|e|e.to_string())?;
  // Materialize disabled entries even for legacy backups without watcher rows;
  // startup's ensure() must not recreate enabled watchers for restored roots.

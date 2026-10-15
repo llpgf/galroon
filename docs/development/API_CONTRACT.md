@@ -199,6 +199,7 @@ Compatibility exception: `/resources/page` is identical for desktop and web exce
 | `/api/discover/manual` | 原樣 | 無實體路徑欄位 |
 | `/api/artwork` | 原樣 | 無實體路徑欄位 |
 | `/api/artwork/cache` | 拒絕（403） | 既有權限／編輯或檔案管理用途 |
+| `/api/artwork/offline` | 拒絕（403） | owner 管理的永久離線圖片庫與批次下載 |
 | `/api/vns/{id}/exploration` | 原樣 | 無實體路徑欄位 |
 | `/api/lists` | 原樣 | 無實體路徑欄位 |
 | `/api/lists/{id}` | 原樣 | 無實體路徑欄位 |
@@ -244,3 +245,11 @@ Verification requires **each** work's own title/alttitle/titles/aliases to equal
 Confirmation fetches provider data before opening the write transaction, then checks the current resource revision, stored suggestion revision, open state and absence of bindings again. A mismatch returns HTTP 409 `{code:"suggestion_changed",error}` and writes no catalog data. Work creation reuses the manual dialog helper and existing VNDB identity/merge resolution. The manual binding/history primitive is shared with `/resources/{id}/bind`: first work primary, **all roles `main`**, null edition IDs, one `resource_history` record and a `manual.bind` event. All work inserts, references, revision updates, history and confirmed state commit together. Bound resources retain the existing protection against automatic rematching.
 
 Migration 46→47 creates `match_suggestions`, the unique open-per-resource index, paging index, revision invalidation trigger, and catalog-change notifications. Any resource revision change stales open suggestions in that same transaction. Changed file observations during rescan now advance resource revisions; unchanged observations do not. Replaced/dismissed/stale/confirmed proposals remain stored. See [AI suggestions](../features/AI_SUGGESTIONS.md).
+
+## Permanent offline artwork
+
+`GET /api/artwork/offline` is local-owner-only and returns `{images,bytes,profiles,job}`. `job` is null or `{id,state,processed,discovered,errors,message}` for the latest `artwork` task. `POST /api/artwork/offline` starts a snapshot of all unmerged collection works and returns `{id}`; it requires other tasks/file operations to be idle. Existing `/api/jobs/{id}/{pause|resume|cancel}` controls apply. Progress counts works; errors count incomplete works. Resume retries from the beginning after errors, reusing already saved images. Network requests retain the artwork URL allowlist, body limit and bounded download queue. Only the Core's own data directory is written.
+
+The permanent `artwork-library.sqlite` stores public work-page snapshots and image bodies. `/api/artwork` checks it before the evictable cache; cache clearing and LRU eviction never modify it. Stored work-page snapshots bypass the normal 24-hour provider TTL until explicit refresh, which also updates the saved snapshot. Full character/staff detail-page archives are outside this work-page download.
+
+Backups include this database automatically when present, using manifest version 3. `artwork` contains `{file,bytes,sha256,images,profiles}`; `bytes` at the manifest root remains catalog bytes. The root `sha256` is SHA-256 of the UTF-8 string `<catalog-file-sha256>:<artwork-file-sha256>`, binding preview/restore to both files. Both SQLite files are online snapshots; restore verifies hashes and artwork integrity/counts before removing the incomplete marker. Version 1/2 catalog-only backups remain readable and new catalog-only exports retain version 2. Game files and login credentials remain excluded.

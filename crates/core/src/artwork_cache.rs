@@ -7,7 +7,7 @@ pub const MAX_CACHE_BYTES:u64=256*1024*1024;
 pub struct Cache{connection:Connection,budget:u64}
 pub struct Image{pub mime:String,pub bytes:Vec<u8>}
 #[derive(serde::Serialize)]pub struct Stats{pub images:i64,pub payload_bytes:i64,pub payload_limit:u64,pub allocated_bytes:i64}
-fn mime(bytes:&[u8])->Option<&'static str>{
+pub(crate) fn mime(bytes:&[u8])->Option<&'static str>{
  if bytes.starts_with(b"\x89PNG\r\n\x1a\n"){Some("image/png")}
  else if bytes.starts_with(b"\xff\xd8\xff"){Some("image/jpeg")}
  else if bytes.len()>=12&&&bytes[..4]==b"RIFF"&&&bytes[8..12]==b"WEBP"{Some("image/webp")}

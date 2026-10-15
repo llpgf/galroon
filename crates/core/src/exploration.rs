@@ -21,6 +21,7 @@ pub(crate) fn cached(a: &App, key: &str) -> Result<Option<Value>, String> {
 }
 pub(crate) fn save(a: &App, key: &str, value: &Value) -> Result<(), String> {
     a.db.lock().map_err(|e|e.to_string())?.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)", params![key,value.to_string()]).map_err(|e|e.to_string())?;
+    if crate::artwork_library::profile(&a.state_dir,key)?.is_some(){crate::artwork_library::Library::open(&a.state_dir)?.save_profile(key,value)?;}
     Ok(())
 }
 pub(crate) async fn query(endpoint: &str, body: Value, cooldown: &mut i64) -> Result<Value, String> {
@@ -42,9 +43,10 @@ fn retain_complete(previous:Option<Value>,result:Result<Value,String>)->Result<V
  }
 }
 
-async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool) -> Result<Value, String> {
+pub(crate) async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool) -> Result<Value, String> {
     let version=if kind=="work"{4}else{3};
     let key=format!("exploration.v{version}.{kind}.{id}.{page}");
+    if !refresh{if let Some(value)=crate::artwork_library::profile(&a.state_dir,&key)?{return Ok(value);}}
     let previous=cached(a,&key)?;
     if let Some(v)=&previous { if !refresh && crate::db::now()-v["fetched_at"].as_i64().unwrap_or(0)<TTL {return Ok(v.clone());} }
     // Bound demand and deduplicate concurrent cache misses across clients.

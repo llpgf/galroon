@@ -45,7 +45,9 @@ Completed file plans have a **Preview undo** action in Activity. Inspect and app
 
 ## Back up and recover
 
-In **Settings → Backup & restore → Catalog backup**, choose an existing destination and export. Keep `manifest.json` and `collection.sqlite` together. The backup includes catalog metadata, personal tags/lists/preferences, corrections and history; it excludes games, saves, artwork cache, credentials and device-local transfer state.
+In **Settings → Collection & Core → Offline artwork library**, choose **Download / complete collection artwork** to save covers, character images and work-page information for all current works. This creates a resumable task; pause or continue it in Settings or Activity. Existing cached images are reused. Repeat after adding works. Failed downloads are counted, and continuing retries them without downloading saved images again. Saved artwork has no automatic eviction or cache-size limit; it uses disk space on the Core host. Work-page snapshots are used offline, including after a restart; **Refresh credits** explicitly updates a saved snapshot. Detailed person/character pages not included in the work-page snapshot may still require network access.
+
+In **Settings → Backup & restore → Catalog backup**, choose an existing destination and export. Keep the entire backup folder together: `manifest.json`, `collection.sqlite`, and `artwork-library.sqlite` when present. The backup includes catalog metadata, personal tags/lists/preferences, corrections, history and the permanent offline artwork library. It excludes games, saves, temporary artwork cache, credentials and device-local transfer state. Clearing the artwork cache does not remove the offline library.
 
 To restore, choose a backup, inspect it and confirm the reviewed snapshot. The app protects the current catalog before switching into a newly restored directory. **Previous collections** lists recovery snapshots: select one, inspect and confirm to return through another protected restore. Old catalog files are retained.
 
