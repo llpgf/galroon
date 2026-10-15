@@ -69,7 +69,11 @@ async fn save_work(a:&App,job:&str,work:&Work)->R<i64>{
   let profile=crate::exploration::load(a,"work",id,1,false).await?;
   match complete(&profile,false){Ok(())=>{Library::open(&a.state_dir)?.save_profile(&format!("exploration.v4.work.{id}.1"),&profile)?;update_catalog(a,work,&profile)?;},Err(error)=>failure=Some(error)}
   urls(&profile,&mut images);
-  for(kind,id)in entities(&profile){
+  let mut related=entities(&profile);
+  {use crate::relation_corrections::Key;let c=a.db.lock().map_err(|e|e.to_string())?;for correction in crate::relation_correction_store::read(&c,id).map_err(|e|e.0)?.1{if let Some(link)=correction.link{match link.key{
+   Key::Staff{id,..}=>{related.insert(("person",id));},Key::Voice{id,character,..}=>{related.insert(("person",id));related.insert(("character",character));},Key::Character{id,..}=>{related.insert(("character",id));},Key::Company{id}=>{related.insert(("company",id));},Key::Work{..}=>{}
+  }}}}
+  for(kind,id)in related{
    for page in 1..=1000{
     if !running(a,job)?{return Ok(bytes);}
     let result=crate::exploration::load(a,kind,&id,page,false).await.and_then(|value|{complete(&value,true)?;Ok(value)});
