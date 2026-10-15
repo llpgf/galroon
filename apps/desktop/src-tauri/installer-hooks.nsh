@@ -10,8 +10,8 @@
 galroon_cleanup_js_loop:
   StrCmp $R1 "" galroon_cleanup_js_close
   StrCmp $R1 "index-D1x8FCUw.css" galroon_cleanup_js_next
-  StrCmp $R1 "index-DWvUCunJ.js" galroon_cleanup_js_next
-  StrCmp $R1 "index-r7eX30Pf.js" galroon_cleanup_js_next
+  StrCmp $R1 "index-DX5PYFkD.js" galroon_cleanup_js_next
+  StrCmp $R1 "index-s2HZm7XC.js" galroon_cleanup_js_next
   Delete "$INSTDIR\web\assets\$R1"
 galroon_cleanup_js_next:
   FindNext $R0 $R1
@@ -25,8 +25,8 @@ galroon_cleanup_js_end:
 galroon_cleanup_css_loop:
   StrCmp $R1 "" galroon_cleanup_css_close
   StrCmp $R1 "index-D1x8FCUw.css" galroon_cleanup_css_next
-  StrCmp $R1 "index-DWvUCunJ.js" galroon_cleanup_css_next
-  StrCmp $R1 "index-r7eX30Pf.js" galroon_cleanup_css_next
+  StrCmp $R1 "index-DX5PYFkD.js" galroon_cleanup_css_next
+  StrCmp $R1 "index-s2HZm7XC.js" galroon_cleanup_css_next
   Delete "$INSTDIR\web\assets\$R1"
 galroon_cleanup_css_next:
   FindNext $R0 $R1

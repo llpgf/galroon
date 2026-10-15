@@ -1,6 +1,6 @@
 {
   "target": "x86_64-pc-windows-msvc",
-  "cargo_lock_sha256": "6ec1858307560272196d4dd35403eb6fefe652406bb30f579dd7d2c1326b1eb7",
+  "cargo_lock_sha256": "e740d91ffe2248411b45a09516a2febc93c89aa0aad73d440b136c7afb4445d8",
   "npm_lock_sha256": "62851c648aa208e0b2a7f898e628b0f78087d65c42596e75b875dc3a2f589955",
   "packages": [
     {
