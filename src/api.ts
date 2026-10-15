@@ -26,7 +26,7 @@ function checkNative(s:Session){
 function differs(a:Session|undefined,b:Session){return !!a&&!!a.library_id&&(a.library_id!==b.library_id||a.device_id!==b.device_id);}
 function collectionChanged(){clearRetry();stopRequested=true;bumpEpoch();phase('collection_changed');}
 export class RepairRequiredError extends Error {constructor(){super("This device's pairing is no longer valid. Pair again.");}}
-function repairRequired(){clearRetry();stopRequested=true;bumpEpoch();phase('repair_required');return new RepairRequiredError();}
+function repairRequired(){if(!stopRequested||connection.phase!=='repair_required'){clearRetry();stopRequested=true;bumpEpoch();phase('repair_required');}return new RepairRequiredError();}
 export class AuthenticationError extends Error {constructor(){super('Sign in again to reconnect to this collection');}}
 export class ConnectionLostError extends Error {constructor(){super('The Core connection is unavailable. Reconnect before continuing.');}}
 export class UncertainOperationError extends Error {constructor(){super('The connection changed before this operation was confirmed. Check Activity and the affected item before trying again; the operation was not sent again automatically.');}}
@@ -93,6 +93,7 @@ async function ipcResponse(current:Session,path:string,method:string,body:unknow
 }
 export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  if(signal.aborted)throw new DOMException('Request cancelled','AbortError');
+ if(stopRequested&&connection.phase==='repair_required')throw new RepairRequiredError();
  if(!session||changing)throw new SessionChangedError();
  const current=session,started=epoch;
  const controller=new AbortController(),abort=()=>controller.abort();signal.addEventListener('abort',abort,{once:true});
@@ -119,6 +120,7 @@ export function computeRules<T=unknown>(id:string,body:{revision:number;request_
 async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):Promise<T>{
  const readOnly=body===undefined||path==='/smart-lists/preview'||/^\/resources\/[^/]+\/regroup\/preview(?:\/page)?$/.test(path);
  if(callerSignal?.aborted)throw new DOMException('Request cancelled','AbortError');
+ if(stopRequested&&connection.phase==='repair_required')throw new RepairRequiredError();
  if(changing)throw new SessionChangedError();if(isDesktop&&connection.phase!=='connected')throw new ConnectionLostError();
  if(!session)throw new Error('Core is not connected');const started=epoch,current=session;
  const stale=()=>{if(changing||started!==epoch)throw readOnly?new SessionChangedError():new UncertainOperationError();};
