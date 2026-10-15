@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 const TTL: i64 = 86400;
 pub(crate) static PROVIDER: OnceLock<tokio::sync::Mutex<i64>> = OnceLock::new();
-const WORK_FIELDS: &str = "title,alttitle,description,released,image.url,image.sexual,image.violence,developers.id,developers.name,developers.original,tags.id,tags.name,tags.spoiler,tags.lie,staff.id,staff.aid,staff.name,staff.original,staff.role,staff.eid,staff.note,va.staff.id,va.staff.aid,va.staff.name,va.staff.original,va.character.id,va.note,relations.id,relations.title,relations.relation,relations.image.url,relations.image.sexual,relations.image.violence";
+const WORK_FIELDS: &str = "title,alttitle,aliases,description,released,image.url,image.sexual,image.violence,developers.id,developers.name,developers.original,tags.id,tags.name,tags.spoiler,tags.lie,staff.id,staff.aid,staff.name,staff.original,staff.role,staff.eid,staff.note,va.staff.id,va.staff.aid,va.staff.name,va.staff.original,va.character.id,va.note,relations.id,relations.title,relations.relation,relations.image.url,relations.image.sexual,relations.image.violence";
 const CHARACTER_DETAIL_FIELDS: &str = "name,original,description,aliases,image.url,image.sexual,image.violence,birthday,age,height,blood_type,traits.id,traits.name,traits.group_name,traits.spoiler,traits.lie,traits.sexual,vns.id,vns.role,vns.spoiler";
 const PROFILE_WORK_FIELDS: &str = "title,alttitle,released,image.url,image.sexual,image.violence,staff.id,staff.aid,staff.name,staff.original,staff.role,staff.note,staff.eid,va.staff.id,va.staff.aid,va.staff.name,va.staff.original,va.note,va.character.id,va.character.name,va.character.original,va.character.image.url,va.character.image.sexual,va.character.image.violence,va.character.vns.id,va.character.vns.spoiler";
 const CHARACTER_FIELDS: &str = "name,original,description,image.url,image.sexual,image.violence,vns.id,vns.role,vns.spoiler";
@@ -21,11 +21,12 @@ pub(crate) fn cached(a: &App, key: &str) -> Result<Option<Value>, String> {
 }
 pub(crate) fn save(a: &App, key: &str, value: &Value) -> Result<(), String> {
     a.db.lock().map_err(|e|e.to_string())?.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)", params![key,value.to_string()]).map_err(|e|e.to_string())?;
+    if crate::artwork_library::profile(&a.state_dir,key)?.is_some(){crate::artwork_library::Library::open(&a.state_dir)?.save_profile(key,value)?;crate::collection_download::refresh(&*a.db.lock().map_err(|e|e.to_string())?,key).map_err(|e|e.to_string())?;}
     Ok(())
 }
 pub(crate) async fn query(endpoint: &str, body: Value, cooldown: &mut i64) -> Result<Value, String> {
     if *cooldown > crate::db::now() { return Err("VNDB is cooling down. Try again in a few minutes.".into()); }
-    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    crate::vndb_rate::wait(std::time::Duration::from_millis(1600)).await;
     let response = reqwest::Client::new().post(format!("{}/{endpoint}",crate::matching::vndb_api()))
         .timeout(std::time::Duration::from_secs(12)).json(&body).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success() {
@@ -42,9 +43,10 @@ fn retain_complete(previous:Option<Value>,result:Result<Value,String>)->Result<V
  }
 }
 
-async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool) -> Result<Value, String> {
+pub(crate) async fn load(a: &App, kind: &str, id: &str, page: u32, refresh: bool) -> Result<Value, String> {
     let version=if kind=="work"{4}else{3};
     let key=format!("exploration.v{version}.{kind}.{id}.{page}");
+    if !refresh{if let Some(value)=crate::artwork_library::profile(&a.state_dir,&key)?{return Ok(value);}}
     let previous=cached(a,&key)?;
     if let Some(v)=&previous { if !refresh && crate::db::now()-v["fetched_at"].as_i64().unwrap_or(0)<TTL {return Ok(v.clone());} }
     // Bound demand and deduplicate concurrent cache misses across clients.

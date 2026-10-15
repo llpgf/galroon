@@ -126,7 +126,7 @@ test('US-1.8 掃描中途 Core 被關閉 → 繼續 → 資源數與一次跑完
     await nav(page, 'tasks');
     await page.locator('article.job').filter({ hasText: T('interrupted') }).first().getByRole('button', { name: T('resume') }).click();
   }
-  await waitFor('scans idle', async () => (await core!.api('/jobs')).every((j: any) => !['queued', 'running', 'pausing'].includes(j.state)), 300_000);
+  await waitFor('scans idle', async () => (await core!.api('/jobs')).every((j: any) => j.kind === 'artwork' || !['queued', 'running', 'pausing'].includes(j.state)), 300_000);
   // Same resources as an uninterrupted scan: every golden folder, with split folders counted per member.
   const expected = Object.values(GOLDEN.folders).reduce((n, f) => n + (f.split ? Object.keys(f.split).length : 1), 0);
   expect((await core.api('/resources')).filter((r: any) => r.files > 0).length).toBe(expected);

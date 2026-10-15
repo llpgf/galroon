@@ -164,7 +164,7 @@ Windows MCP 測試的 watched-scan／automatic-matching 競態已修正，三項
 - 新安裝及升級成功；安裝後 desktop/Core/MCP 與實際 NSIS payload 的 SHA-256 一致。修正 NSIS `FindFirst` 前未清除上一輪 error flag，確認舊 JS/CSS 清除、無關檔案保留。測試曾在 Stop-Process 尚未完全退出時立即升級，雜湊檢查抓到舊 executable；加入等待退出後再驗證成功。
 - 本機測試 Core 撤銷回傳 `401 credential_invalid`，selected 與 needs_repair 保留，重配與重啟後仍開啟同一收藏。
 - 最終安裝包再連 NAS 獨立實例，620 部收藏、60 筆分頁、作品詳情和 203,197-byte 封面皆成功；撤銷後真實 UI 顯示需要重新配對，重新配對恢復同一收藏。NAS 原始遊戲目錄維持唯讀掛載。
-- 測試裝置已撤銷，Windows credentials、測試排程及安裝包已清理，原有安裝註冊與捷徑還原；原有安裝的 85 個檔案雜湊全部不變。NAS 清理時一次 owner CLI 回應逾時，另以唯讀查詢確認該測試 session 已 revoked；未把逾時當作未執行。
+- 測試裝置已撤銷，Windows credentials、測試排程及安裝包已清理，原有安裝註冊與捷徑還原；原有安裝的 85 個檔案雜湊全部不變。NAS 清理時owner CLI 回應逾時，另以唯讀查詢確認該測試 session 已 revoked；未把逾時當作未執行。
 - 未部署正式 NAS Core，未操作原始遊戲檔案。Windows 效能快照的來源改成不存在的測試路徑、監控及自動配對停用。
 
 最終回歸：Core **460 通過、1 忽略**，MCP 6 項通過；前端 **32 檔／188 項通過**；TypeScript／production build 通過；Windows 登入中的工作階段執行 desktop 原生 **9 項全通過**。Windows／Linux CI、frontend 與 repository checks 通過。原始量測、失敗輪次、安裝紀錄、測試輸出與截圖保留在本機 `GalroonTestData/pr59-release-2026-10-15`，不將私人收藏或憑證加入 Git。

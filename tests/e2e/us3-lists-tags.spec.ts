@@ -17,7 +17,7 @@ const byVndb = async (id: string) => (await works()).find(w => w.vndb_id === id)
 const cards = (page: Page) => page.locator('.book-grid .book');
 
 async function idle() {
-  await expect.poll(async () => (await core.api('/jobs')).filter((j: any) => ['queued', 'running', 'pausing', 'cancelling'].includes(j.state)).length, { timeout: 120_000, intervals: [500] }).toBe(0);
+  await expect.poll(async () => (await core.api('/jobs')).filter((j: any) => j.kind !== 'artwork' && ['queued', 'running', 'pausing', 'cancelling'].includes(j.state)).length, { timeout: 120_000, intervals: [500] }).toBe(0);
 }
 
 /** Lists → create a manual list by name. */

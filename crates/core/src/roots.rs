@@ -8,7 +8,7 @@ type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]pub struct Preview{pub root_id:String,pub old_path:String,pub new_path:String,pub files:usize,pub found:usize,pub missing:usize,pub changed:usize,pub jobs:usize,pub plans:usize,pub digest:String}
 fn sql<T>(r:rusqlite::Result<T>)->R<T>{r.map_err(|e|e.to_string())}
 pub fn require_idle(c:&Connection)->R<()>{
- let n:i64=sql(c.query_row("SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
+ let n:i64=sql(c.query_row("SELECT (SELECT count(*) FROM jobs WHERE kind!='artwork' AND state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
  if n>0{return Err("Pause running tasks and wait for file operations to finish first".into());}Ok(())
 }
 fn relative(value:&str)->R<PathBuf>{let p=Path::new(value);if p.as_os_str().is_empty()||p.components().any(|c|!matches!(c,Component::Normal(_)|Component::CurDir)){return Err("Stored file has an unsafe relative path".into());}Ok(p.into())}

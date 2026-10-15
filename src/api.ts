@@ -1,4 +1,5 @@
 import i18n from 'i18next';
+import {clearClientArtwork} from './clientArtworkCache';
 import {revisionConflictText} from './coreText';
 import {reportClientError} from './clientDiagnostics';
 import {invoke,isTauri} from '@tauri-apps/api/core';
@@ -6,6 +7,7 @@ export type Session={url:string;token:string;remote?:boolean;proxy_url?:string;p
 export const isDesktop=isTauri();
 let session:Session|undefined;
 let epoch=0,changing=false,stopRequested=false,everConnected=false;
+function bumpEpoch(){epoch++;clearClientArtwork();}
 export type ConnectionPhase='idle'|'connecting'|'connected'|'offline'|'reconnecting'|'restoring'|'stopping'|'stopped'|'collection_changed'|'incompatible'|'repair_required';
 export type ConnectionSnapshot={phase:ConnectionPhase;error:string};
 let connection:ConnectionSnapshot={phase:'idle',error:''};const listeners=new Set<()=>void>();
@@ -22,9 +24,9 @@ function checkNative(s:Session){
  if(!s?.url||(!s.remote&&!s.token)||(s.remote&&(s.url!=='ipc://core'||s.token!==''))||!s.library_id||!s.device_id||typeof s.api_min!=='number'||typeof s.api_max!=='number'||s.api_min>1||s.api_max<1)throw new CompatibilityError();
 }
 function differs(a:Session|undefined,b:Session){return !!a&&!!a.library_id&&(a.library_id!==b.library_id||a.device_id!==b.device_id);}
-function collectionChanged(){clearRetry();stopRequested=true;epoch++;phase('collection_changed');}
+function collectionChanged(){clearRetry();stopRequested=true;bumpEpoch();phase('collection_changed');}
 export class RepairRequiredError extends Error {constructor(){super("This device's pairing is no longer valid. Pair again.");}}
-function repairRequired(){clearRetry();stopRequested=true;epoch++;phase('repair_required');return new RepairRequiredError();}
+function repairRequired(){clearRetry();stopRequested=true;bumpEpoch();phase('repair_required');return new RepairRequiredError();}
 export class AuthenticationError extends Error {constructor(){super('Sign in again to reconnect to this collection');}}
 export class ConnectionLostError extends Error {constructor(){super('The Core connection is unavailable. Reconnect before continuing.');}}
 export class UncertainOperationError extends Error {constructor(){super('The connection changed before this operation was confirmed. Check Activity and the affected item before trying again; the operation was not sent again automatically.');}}
@@ -32,22 +34,22 @@ export type AccessIdentity={id:string;role:'owner'|'desktop'|'web';can_write:boo
 export const browserCoreUrl=()=>import.meta.env.DEV?'http://127.0.0.1:14800':window.location.origin;
 export const coreUrl=()=>session?.url||browserCoreUrl();
 export function sessionChanging(){return changing;}
-function lostConnection(){if(!isDesktop||changing||stopRequested)return;if(connection.phase==='connected'){epoch++;phase('offline');}scheduleReconnect();}
+function lostConnection(){if(!isDesktop||changing||stopRequested)return;if(connection.phase==='connected'){bumpEpoch();phase('offline');}scheduleReconnect();}
 function nativeConnect():Promise<boolean>{
  if(connection.phase==='repair_required')return Promise.reject(new RepairRequiredError());
  if(connection.phase==='collection_changed')return Promise.reject(new CollectionChangedError());
  if(pendingConnection)return pendingConnection;if(changing)return Promise.reject(new SessionChangedError());
- clearRetry();changing=true;epoch++;const attempt=epoch;phase(everConnected?'reconnecting':'connecting');
- const run=(async()=>{let failed=false,failure:unknown;try{const next=await Promise.resolve().then(()=>invoke<Session>('core_session'));checkNative(next);if(differs(session,next))throw new CollectionChangedError();if(epoch!==attempt)throw new SessionChangedError();session=next;everConnected=true;retryDelay=500;}catch(error){failed=true;failure=error;}finally{if(epoch===attempt){changing=false;epoch++;}pendingConnection=undefined;}
+ clearRetry();changing=true;bumpEpoch();const attempt=epoch;phase(everConnected?'reconnecting':'connecting');
+ const run=(async()=>{let failed=false,failure:unknown;try{const next=await Promise.resolve().then(()=>invoke<Session>('core_session'));checkNative(next);if(differs(session,next))throw new CollectionChangedError();if(epoch!==attempt)throw new SessionChangedError();session=next;everConnected=true;retryDelay=500;}catch(error){failed=true;failure=error;}finally{if(epoch===attempt){changing=false;bumpEpoch();}pendingConnection=undefined;}
   if(failed){if(String(failure)==='credential_invalid')throw repairRequired();if(String(failure)==='collection_changed')failure=new CollectionChangedError();if(failure instanceof CollectionChangedError){collectionChanged();throw failure;}if(failure instanceof CompatibilityError){stopRequested=true;phase('incompatible',failure.message);throw failure;}phase('offline',failure instanceof Error?failure.message:String(failure));scheduleReconnect();throw failure;}phase('connected');return true;
  })();pendingConnection=run;return run;
 }
-export async function stopCore(){if(changing)throw new SessionChangedError();clearRetry();stopRequested=true;changing=true;epoch++;phase('stopping');try{await invoke('stop_core');}finally{changing=false;epoch++;phase('stopped');}}
+export async function stopCore(){if(changing)throw new SessionChangedError();clearRetry();stopRequested=true;changing=true;bumpEpoch();phase('stopping');try{await invoke('stop_core');}finally{changing=false;bumpEpoch();phase('stopped');}}
 export async function restoreCore(path:string,sha256:string){
- if(changing)throw new SessionChangedError();clearRetry();changing=true;epoch++;phase('restoring');
+ if(changing)throw new SessionChangedError();clearRetry();changing=true;bumpEpoch();phase('restoring');
  try{session=await invoke<Session>('restore_core',{path,sha256});}
  catch(error){try{session=await invoke<Session>('core_session');}catch{session=undefined;}throw error;}
- finally{changing=false;epoch++;if(session){everConnected=true;phase('connected');}else{phase('offline');scheduleReconnect();}}
+ finally{changing=false;bumpEpoch();if(session){everConnected=true;phase('connected');}else{phase('offline');scheduleReconnect();}}
 }
 export async function connect():Promise<boolean>{if(isDesktop){stopRequested=false;return nativeConnect();}setSession({url:browserCoreUrl(),token:''});try{await api('/access/me');return true;}catch(e){if(e instanceof AuthenticationError)return false;throw e;}}
 export async function selectConnection(id:string|null){
@@ -58,9 +60,9 @@ export async function updateConnectionEndpoint(id:string,url:string){
 }
 async function changeSavedConnection(command:string,args:Record<string,unknown>){
  if(changing)throw new SessionChangedError();
- const previous=connection;clearRetry();stopRequested=true;changing=true;epoch++;
+ const previous=connection;clearRetry();stopRequested=true;changing=true;bumpEpoch();
  try{await invoke(command,args);window.location.reload();}
- catch(error){changing=false;epoch++;stopRequested=false;phase(previous.phase,previous.error);if(previous.phase==='offline')scheduleReconnect();throw error;}
+ catch(error){changing=false;bumpEpoch();stopRequested=false;phase(previous.phase,previous.error);if(previous.phase==='offline')scheduleReconnect();throw error;}
 }
 export class ApiRequestError extends Error {constructor(message:string,public status:number,public code?:string){super(revisionConflictText(i18n.t.bind(i18n),message));}}
 export async function webAccessTransport(url:string,signal:AbortSignal):Promise<string|undefined>{
@@ -70,9 +72,9 @@ export async function webAccessTransport(url:string,signal:AbortSignal):Promise<
 }
 export async function webPair(url:string,code:string){setSession({url,token:''});await api('/access/pair-web',{code});}
 export async function webLogin(url:string,password:string,name:string){setSession({url,token:''});await api('/access/login',{password,name});}
-export async function signOut(){try{await api('/access/logout',{});}finally{session=undefined;epoch++;}}
+export async function signOut(){try{await api('/access/logout',{});}finally{session=undefined;bumpEpoch();}}
 export function collectionStorageKey(name:string){return `galroon.${session?.library_id||'unidentified'}.${session?.device_id||'browser'}.${name}`; }
-export function setSession(s:Session){clearRetry();session=s;epoch++;stopRequested=false;retryDelay=500;if(isDesktop){everConnected=true;phase('connected');}}
+export function setSession(s:Session){clearRetry();session=s;bumpEpoch();stopRequested=false;retryDelay=500;if(isDesktop){everConnected=true;phase('connected');}}
 export function readApi<T=unknown>(path:string,signal:AbortSignal):Promise<T>{return request<T>(path,undefined,signal);}
 export function api<T=unknown>(path:string,body?:unknown):Promise<T>{return request<T>(path,body);}
 async function ipcResponse(current:Session,path:string,method:string,body:unknown,signal?:AbortSignal):Promise<Response>{

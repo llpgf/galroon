@@ -59,6 +59,7 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/discover/manual",WebAccess::Unchanged),
  ("/api/artwork",WebAccess::Unchanged),
  ("/api/artwork/cache",WebAccess::Deny),
+ ("/api/artwork/offline",WebAccess::Deny),
  ("/api/vns/{id}/exploration",WebAccess::Unchanged),
  ("/api/lists",WebAccess::Unchanged),
  ("/api/lists/{id}",WebAccess::Unchanged),

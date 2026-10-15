@@ -3,7 +3,7 @@ use serde::Deserialize;
 use crate::{ApiError,App,artwork_cache::{Cache,Image,MAX_IMAGE_BYTES}};
 static DOWNLOAD:std::sync::OnceLock<crate::artwork_queue::Queue>=std::sync::OnceLock::new();
 #[derive(Deserialize)]pub struct Request{url:String}
-fn allowed(value:&str)->bool{
+pub(crate) fn allowed(value:&str)->bool{
  // Only immutable raster paths on the provider's artwork host. Never follow redirects.
  regex::Regex::new(r"^https://t\.vndb\.org/(cv|ch|sf)(\.t)?/[0-9]{2}/[0-9]+\.(jpg|png|webp)$").unwrap().is_match(value)
 }
@@ -19,10 +19,10 @@ async fn known(a:&App,url:&str)->Result<bool,ApiError>{
   if c.query_row("SELECT EXISTS(SELECT 1 FROM works WHERE cover=?1 AND merged_into IS NULL)",[&target],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?{return Ok(true);}
   c.query_row("SELECT EXISTS(SELECT 1 FROM artwork_references WHERE url=?1)",[&target],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())
  }).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)?;
- Ok(stored||crate::matching::known_artwork(url).await)
+ Ok(stored||crate::artwork_library::contains(&a.state_dir,url)?||crate::matching::known_artwork(url).await)
 }
 async fn cached(base:std::path::PathBuf,url:String)->Result<Option<Image>,ApiError>{
- tokio::task::spawn_blocking(move||Cache::open(&base)?.get(&url)).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)
+ tokio::task::spawn_blocking(move||match crate::artwork_library::image(&base,&url)?{Some(image)=>Ok(Some(image)),None=>Cache::open(&base)?.get(&url)}).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)
 }
 fn response(image:Image)->Response{
  ([(header::CONTENT_TYPE,image.mime),(header::CACHE_CONTROL,"private, no-store".into()),(header::X_CONTENT_TYPE_OPTIONS,"nosniff".into())],image.bytes).into_response()
@@ -46,17 +46,22 @@ pub async fn read(State(a):State<App>,h:HeaderMap,Query(q):Query<Request>)->Resu
  crate::access::authenticate(&a,&h)?;
  if !allowed(&q.url){return Err(ApiError("Unsupported artwork URL".into()));}
  if !known(&a,&q.url).await?{return Err(ApiError("Artwork is not referenced by this Core".into()));}
- if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(response(image));}
+ Ok(response(fetch(&a,&q.url).await?))
+}
+pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
+ if !allowed(url){return Err(ApiError("Unsupported artwork URL".into()));}
+ let q=Request{url:url.to_owned()};
+ if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(image);}
  let key=format!("{}:{}",a.state_dir.display(),Cache::key(&q.url));
  let _permit=DOWNLOAD.get_or_init(||crate::artwork_queue::Queue::new(4,64)).enter(key).await.map_err(ApiError)?;
- if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(response(image));}
+ if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(image);}
  let started=std::time::Instant::now();crate::diagnostics::record("info","artwork.download.started","Artwork download started",None);
  let downloaded=download(&q.url).await;
  crate::diagnostics::record(if downloaded.is_ok(){"info"}else{"error"},if downloaded.is_ok(){"artwork.download.completed"}else{"artwork.download.failed"},&format!("Artwork download ended after {} ms",started.elapsed().as_millis()),None);
  let bytes=downloaded?;
- let base=a.state_dir;let url=q.url;
+ let base=a.state_dir.clone();let url=q.url;
  let image=tokio::task::spawn_blocking(move||{let mut cache=Cache::open(&base)?;cache.put(&url,&bytes)?;cache.get(&url)?.ok_or_else(||"Artwork cache write unavailable".to_string())}).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)?;
- Ok(response(image))
+ Ok(image)
 }
 #[cfg(test)]mod tests{
  use super::*;
