@@ -32,6 +32,7 @@ pub async fn fetch(id:&str,release:Option<&str>)->R<Value>{
     let mut work=fetch_work(id).await?;
     if let Some(release)=release{
         if !release.strip_prefix('r').is_some_and(|s|!s.is_empty()&&s.chars().all(|c|c.is_ascii_digit())){return Err("Invalid VNDB release identifier".into());}
+        crate::vndb_rate::wait(std::time::Duration::from_millis(1600)).await;
         let response=reqwest::Client::new().post(format!("{}/release",crate::matching::vndb_api())).timeout(std::time::Duration::from_secs(25)).json(&json!({"filters":["id","=",release],"fields":"title,alttitle,released,producers.name,images.url,images.type","results":1})).send().await.map_err(|e|e.to_string())?;
         if !response.status().is_success(){return Err(format!("VNDB returned {}; try again later",response.status()));}
         let response:Value=response.json().await.map_err(|e|e.to_string())?;let mut r=response["results"].as_array().and_then(|v|v.first()).cloned().ok_or("VNDB release not found")?;
@@ -43,6 +44,7 @@ pub async fn fetch(id:&str,release:Option<&str>)->R<Value>{
 }
 async fn fetch_work(id:&str)->R<Value>{
     if !id.strip_prefix('v').is_some_and(|s|!s.is_empty()&&s.chars().all(|c|c.is_ascii_digit())){return Err("Invalid VNDB work identifier".into());}
+    crate::vndb_rate::wait(std::time::Duration::from_millis(1600)).await;
     let response=reqwest::Client::new().post(format!("{}/vn",crate::matching::vndb_api())).timeout(std::time::Duration::from_secs(25)).json(&json!({"filters":["id","=",id],"fields":"title,alttitle,aliases,description,image.url,released,developers.name,tags.name","results":1})).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success(){return Err(format!("VNDB returned {}; try again later",response.status()));}
     let response:Value=response.json().await.map_err(|e|e.to_string())?;let v=response["results"].as_array().and_then(|v|v.first()).ok_or("VNDB work not found")?;
