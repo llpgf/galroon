@@ -1,5 +1,5 @@
 //! Per-launch loopback transport for the WebView; the LAN credential stays native.
-use crate::lan_client::{ProxyRequest,ProxyResponse};
+use crate::lan_client::ProxyRequest;
 use axum::{body::{Body,to_bytes},http::{Request,StatusCode,HeaderValue},response::{IntoResponse,Response},routing::any,Router,Json};
 use tower_http::cors::CorsLayer;
 use std::{future::Future,time::Duration};
@@ -8,7 +8,7 @@ pub struct LocalProxy{pub url:String,pub key:String,task:tokio::task::JoinHandle
 impl Drop for LocalProxy{fn drop(&mut self){self.task.abort();}}
 fn error(status:StatusCode,code:&str,message:&str)->Response{(status,Json(serde_json::json!({"code":code,"error":message}))).into_response()}
 impl LocalProxy{
- pub async fn start<F,T>(call:F)->Result<Self,String> where F:Fn(ProxyRequest)->T+Clone+Send+Sync+'static,T:Future<Output=Result<ProxyResponse,String>>+Send+'static{
+ pub async fn start<F,T>(call:F)->Result<Self,String> where F:Fn(ProxyRequest)->T+Clone+Send+Sync+'static,T:Future<Output=Result<Response,String>>+Send+'static{
   let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;let host=listener.local_addr().map_err(|e|e.to_string())?.to_string();let url=format!("http://{host}");let key=format!("{}{}",crate::db::id(),crate::db::id());let authorization=format!("Bearer {key}");
   let router=Router::new().fallback(any(move|request:Request<Body>|{let host=host.clone();let authorization=authorization.clone();let call=call.clone();async move{
    let headers=request.headers();
@@ -21,7 +21,7 @@ impl LocalProxy{
     let body=to_bytes(request.into_body(),32*1024*1024).await.map_err(|_|"Local proxy request body exceeds size limit")?;if !body.is_empty(){input.body=Some(body.to_vec());}call(input).await
    }).await.unwrap_or_else(|_|Err("Core request timed out".into()));
    match result{
-    Ok(value)=>{let mut response=(StatusCode::from_u16(value.status).unwrap(),value.body).into_response();for(name,value)in value.headers{if let(Ok(name),Ok(value))=(name.parse::<axum::http::HeaderName>(),value.parse::<HeaderValue>()){response.headers_mut().insert(name,value);}}response.headers_mut().insert("cache-control",HeaderValue::from_static("no-store"));response},
+    Ok(mut response)=>{response.headers_mut().insert("cache-control",HeaderValue::from_static("no-store"));response},
     Err(message)=>{let(status,code)=if message=="credential_invalid"{(StatusCode::UNAUTHORIZED,"credential_invalid")}else if message.starts_with("409 collection_changed"){(StatusCode::CONFLICT,"collection_changed")}else{(StatusCode::BAD_GATEWAY,"transport_unavailable")};error(status,code,&message)}
    }
   }})).layer(CorsLayer::new().allow_origin(ORIGINS.map(|s|s.parse::<HeaderValue>().unwrap())).allow_methods([axum::http::Method::GET,axum::http::Method::POST,axum::http::Method::HEAD]).allow_headers(["authorization","content-type","x-galroon-library","x-galroon-device"].map(|s|s.parse::<axum::http::HeaderName>().unwrap())).expose_headers(["x-galroon-library","x-galroon-device","retry-after"].map(|s|s.parse::<axum::http::HeaderName>().unwrap())));
@@ -30,10 +30,10 @@ impl LocalProxy{
 }
 
 #[cfg(test)]mod tests{
- use super::*;use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+ use super::*;use crate::lan_client::ProxyResponse;use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
  #[tokio::test]async fn loopback_key_origin_scope_and_status_are_preserved(){
   let calls=Arc::new(AtomicUsize::new(0));let counted=calls.clone();
-  let proxy=LocalProxy::start(move|request|{let calls=counted.clone();async move{calls.fetch_add(1,Ordering::SeqCst);assert_eq!(request.library_id,"library");assert_eq!(request.device_id,"device");assert_eq!(request.content_type.as_deref(),Some("application/json"));let status=request.path.rsplit('/').next().unwrap().parse().unwrap();Ok(ProxyResponse{status,headers:std::collections::BTreeMap::from([("content-type".into(),"application/json".into()),("x-galroon-library".into(),"library".into()),("x-galroon-device".into(),"device".into())]),body:request.body.unwrap()})}}).await.unwrap();
+  let proxy=LocalProxy::start(move|request|{let calls=counted.clone();async move{calls.fetch_add(1,Ordering::SeqCst);assert_eq!(request.library_id,"library");assert_eq!(request.device_id,"device");assert_eq!(request.content_type.as_deref(),Some("application/json"));let status=request.path.rsplit('/').next().unwrap().parse().unwrap();Ok(ProxyResponse{status,headers:std::collections::BTreeMap::from([("content-type".into(),"application/json".into()),("x-galroon-library".into(),"library".into()),("x-galroon-device".into(),"device".into())]),body:request.body.unwrap()}.into_http())}}).await.unwrap();
   let client=reqwest::Client::new();let url=format!("{}/api/test/400",proxy.url);
   for(case,expected)in [("missing",401),("wrong",401),("origin",403),("host",403),("method",400),("path",400)]{
    let mut request=client.request(if case=="method"{reqwest::Method::PUT}else{reqwest::Method::POST},if case=="path"{format!("{}/outside",proxy.url)}else{url.clone()});

@@ -1064,6 +1064,7 @@ dependencies = [
  "argon2",
  "axum",
  "fs2",
+ "futures-util",
  "hex",
  "icu_collator",
  "icu_locale_core",

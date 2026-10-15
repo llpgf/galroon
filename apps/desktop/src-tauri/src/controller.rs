@@ -13,7 +13,7 @@ impl Controller{
     let result=conn.session().await;
     if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,id)?;self.remote.lock().await.take();}
     let mut session=serde_json::to_value(result?).map_err(|e|e.to_string())?;let mut proxy=self.proxy.lock().await;
-    if proxy.is_none(){let weak=std::sync::Arc::downgrade(self);*proxy=Some(galroon_core::lan_proxy::LocalProxy::start(move|request|{let weak=weak.clone();async move{weak.upgrade().ok_or("Desktop closed")?.proxy_request(request).await}}).await?);}
+    if proxy.is_none(){let weak=std::sync::Arc::downgrade(self);*proxy=Some(galroon_core::lan_proxy::LocalProxy::start(move|request|{let weak=weak.clone();async move{Ok(weak.upgrade().ok_or("Desktop closed")?.http_request(request).await?.response)}}).await?);}
     let proxy=proxy.as_ref().unwrap();session["proxy_url"]=serde_json::json!(proxy.url);session["proxy_key"]=serde_json::json!(proxy.key);return Ok(session);
    }
    return serde_json::to_value(crate::paired::connect(entry).await?).map_err(|e|e.to_string());
@@ -33,6 +33,12 @@ impl Controller{
   if conn.is_cancelled(){return Err("Connection changed".into());}
   if response.credential_invalid(){let _lock=self.launch_lock()?;crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}
   Ok(response)
+ }
+ pub async fn http_request(&self,request:galroon_core::lan_client::ProxyRequest)->Result<galroon_core::lan_client::HttpProxyResponse,String>{
+  let (id,conn)={let _gate=self.gate.lock().await;let saved=crate::paired::read(&self.base)?;let id=saved.selected.ok_or("No LAN Core selected")?;let entry=saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?;let conn=self.remote_connection(entry).await?;(id,conn)};
+  let response=galroon_core::lan_client::http_proxy(conn.clone(),request).await?;let _gate=self.gate.lock().await;
+  if conn.is_cancelled(){return Err("Connection changed".into());}
+  if response.credential_invalid{let _lock=self.launch_lock()?;crate::paired::mark_repair(&self.base,&id)?;self.remote.lock().await.take();}Ok(response)
  }
  pub async fn pair_lan(&self,pairing:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::pair_lan(&self.base,&pairing).await}
 
