@@ -17,7 +17,7 @@ it('returns image bytes unchanged without base64 or JSON conversion',async()=>{
  const image=new Uint8Array([137,80,78,71,0,255,128]);native.invoke.mockResolvedValue(envelope(200,image,{'content-type':'image/png'}));const blob=await artworkBlob('https://image.invalid/x',new AbortController().signal);
  expect(blob.type).toBe('image/png');expect(new Uint8Array(await blob.arrayBuffer())).toEqual(image);expect(fetch).not.toHaveBeenCalled();
 });
-it.each([403,409,503])('preserves ordinary %i application errors',async status=>{
+it.each([400,403,409,503])('preserves ordinary %i application errors',async status=>{
  native.invoke.mockResolvedValue(envelope(status,'{"error":"Original failure"}'));await expect(api('/works')).rejects.toMatchObject({message:'Original failure',status});expect(connectionSnapshot().phase).toBe('connected');expect(vi.getTimerCount()).toBe(0);
 });
 it('preserves collection_changed semantics and identity header checks',async()=>{

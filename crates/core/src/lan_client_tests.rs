@@ -72,8 +72,8 @@ fn conn(f:&Fixture,token:String,library_id:String,device_id:String)->LanConnecti
  let count=Arc::new(AtomicUsize::new(0));let calls=count.clone();
  let extra=Router::new().route("/api/test/{status}",post(move|axum::extract::Path(status):axum::extract::Path<u16>,r:Request<Body>|{let calls=calls.clone();async move{calls.fetch_add(1,Ordering::SeqCst);assert_eq!(r.headers()["x-galroon-library"],"library");assert_eq!(r.headers()["x-galroon-device"],"device");(StatusCode::from_u16(status).unwrap(),[("content-type","application/json"),("retry-after","7"),("x-galroon-library","library"),("x-galroon-device","device"),("set-cookie","do-not-forward")],r#"{ "code":"credential_invalid", "error":"untouched" }"#)}})).route("/api/binary",get(||async{([( "content-type","image/png")],vec![0u8,255,128,1])}));
  let f=fixture(extra).await;let c=conn(&f,"token".into(),"library".into(),"device".into());
- for status in [401,403,409,503]{let response=proxy(&c,request("POST",&format!("/api/test/{status}"))).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,br#"{ "code":"credential_invalid", "error":"untouched" }"#);assert_eq!(response.headers.len(),4);assert_eq!(response.headers["retry-after"],"7");}
- assert_eq!(count.load(Ordering::SeqCst),4);let response=proxy(&c,request("GET","/api/binary")).await.unwrap();assert_eq!(response.body,[0,255,128,1]);
+ for status in [400,401,403,409,503]{let response=proxy(&c,request("POST",&format!("/api/test/{status}"))).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,br#"{ "code":"credential_invalid", "error":"untouched" }"#);assert_eq!(response.headers.len(),4);assert_eq!(response.headers["retry-after"],"7");}
+ assert_eq!(count.load(Ordering::SeqCst),5);let response=proxy(&c,request("GET","/api/binary")).await.unwrap();assert_eq!(response.body,[0,255,128,1]);
  assert!(proxy(&c,request("HEAD","/api/binary")).await.unwrap().body.is_empty());
 }
 #[tokio::test]async fn response_limits_include_chunked_bodies(){
@@ -94,7 +94,7 @@ fn conn(f:&Fixture,token:String,library_id:String,device_id:String)->LanConnecti
  assert_eq!(c.slots.available_permits(),8);assert_eq!(proxy(&c,request("GET","/api/context")).await.unwrap_err(),"Connection changed");
 }
 #[tokio::test]async fn response_reader_preserves_errors_and_enforces_limits_without_sockets(){
- for status in [401,403,409,503]{let raw=br#"{ "code": "credential_invalid", "error": "original" }"#.to_vec();
+ for status in [400,401,403,409,503]{let raw=br#"{ "code": "credential_invalid", "error": "original" }"#.to_vec();
   let response=reqwest::Response::from(axum::http::Response::builder().status(status).header("content-type","application/json").header("retry-after","7").header("set-cookie","secret").body(raw.clone()).unwrap());
   let response=read_response(response,1024).await.unwrap();assert_eq!(response.status,status);assert_eq!(response.body,raw);assert_eq!(response.headers.len(),2);assert_eq!(response.credential_invalid(),status==401);
  }
