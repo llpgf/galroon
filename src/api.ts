@@ -103,9 +103,8 @@ export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  if(response.status===401){const data=await response.json().catch(()=>null);if(data?.code==='credential_invalid')throw repairRequired();}
  const type=response.headers.get('content-type')?.split(';')[0];
  if(!response.ok||!type||!['image/png','image/jpeg','image/webp'].includes(type)||!response.body)throw new Error('Artwork unavailable');
- const reader=response.body.getReader(),parts:Uint8Array<ArrayBuffer>[]= [];let size=0;
- try{for(;;){const item=await reader.read();if(item.done)break;check();size+=item.value.byteLength;if(size>(current.remote?16:8)*1024*1024)throw new Error('Artwork exceeds size limit');parts.push(item.value as Uint8Array<ArrayBuffer>);}check();return new Blob(parts,{type});}
- finally{try{await reader.cancel();}catch{/* Preserve the original read failure. */}reader.releaseLock();}
+ let size=0;const limited=response.body.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk,controller){check();size+=chunk.byteLength;if(size>(current.remote?16:8)*1024*1024)throw new Error('Artwork exceeds size limit');controller.enqueue(chunk);}}));
+ const blob=await new Response(limited,{headers:{'Content-Type':type}}).blob();check();return blob;
  }finally{clearTimeout(timeout);signal.removeEventListener('abort',abort);if(response?.body&&!response.body.locked){try{await response.body.cancel();}catch{/* A failed response may already be closed. */}}}
 }
 export function previewGrouping<T=unknown>(id:string,selection:unknown,signal:AbortSignal):Promise<T>{return request<T>(`/resources/${encodeURIComponent(id)}/regroup/preview/page`,selection,signal);}
