@@ -5,6 +5,7 @@ use crate::App;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]pub enum WebAccess{Deny,Project,Unchanged}
 pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/bangumi",WebAccess::Deny),
+ ("/api/vndb_sync",WebAccess::Deny),
  ("/api/health",WebAccess::Unchanged),
  ("/api/context",WebAccess::Unchanged),
  ("/api/updates",WebAccess::Unchanged),

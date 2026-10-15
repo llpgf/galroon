@@ -1,3 +1,4 @@
+import {VndbWork} from './VndbWork';
 import {BangumiWork} from './BangumiWork';
 import {useState,type ComponentProps} from 'react';
 import {useTranslation} from 'react-i18next';
@@ -35,6 +36,7 @@ export function CollectionWorkDetail({roots,busy,act,refresh,onEdit,onGroup,onRe
  </fieldset>:<span className="pill">{t(work.status)}</span>}>
   {!!work.same_work?.length&&<section className="section same-work"><h2>{t('sameWorkCards')}</h2><p>{t('sameWorkHint')}</p><div className="inline">{work.same_work.map(other=><button key={other.id} disabled={busy} onClick={()=>void act(async()=>experience.onWork(await api<Work>(`/works/${other.id}`)))}>{other.original_title||other.title}{other.released?` · ${other.released}`:''}{other.vndb_release?` · ${t('remakeCard')}`:''}</button>)}</div></section>}
   {conflicts&&<section className="section refresh-conflicts" role="region" aria-label={t('refreshConflicts')}><h2>{t('refreshConflicts')}</h2><p>{t('refreshConflictsHint')}</p>{conflicts.items.map(item=><div className="plan-item" key={item.field}><strong>{t('field_'+item.field)}</strong><p>{t('conflictMine')}: {shown(item.mine)}</p><p>{t('conflictProvider')}: {shown(item.provider)}</p><div className="inline"><button disabled={busy} onClick={()=>resolve(item,false)}>{t('keepMine')}</button><button className="primary" disabled={busy} onClick={()=>resolve(item,true)}>{t('useProvider')}</button></div></div>)}</section>}
+  {canWrite&&<VndbWork key={work.id+':vndb:'+work.revision} work={work} onChanged={refresh} onHidden={experience.onBack}/>}
   {canWrite&&<BangumiWork key={work.id+':'+work.bangumi_id} work={work} onChanged={refresh} onHidden={experience.onBack}/>}
   <EditionsPanel readOnly={!canWrite} work={work} roots={roots} onPreferenceChanged={refresh} onChanged={refresh} onReferences={onReferences} onAcquire={onAcquire} onOrganize={onOrganize}/>
   <section className="section"><h2>{t('notes')}</h2><textarea aria-label={t('notes')} readOnly={!canWrite} value={draft?.notes??work.notes} onChange={e=>setDraft({notes:e.target.value,revision:draft?.revision??work.revision})}/>{canWrite&&<button disabled={busy} onClick={()=>void act(async()=>{await api(`/works/${work.id}`,{revision:draft?.revision??work.revision,notes:draft?.notes??work.notes});setDraft(null);})}>{t('save')}</button>}</section>

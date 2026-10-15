@@ -1,13 +1,13 @@
 //! Background workers owned once by Core, independently of its HTTP listeners.
 use crate::{App,automatch,smart_updates,watching};
 
-pub struct Services{bangumi:crate::bangumi::Worker,downloads:crate::collection_download::Worker,updates:crate::updates::Worker,smart:smart_updates::Worker,matching:automatch::Worker,watching:watching::Service}
+pub struct Services{vndb_sync:crate::vndb_sync::Worker,bangumi:crate::bangumi::Worker,downloads:crate::collection_download::Worker,updates:crate::updates::Worker,smart:smart_updates::Worker,matching:automatch::Worker,watching:watching::Service}
 impl Services{
  pub fn start(app:App)->Result<Self,String>{
   let watching=watching::start(app.clone())?;let matching=automatch::start(app.db.clone());let smart=smart_updates::start(app.db.clone());
-  let bangumi=crate::bangumi::start(app.clone());let updates=crate::updates::start(app.updates.clone());let downloads=crate::collection_download::start(app);Ok(Self{bangumi,downloads,watching,matching,smart,updates})
+  let vndb_sync=crate::vndb_sync::start(app.clone());let bangumi=crate::bangumi::start(app.clone());let updates=crate::updates::start(app.updates.clone());let downloads=crate::collection_download::start(app);Ok(Self{vndb_sync,bangumi,downloads,watching,matching,smart,updates})
  }
- pub fn request_stop(&self){self.bangumi.request_stop();self.downloads.request_stop();self.updates.request_stop();self.watching.request_stop();self.matching.request_stop();self.smart.request_stop();}
+ pub fn request_stop(&self){self.vndb_sync.request_stop();self.bangumi.request_stop();self.downloads.request_stop();self.updates.request_stop();self.watching.request_stop();self.matching.request_stop();self.smart.request_stop();}
  pub(crate) fn stop_smart_updates(&self){self.smart.request_stop();}
  pub(crate) fn restart_smart_updates(&mut self,db:crate::db::Db){self.smart=smart_updates::start(db);}
 }

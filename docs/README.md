@@ -45,3 +45,4 @@ Feature notes include dated implementation evidence. They are not blanket releas
 `local-history/` holds original planning, acceptance and handoff records in this workspace. Git ignores it; the public documentation above is the fresh-clone entry point.
 
 - [Bangumi 雙向遊玩狀態同步](features/BANGUMI.md)
+- [VNDB 雙向遊玩狀態與評分同步](features/VNDB_SYNC.md)

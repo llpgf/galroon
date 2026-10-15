@@ -263,3 +263,7 @@ Backups include this database automatically when present, using manifest version
 ## Bangumi two-way sync (schema 49)
 
 See [Bangumi sync](../features/BANGUMI.md) for routes, first-sync review, status baselines, conflict behavior and credential storage. Game status sync is bidirectional and independent of local resource availability. The account API is denied to read-only web sessions.
+
+## VNDB two-way status and rating sync (schema 50)
+
+See [VNDB sync](../features/VNDB_SYNC.md) for account, preview/apply, link, hide and personal-rating routes. Status and rating have independent baselines and conflict choices; `works.personal_rating` is nullable 10–100 (display 1.0–10.0). Work responses additionally expose `vndb_sync_id` and `vndb_sync_hidden`. VNDB writes patch only the selected field, preserving unrelated labels and notes. The account API is denied to read-only web sessions.

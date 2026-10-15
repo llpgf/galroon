@@ -1,0 +1,11 @@
+import {useState} from 'react';
+import {useTranslation} from 'react-i18next';
+import {api,type Work} from './api';
+export function VndbWork({work,onChanged,onHidden}:{work:Work;onChanged:()=>Promise<void>;onHidden:()=>void}){
+ const {t}=useTranslation();const [subject,setSubject]=useState(work.vndb_id||''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[rating,setRating]=useState(work.personal_rating==null?'':String(work.personal_rating/10));
+ async function run(path:string,body:object,hidden=false){setBusy(true);setError('');try{await api(path,body);await onChanged();if(hidden)onHidden();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ return <section className="section"><h2>{t('vnsTitle')}</h2><form onSubmit={e=>{e.preventDefault();void run('/vndb_sync/rating',{work_id:work.id,revision:work.revision,rating:rating===''?null:Math.round(Number(rating)*10)});}}><label>{t('vnsMyRating')}<input type="number" min="1" max="10" step="0.1" value={rating} onChange={e=>setRating(e.target.value)} disabled={busy} placeholder={t('vnsUnrated')}/></label><button disabled={busy}>{t('vnsSaveRating')}</button></form>{work.resources===0&&<p className="pill">{t('availability_no_resources')}</p>}
+  {work.vndb_sync_id?<><p><a href={`https://vndb.org/v${work.vndb_sync_id}`} target="_blank" rel="noreferrer">VNDB v{work.vndb_sync_id}</a> · {t(work.vndb_sync_hidden?'vnsKind_hidden':'vnsLinked')}</p><div className="inline"><button disabled={busy} onClick={()=>void run('/vndb_sync/link',{work_id:work.id,revision:work.revision,subject:''})}>{t('vnsUnlink')}</button>{work.resources===0&&<button disabled={busy} onClick={()=>void run('/vndb_sync/hide',{work_id:work.id,hidden:!work.vndb_sync_hidden},!work.vndb_sync_hidden)}>{t(work.vndb_sync_hidden?'vnsRestore':'vnsHide')}</button>}</div></>:<form onSubmit={e=>{e.preventDefault();void run('/vndb_sync/link',{work_id:work.id,revision:work.revision,subject});}}><p>{t('vnsLinkHint')}</p><label>{t('vnsSubject')}<input value={subject} onChange={e=>setSubject(e.target.value)} placeholder="https://vndb.org/v…" disabled={busy}/></label><button disabled={busy||!subject.trim()}>{t('vnsLink')}</button></form>}
+  {error&&<p role="alert" className="error-text">{error}</p>}
+ </section>;
+}

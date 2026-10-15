@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use std::{path::Path, sync::{Arc, Mutex}};
 pub type Db = Arc<Mutex<Connection>>;
-pub const SCHEMA_VERSION:i64=49;
+pub const SCHEMA_VERSION:i64=50;
 pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     if path.parent().is_some_and(|p|p.join("restore-incomplete").exists()) {return Err("This restore is incomplete. Restore the backup again to a new collection.".into());}
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
@@ -82,6 +82,7 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     crate::file_audit::migrate(&tx,version)?;
     crate::suggestions::migrate(&tx)?;
     crate::bangumi::migrate(&tx)?;
+    crate::vndb_sync::migrate(&tx)?;
     crate::catalog_changes::migrate(&tx)?;
     crate::collection_download::migrate(&tx,version<48)?;
     tx.pragma_update(None,"user_version",SCHEMA_VERSION)?;
@@ -119,7 +120,7 @@ pub mod anyhow_result { pub type Result<T> = std::result::Result<T, Box<dyn std:
  #[test]fn schema_44_pairing_codes_become_desktop_with_public_ids(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("collection.sqlite");let db=open(&path).unwrap();
   {let c=db.lock().unwrap();c.execute_batch("DROP TABLE pairing_codes; CREATE TABLE pairing_codes(hash TEXT PRIMARY KEY,name TEXT NOT NULL,expires INTEGER NOT NULL); INSERT INTO pairing_codes VALUES('first-secret-hash','Old desktop',9999999999),('second-secret-hash','Other desktop',9999999999); PRAGMA user_version=44; UPDATE settings SET value='44' WHERE key='schema_version';").unwrap();}drop(db);
-  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,49);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
+  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,50);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
    let mut s=c.prepare("SELECT id,role,hash FROM pairing_codes ORDER BY name").unwrap();let rows=s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();assert_eq!(rows.len(),2);for(id,role,hash)in &rows{assert!(!id.is_empty());assert_ne!(id,hash);assert_eq!(role,"desktop");}assert_ne!(rows[0].0,rows[1].0);rows};drop(db);
   let db=open(&path).unwrap();assert_eq!(db.lock().unwrap().query_row("SELECT id FROM pairing_codes WHERE name='Old desktop'",[],|r|r.get::<_,String>(0)).unwrap(),ids[0].0);
   let snapshots=std::fs::read_dir(t.path().join("migration-backups")).unwrap().collect::<std::io::Result<Vec<_>>>().unwrap();assert_eq!(snapshots.len(),1);let saved=Connection::open(snapshots[0].path()).unwrap();assert_eq!(saved.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),44);assert_eq!(saved.query_row("SELECT count(*) FROM pairing_codes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
