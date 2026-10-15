@@ -28,6 +28,7 @@ pub mod artwork_cache;
 pub mod artwork_library;
 pub mod artwork_offline;
 pub mod collection_download;
+pub mod collection_profiles;
 pub mod artwork;
 mod artwork_queue;
 mod artwork_references;
@@ -109,6 +110,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     fs2::FileExt::try_lock_exclusive(&lock).map_err(|_|"This collection is already open in another Core")?;
     let db=db::open(&dir.join("library.sqlite")).map_err(|e|e.to_string())?;
     db.lock().map_err(|e|e.to_string())?.execute("DELETE FROM settings WHERE key='local_token'",[]).map_err(|e|e.to_string())?;
+    collection_profiles::migrate(&dir,&mut *db.lock().map_err(|e|e.to_string())?)?;
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;

@@ -6,10 +6,11 @@ use serde_json::Value;
 use std::path::Path;
 type R<T>=Result<T,String>;
 pub const FILE:&str="artwork-library.sqlite";
-pub struct Library{connection:Connection}
+pub struct Library{pub(crate) connection:Connection}
 fn profile_key(key:&str)->R<()>{
  let parts:Vec<_>=key.split('.').collect();
  let valid=match parts.as_slice(){
+  ["collection","v1",kind,id]=>match *kind{"character"=>Some('c'),"person"=>Some('s'),"company"=>Some('p'),_=>None}.is_some_and(|prefix|crate::exploration::valid_id(id,prefix)),
   ["exploration","v4","work",id,"1"]=>crate::exploration::valid_id(id,'v'),
   ["exploration","v3",kind,id,page]=>match *kind{"character"=>Some('c'),"person"=>Some('s'),"company"=>Some('p'),_=>None}.is_some_and(|prefix|crate::exploration::valid_id(id,prefix)&&page.parse::<u32>().is_ok_and(|n|(1..=1000).contains(&n))),
   _=>false

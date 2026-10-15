@@ -80,7 +80,14 @@ pub fn restore_new(folder:&Path,destination:&Path,expected_hash:Option<&str>)->R
  }
  verify_content(destination,&file,&manifest)?;
  let c=Connection::open(&file).map_err(|e|e.to_string())?;check(&c)?;clean_credentials(&c)?;
- if manifest.artwork.is_some(){for(key,value)in crate::artwork_library::Library::open(destination)?.profiles()?{c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",rusqlite::params![key,value]).map_err(|e|e.to_string())?;}}
+ if manifest.artwork.is_some(){
+  let tx=c.unchecked_transaction().map_err(|e|e.to_string())?;
+  // Work pages back the local relationship index. Entity biographies stay in the
+  // permanent library; importing legacy filmographies here just duplicates them.
+  for(key,value)in crate::artwork_library::Library::open(destination)?.profiles()?.into_iter().filter(|(key,_)|key.starts_with("exploration.v4.work.")){
+   tx.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",rusqlite::params![key,value]).map_err(|e|e.to_string())?;
+  }tx.commit().map_err(|e|e.to_string())?;
+ }
  c.execute_batch("UPDATE jobs SET state='interrupted',message='Restored from backup; verify source paths before resuming.' WHERE state IN ('queued','running','pausing','cancelling'); UPDATE frontier SET state='pending' WHERE state='running'; UPDATE plans SET state='ready',approved=NULL WHERE state IN ('approved','executing','partial');").map_err(|e|e.to_string())?;
  // Materialize disabled entries even for legacy backups without watcher rows;
  // startup's ensure() must not recreate enabled watchers for restored roots.
