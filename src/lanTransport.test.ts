@@ -2,6 +2,7 @@ import {beforeEach,afterEach,expect,it,vi} from 'vitest';
 const native=vi.hoisted(()=>({invoke:vi.fn()}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:native.invoke,isTauri:()=>true}));
 vi.mock('./clientDiagnostics',()=>({reportClientError:vi.fn()}));
+import {keepArtwork,keptArtwork,clientArtworkStats} from './clientArtworkCache';
 import {api,artworkBlob,readApi,setSession,connect,connectionSnapshot,RepairRequiredError,CollectionChangedError,SessionChangedError} from './api';
 const remote={url:'ipc://core',token:'',remote:true,library_id:'library',device_id:'device',api_min:1,api_max:1};
 function envelope(status:number,body:string|Uint8Array,headers:Record<string,string>={}){const metadata=new TextEncoder().encode(JSON.stringify({status,headers})),data=typeof body==='string'?new TextEncoder().encode(body):body;const result=new Uint8Array(4+metadata.length+data.length);new DataView(result.buffer).setUint32(0,metadata.length);result.set(metadata,4);result.set(data,4+metadata.length);return result.buffer;}
@@ -44,4 +45,13 @@ it('uses a per-launch loopback key without exposing the NAS bearer or retrying w
 it('keeps revocation and uncertain writes across the loopback transport',async()=>{
  setSession({...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'local-key'});vi.mocked(fetch).mockResolvedValue(new Response('{"code":"credential_invalid"}',{status:401}));await expect(api('/works')).rejects.toBeInstanceOf(RepairRequiredError);expect(connectionSnapshot().phase).toBe('repair_required');
  setSession({...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'local-key'});vi.mocked(fetch).mockResolvedValue(new Response('{"code":"transport_unavailable"}',{status:502}));await expect(api('/works',{title:'Example'})).rejects.toMatchObject({name:'Error',message:expect.stringContaining('was not sent again')});expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('clears disposable artwork when a loopback pairing is revoked and reads again after re-pairing',async()=>{
+ const proxy={...remote,proxy_url:'http://127.0.0.1:43210',proxy_key:'first-launch'};setSession(proxy);
+ const old=URL.createObjectURL(new Blob(['previous collection image']));keepArtwork('cover',old,25);
+ vi.mocked(fetch).mockResolvedValue(new Response('{"code":"credential_invalid"}',{status:401}));
+ await expect(artworkBlob('cover',new AbortController().signal)).rejects.toBeInstanceOf(RepairRequiredError);expect(keptArtwork('cover')).toBeUndefined();expect(clientArtworkStats().bytes).toBe(0);
+ setSession({...proxy,proxy_key:'repaired-launch'});vi.mocked(fetch).mockResolvedValue(new Response(new Uint8Array([1,2,3]),{headers:{'content-type':'image/png','content-length':'3'}}));
+ expect((await artworkBlob('cover',new AbortController().signal)).size).toBe(3);expect(fetch).toHaveBeenLastCalledWith(expect.any(String),expect.objectContaining({headers:expect.objectContaining({Authorization:'Bearer repaired-launch'})}));expect(native.invoke).not.toHaveBeenCalled();
 });
