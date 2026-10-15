@@ -30,3 +30,35 @@ it('uses native Blob consumption for known lengths and enforces declared and rec
  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));expect((await artworkBlob(url,new AbortController().signal)).size).toBe(3);expect(blob).toHaveBeenCalledOnce();
  for(const length of ['1',String(8*1024*1024+1)]){vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(new Uint8Array(8*1024*1024+1),{headers:{'content-type':'image/png','content-length':length}})));await expect(artworkBlob(url,new AbortController().signal)).rejects.toThrow('Artwork exceeds size limit');}
 });
+
+it('stops invalid credentials from triggering more artwork requests until a new session is supplied',async()=>{
+ const {RepairRequiredError}=await import('./api');
+ const {clientArtworkGeneration}=await import('./clientArtworkCache');
+ const fetcher=vi.fn().mockImplementation(()=>Promise.resolve(new Response('{"code":"credential_invalid"}',{status:401,headers:{'content-type':'application/json'}})));
+ vi.stubGlobal('fetch',fetcher);
+ await expect(artworkBlob(url,new AbortController().signal)).rejects.toBeInstanceOf(RepairRequiredError);
+ const generation=clientArtworkGeneration();
+ for(let n=0;n<3;n++)await expect(artworkBlob(url,new AbortController().signal)).rejects.toBeInstanceOf(RepairRequiredError);
+ expect(fetcher).toHaveBeenCalledTimes(1);expect(clientArtworkGeneration()).toBe(generation);
+ setSession({...session,token:'replacement'});
+ fetcher.mockResolvedValue(new Response(new Uint8Array([1]),{headers:{'content-type':'image/jpeg'}}));
+ expect((await artworkBlob(url,new AbortController().signal)).size).toBe(1);
+ expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('invalidates cached images once when concurrent requests report revoked credentials',async()=>{
+ const {api,RepairRequiredError}=await import('./api');
+ const {clientArtworkGeneration}=await import('./clientArtworkCache');
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const fetcher=vi.fn().mockImplementation(()=>{
+  const response=new Response('{"code":"credential_invalid"}',{status:401,headers:{'content-type':'application/json'}});
+  vi.spyOn(response,'json').mockImplementation(async()=>{await gate;return {code:'credential_invalid'};});return Promise.resolve(response);
+ });
+ vi.stubGlobal('fetch',fetcher);
+ const generation=clientArtworkGeneration();
+ const pending=Promise.allSettled([artworkBlob(url,new AbortController().signal),artworkBlob(url+'other',new AbortController().signal)]);
+ await Promise.resolve();release();await pending;
+ expect(clientArtworkGeneration()).toBe(generation+1);
+ await expect(api('/context')).rejects.toBeInstanceOf(RepairRequiredError);
+ expect(fetcher).toHaveBeenCalledTimes(2);
+});
