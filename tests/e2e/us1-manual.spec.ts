@@ -58,7 +58,8 @@ test('US-1.5 看原因 → 搜 VNDB → 選候選 → 確認，重新配對/掃�
   await test.step('重新配對與重新掃描都不覆蓋手動綁定', async () => {
     const id = (await bound(MAMA_CD))!.id;
     const idle = async () => {
-      await expect.poll(async () => (await core.api('/jobs')).filter((j: any) => ['queued', 'running', 'pausing'].includes(j.state)).length, { timeout: 300_000, intervals: [1000] }).toBe(0);
+      // Artwork intake runs independently; this assertion waits for the requested scan/match only.
+      await expect.poll(async () => (await core.api('/jobs')).filter((j: any) => ['scan', 'match'].includes(j.kind) && ['queued', 'running', 'pausing'].includes(j.state)).length, { timeout: 300_000, intervals: [1000] }).toBe(0);
     };
     await core.api('/matching/refresh', {});
     await idle();
