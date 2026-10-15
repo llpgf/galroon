@@ -5,13 +5,13 @@ use serde::{Serialize,Deserialize};
 use serde_json::{Value,json};
 use crate::{App,ApiError};
 
-const SELECT:&str="SELECT w.id,w.title,w.original_title,w.vndb_id,w.description,w.cover,w.developer,w.released,w.tags,w.status,w.favorite,w.notes,w.revision,(SELECT count(*) FROM resource_bindings r WHERE r.work_id=w.id AND EXISTS(SELECT 1 FROM resource_files rf WHERE rf.resource_id=r.resource_id)),w.aliases,(SELECT preferred_release_id FROM work_preferences WHERE work_id=w.id),w.rowid,w.vndb_release,EXISTS(SELECT 1 FROM resource_bindings b WHERE b.work_id=w.id) AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.work_id=w.id AND b.role!='extra'),(SELECT json_group_array(json_object('id',o.id,'title',o.title,'original_title',o.original_title,'released',o.released,'vndb_release',o.vndb_release)) FROM works o WHERE w.vndb_id IS NOT NULL AND w.vndb_id!='' AND o.vndb_id=w.vndb_id AND o.id!=w.id AND o.merged_into IS NULL) FROM works w WHERE w.merged_into IS NULL";
+const SELECT:&str="SELECT w.id,w.title,w.original_title,w.vndb_id,w.description,w.cover,w.developer,w.released,w.tags,w.status,w.favorite,w.notes,w.revision,(SELECT count(*) FROM resource_bindings r WHERE r.work_id=w.id AND EXISTS(SELECT 1 FROM resource_files rf WHERE rf.resource_id=r.resource_id)),w.aliases,(SELECT preferred_release_id FROM work_preferences WHERE work_id=w.id),w.rowid,w.vndb_release,EXISTS(SELECT 1 FROM resource_bindings b WHERE b.work_id=w.id) AND NOT EXISTS(SELECT 1 FROM resource_bindings b WHERE b.work_id=w.id AND b.role!='extra'),(SELECT json_group_array(json_object('id',o.id,'title',o.title,'original_title',o.original_title,'released',o.released,'vndb_release',o.vndb_release)) FROM works o WHERE w.vndb_id IS NOT NULL AND w.vndb_id!='' AND o.vndb_id=w.vndb_id AND o.id!=w.id AND o.merged_into IS NULL) ,(SELECT subject_id FROM bangumi_links WHERE work_id=w.id),(SELECT hidden FROM bangumi_links WHERE work_id=w.id) FROM works w WHERE w.merged_into IS NULL";
 fn row(r:&Row<'_>)->rusqlite::Result<Value>{Ok(json!({
  "id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"original_title":r.get::<_,String>(2)?,"vndb_id":r.get::<_,Option<String>>(3)?,"description":r.get::<_,String>(4)?,"cover":r.get::<_,String>(5)?,"developer":r.get::<_,String>(6)?,"released":r.get::<_,String>(7)?,"tags":serde_json::from_str::<Value>(&r.get::<_,String>(8)?).unwrap_or(json!([])),"status":r.get::<_,String>(9)?,"favorite":r.get::<_,i64>(10)?==1,"notes":r.get::<_,String>(11)?,"revision":r.get::<_,i64>(12)?,"resources":r.get::<_,i64>(13)?,"aliases":serde_json::from_str::<Value>(&r.get::<_,String>(14)?).unwrap_or(json!([])),"preferred_release_id":r.get::<_,Option<String>>(15)?,"added_order":r.get::<_,i64>(16)?,"vndb_release":r.get::<_,Option<String>>(17)?,"bonus_only":r.get::<_,bool>(18)?,
- /* Other local cards for the same VNDB work, such as an original and its remake. */"same_work":serde_json::from_str::<Value>(&r.get::<_,String>(19)?).unwrap_or(json!([]))
+ /* Other local cards for the same VNDB work, such as an original and its remake. */"bangumi_id":r.get::<_,Option<i64>>(20)?,"bangumi_hidden":r.get::<_,Option<bool>>(21)?.unwrap_or(false),"same_work":serde_json::from_str::<Value>(&r.get::<_,String>(19)?).unwrap_or(json!([]))
 }))}
 pub fn all(c:&Connection)->rusqlite::Result<Vec<Value>>{
- let mut q=c.prepare(&format!("{SELECT} ORDER BY w.title"))?;let rows=q.query_map([],row)?.collect();rows
+ let mut q=c.prepare(&format!("{SELECT} AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY w.title"))?;let rows=q.query_map([],row)?.collect();rows
 }
 pub fn one(c:&Connection,id:&str)->rusqlite::Result<Option<Value>>{
  c.query_row(&format!("{SELECT} AND w.id=?1"),[id],row).optional()
@@ -28,8 +28,8 @@ pub fn page(c:&Connection,before:Option<&str>)->Result<Value,ApiError>{
   if p.library!=library||p.revision!=revision{return Err(ApiError("Collection changed. Reload before continuing.".into()));}
   Ok(p)
  }).transpose()?;
- let total:i64=c.query_row("SELECT count(*) FROM works WHERE merged_into IS NULL",[],|r|r.get(0))?;
- let mut q=c.prepare(&format!("{SELECT} AND w.rowid<?1 ORDER BY w.rowid DESC LIMIT 61"))?;
+ let total:i64=c.query_row("SELECT count(*) FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1)",[],|r|r.get(0))?;
+ let mut q=c.prepare(&format!("{SELECT} AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND w.rowid<?1 ORDER BY w.rowid DESC LIMIT 61"))?;
  let mut items=q.query_map([cursor.as_ref().map_or(i64::MAX,|p|p.before)],row)?.collect::<rusqlite::Result<Vec<_>>>()?;
  let more=items.len()>60;items.truncate(60);
  let next=if more{Some(serde_json::to_string(&Cursor{library:library.clone(),revision,before:items.last().unwrap()["added_order"].as_i64().unwrap()}).map_err(|e|ApiError(e.to_string()))?)}else{None};

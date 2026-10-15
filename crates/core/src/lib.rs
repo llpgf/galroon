@@ -1,3 +1,4 @@
+pub mod bangumi;
 pub mod suggestions;
 pub mod catalog_changes;
 pub mod web_projection;
@@ -89,7 +90,7 @@ use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub updates:std::sync::Arc<updates::Updates>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
+#[derive(Clone)] pub struct App {pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
 pub struct ApiError(pub String);
 impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
@@ -110,7 +111,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
-    Ok(App{updates:updates::Updates::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
+    Ok(App{bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
@@ -120,6 +121,14 @@ pub fn router_for(app:App,transport:Transport)->Router {
      Transport::Lan=>AllowOrigin::predicate(|origin,request|request.headers.get(axum::http::header::HOST).and_then(|h|h.to_str().ok()).is_some_and(|host|origin.as_bytes()==format!("https://{host}").as_bytes()))
     };
     Router::new().route("/api/health",get(||async{Json(json!({"name":"Galroon","version":env!("CARGO_PKG_VERSION")}))}))
+    .route("/api/bangumi",get(bangumi::get))
+    .route("/api/bangumi/connect",post(bangumi::connect))
+    .route("/api/bangumi/disconnect",post(bangumi::disconnect))
+    .route("/api/bangumi/preview",post(bangumi::preview))
+    .route("/api/bangumi/apply",post(bangumi::apply))
+    .route("/api/bangumi/settings",post(bangumi::settings))
+    .route("/api/bangumi/link",post(bangumi::link))
+    .route("/api/bangumi/hide",post(bangumi::hide))
     .route("/api/context",get(context::get).post(context::update))
     .route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))

@@ -259,3 +259,7 @@ Schema 48 adds `collection_downloads`, transactionally populated by work insert 
 Client images are fetched only from the selected authenticated Core, cached in memory up to 64 MiB / 600 entries, and invalidated on session changes. Clearing the local cache revokes its object URLs and prevents older in-flight requests from repopulating it; it never calls a Core deletion API. UI metadata is transient client state. Neither is a backup source.
 
 Backups include this database automatically when present, using manifest version 3. `artwork` contains `{file,bytes,sha256,images,profiles}`; `bytes` at the manifest root remains catalog bytes. The root `sha256` is SHA-256 of the UTF-8 string `<catalog-file-sha256>:<artwork-file-sha256>`, binding preview/restore to both files. Both SQLite files are online snapshots; restore verifies hashes and artwork integrity/counts before removing the incomplete marker. Version 1/2 catalog-only backups remain readable and new catalog-only exports retain version 2. Game files and login credentials remain excluded.
+
+## Bangumi two-way sync (schema 49)
+
+See [Bangumi sync](../features/BANGUMI.md) for routes, first-sync review, status baselines, conflict behavior and credential storage. Game status sync is bidirectional and independent of local resource availability. The account API is denied to read-only web sessions.

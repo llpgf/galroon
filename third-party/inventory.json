@@ -1,6 +1,6 @@
 {
   "target": "x86_64-pc-windows-msvc",
-  "cargo_lock_sha256": "e740d91ffe2248411b45a09516a2febc93c89aa0aad73d440b136c7afb4445d8",
+  "cargo_lock_sha256": "bc56705fcf97385641349ff4e486bb61456f05b3f606c35e1918f7fe76ac4565",
   "npm_lock_sha256": "62851c648aa208e0b2a7f898e628b0f78087d65c42596e75b875dc3a2f589955",
   "packages": [
     {
@@ -2250,6 +2250,24 @@
         }
       ],
       "source_archive": "https://crates.io/api/v1/crates/keyboard-types/0.7.0/download"
+    },
+    {
+      "ecosystem": "Cargo",
+      "name": "keyring",
+      "version": "3.6.3",
+      "declared_license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/hwchen/keyring-rs.git",
+      "notices": [
+        {
+          "source": "crate:keyring@3.6.3/LICENSE-APACHE",
+          "sha256": "78ebc2ea2a1cec9cbec2e1a6fc15e73474fe22bdad7575518e7f4628651d49c4"
+        },
+        {
+          "source": "crate:keyring@3.6.3/LICENSE-MIT",
+          "sha256": "157cc607717b1b372a69f6b4526f6ad18c1279af9f3267835cca2943f37bc07d"
+        }
+      ],
+      "source_archive": "https://crates.io/api/v1/crates/keyring/3.6.3/download"
     },
     {
       "ecosystem": "Cargo",

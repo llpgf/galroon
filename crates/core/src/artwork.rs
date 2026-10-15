@@ -5,7 +5,7 @@ static DOWNLOAD:std::sync::OnceLock<crate::artwork_queue::Queue>=std::sync::Once
 #[derive(Deserialize)]pub struct Request{url:String}
 pub(crate) fn allowed(value:&str)->bool{
  // Only immutable raster paths on the provider's artwork host. Never follow redirects.
- regex::Regex::new(r"^https://t\.vndb\.org/(cv|ch|sf)(\.t)?/[0-9]{2}/[0-9]+\.(jpg|png|webp)$").unwrap().is_match(value)
+ regex::Regex::new(r"^https://lain\.bgm\.tv/(?:pic/cover/(?:l|c|m|s|g)/[0-9a-f/]+(?:_[A-Za-z0-9]+)?|img/no_icon_subject)\.(?:jpg|png|webp)$").unwrap().is_match(value) || regex::Regex::new(r"^https://t\.vndb\.org/(cv|ch|sf)(\.t)?/[0-9]{2}/[0-9]+\.(jpg|png|webp)$").unwrap().is_match(value)
 }
 pub(crate) fn referenced(value:&serde_json::Value,url:&str)->bool{
  fn walk(value:&serde_json::Value,url:&str,depth:usize)->bool{if depth>32{return false;}match value{

@@ -42,7 +42,7 @@ fn digest<T: Serialize>(value: &T) -> Result<String, ApiError> {
 }
 fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Result<Vec<Entry>, ApiError> {
     // O(collection) compact metadata only: descriptions, notes and full resource/release payloads stay out.
-    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid FROM works WHERE merged_into IS NULL ORDER BY title")?;
+    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
     let mut entries=statement.query_map([],|r| {
         let title:String=r.get(1)?;let original:String=r.get(2)?;let studio:String=r.get(3)?;let released:String=r.get(4)?;
         let tags=filter::tag_names(&serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or_default());
@@ -65,7 +65,7 @@ fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Resu
             if count==0||unknown>0 { states.insert("unknown".into()); } else if roots.get(&root)==Some(&true)&&missing==0&&unverified==0 { states.insert("available".into()); }
         }
     }
-    for e in &mut entries { if e.states.is_empty() { e.states.insert("no_resources".into()); } }
+    for e in &mut entries { if e.states.is_empty() { e.states.insert("no_resources".into()); } else {e.states.insert("has_resources".into());} }
     let mut statement=c.prepare("SELECT work_id FROM resource_bindings GROUP BY work_id HAVING min(role='extra')=1")?;
     for id in statement.query_map([],|r|r.get::<_,String>(0))? { check(cancelled)?;if let Some(i)=index.get(&id?) { entries[*i].bonus_only=true; } }
     let mut statement=c.prepare("WITH RECURSIVE members(tag,id) AS (SELECT tw.tag_id,tw.work_id FROM custom_tag_works tw JOIN custom_tags t ON t.id=tw.tag_id WHERE t.deleted=0 UNION SELECT m.tag,w.merged_into FROM members m JOIN works w ON w.id=m.id WHERE w.merged_into IS NOT NULL) SELECT DISTINCT m.tag,w.id FROM members m JOIN works w ON w.id=m.id WHERE w.merged_into IS NULL")?;
