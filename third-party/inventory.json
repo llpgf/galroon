@@ -1,7 +1,7 @@
 {
   "target": "x86_64-pc-windows-msvc",
-  "cargo_lock_sha256": "909f9509db360a32bba8b05403026062bd03a7b08e96b49a8e447aab5f20bdd5",
-  "npm_lock_sha256": "374f7d334af3de9191e1eaf75a92d2983945d5aff7199e72b453223f6a7e60f0",
+  "cargo_lock_sha256": "6ec1858307560272196d4dd35403eb6fefe652406bb30f579dd7d2c1326b1eb7",
+  "npm_lock_sha256": "62851c648aa208e0b2a7f898e628b0f78087d65c42596e75b875dc3a2f589955",
   "packages": [
     {
       "ecosystem": "Cargo",
@@ -2707,6 +2707,20 @@
     },
     {
       "ecosystem": "Cargo",
+      "name": "pem",
+      "version": "3.0.6",
+      "declared_license": "MIT",
+      "repository": "https://github.com/jcreekmore/pem-rs.git",
+      "notices": [
+        {
+          "source": "crate:pem@3.0.6/LICENSE.md",
+          "sha256": "b7c76ff4466a3aeb6a7d903e81b651335e97d64ecb857e2ee9812a36c6fd1acf"
+        }
+      ],
+      "source_archive": "https://crates.io/api/v1/crates/pem/3.0.6/download"
+    },
+    {
+      "ecosystem": "Cargo",
       "name": "percent-encoding",
       "version": "2.3.2",
       "declared_license": "MIT OR Apache-2.0",
@@ -3123,6 +3137,20 @@
     },
     {
       "ecosystem": "Cargo",
+      "name": "rcgen",
+      "version": "0.13.2",
+      "declared_license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rustls/rcgen",
+      "notices": [
+        {
+          "source": "crate:rcgen@0.13.2/LICENSE",
+          "sha256": "2ff0e21d54b189664c884c142f7a608aae1515524b72e6b1ca251577760d44cf"
+        }
+      ],
+      "source_archive": "https://crates.io/api/v1/crates/rcgen/0.13.2/download"
+    },
+    {
+      "ecosystem": "Cargo",
       "name": "ref-cast-impl",
       "version": "1.0.27",
       "declared_license": "MIT OR Apache-2.0",
@@ -3366,24 +3394,24 @@
     {
       "ecosystem": "Cargo",
       "name": "rustls",
-      "version": "0.23.43",
+      "version": "0.23.45",
       "declared_license": "Apache-2.0 OR ISC OR MIT",
       "repository": "https://github.com/rustls/rustls",
       "notices": [
         {
-          "source": "crate:rustls@0.23.43/LICENSE-APACHE",
+          "source": "crate:rustls@0.23.45/LICENSE-APACHE",
           "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
         },
         {
-          "source": "crate:rustls@0.23.43/LICENSE-ISC",
+          "source": "crate:rustls@0.23.45/LICENSE-ISC",
           "sha256": "7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4"
         },
         {
-          "source": "crate:rustls@0.23.43/LICENSE-MIT",
+          "source": "crate:rustls@0.23.45/LICENSE-MIT",
           "sha256": "709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c"
         }
       ],
-      "source_archive": "https://crates.io/api/v1/crates/rustls/0.23.43/download"
+      "source_archive": "https://crates.io/api/v1/crates/rustls/0.23.45/download"
     },
     {
       "ecosystem": "Cargo",
@@ -5841,6 +5869,24 @@
     },
     {
       "ecosystem": "Cargo",
+      "name": "yasna",
+      "version": "0.5.2",
+      "declared_license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/qnighy/yasna.rs",
+      "notices": [
+        {
+          "source": "https://raw.githubusercontent.com/qnighy/yasna.rs/b7e65f9a4c317494cce2d18ea02b3d6eaaea7985/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "source": "https://raw.githubusercontent.com/qnighy/yasna.rs/b7e65f9a4c317494cce2d18ea02b3d6eaaea7985/LICENSE-MIT",
+          "sha256": "2a7df90e60fd5512b8bca35d3ce90e068f21c52d962855053fd1d9e2e7ca0f16"
+        }
+      ],
+      "source_archive": "https://crates.io/api/v1/crates/yasna/0.5.2/download"
+    },
+    {
+      "ecosystem": "Cargo",
       "name": "yoke-derive",
       "version": "0.8.2",
       "declared_license": "Unicode-3.0",
@@ -6162,19 +6208,6 @@
     },
     {
       "ecosystem": "npm",
-      "name": "typescript",
-      "version": "5.7.3",
-      "declared_license": "Apache-2.0",
-      "repository": "https://github.com/microsoft/TypeScript.git",
-      "notices": [
-        {
-          "source": "npm:typescript@5.7.3/LICENSE.txt",
-          "sha256": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47"
-        }
-      ]
-    },
-    {
-      "ecosystem": "npm",
       "name": "use-sync-external-store",
       "version": "1.6.0",
       "declared_license": "MIT",
@@ -6208,7 +6241,7 @@
       "notices": [
         {
           "source": "tools/7zip/runtime/License.txt",
-          "sha256": "519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d"
+          "sha256": "32369594a3a9f7c643d124035120eaa6a7707e75e57c4386ef509f801447bc49"
         }
       ]
     },
