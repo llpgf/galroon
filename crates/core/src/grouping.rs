@@ -26,7 +26,7 @@ pub fn split_reviewed(db:&Db,source:&str,revision:i64,members:&[String],title:&s
     let current:i64=tx.query_row("SELECT revision FROM works WHERE id=?1 AND merged_into IS NULL",[source],|r|r.get(0)).map_err(|e|e.to_string())?;if current!=revision{return Err("The work changed. Reload the grouping preview.".into());}
     let distinct:std::collections::HashSet<_>=members.iter().collect();if distinct.len()!=members.len(){return Err("Duplicate resource selection".into());}
     for member in members{let matches:i64=tx.query_row("SELECT count(*) FROM resource_bindings WHERE resource_id=?1 AND work_id=?2",params![member,source],|r|r.get(0)).map_err(|e|e.to_string())?;if matches!=1{return Err("Resource bindings changed. Reload the grouping preview.".into());}}
-    let target=id();let baseline=json!({"title":title,"original_title":title});tx.execute("INSERT INTO works(id,title,original_title,source_json) VALUES(?1,?2,?2,?3)",params![target,title,baseline.to_string()]).map_err(|e|e.to_string())?;
+    let target=id();let baseline=json!({"title":title,"original_title":title});tx.execute("INSERT INTO works(id,title,original_title,source_json,status) VALUES(?1,?2,?2,?3,'none')",params![target,title,baseline.to_string()]).map_err(|e|e.to_string())?;
     tx.execute("INSERT OR IGNORE INTO work_releases(work_id,release_id) SELECT ?2,release_id FROM work_releases WHERE work_id=?1",params![source,target]).map_err(|e|e.to_string())?;
     crate::split_private::apply(&tx,source,&target,private)?;
     for member in members{transfer(&tx,member,source,&target)?;}

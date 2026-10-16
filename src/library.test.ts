@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {catalogEntries,emptyFilters,facetOptions,matches,titleFor,tagNames} from './library';
 import type {Work,Root,Resource,Edition} from './api';
-const work=(id:string,extra:Partial<Work>={}):Work=>({id,title:id,original_title:id,vndb_id:null,description:'',cover:'',developer:'',released:'',tags:[],aliases:[],status:'backlog',favorite:false,notes:'',revision:1,resources:0,...extra});
+const work=(id:string,extra:Partial<Work>={}):Work=>({id,title:id,original_title:id,vndb_id:null,description:'',cover:'',developer:'',released:'',tags:[],aliases:[],status:'none',favorite:false,notes:'',revision:1,resources:0,...extra});
 const roots:Root[]=[{id:'online',path:'C:/games',label:'Online',role:'source',online:true,missing:0,unverified:0},{id:'offline',path:'D:/games',label:'Offline',role:'source',online:false,missing:0,unverified:0}];
 const resource=(id:string,works:string[],extra:Partial<Resource>={}):Resource=>({id,root_id:'online',root_path:'C:/games',missing:0,unverified:0,revision:1,title:id,path:id,kind:'archive',work_id:works[0],release:'',files:1,bytes:1,bindings:works.map(work_id=>({work_id,release_id:null,role:'main'})),...extra});
 const edition=(works:string[],languages:string[]):Edition=>({id:'edition',label:'Edition',languages,edition_type:'original',released_date:'',vndb_id:null,work_ids:works,revision:1});
@@ -42,10 +42,10 @@ describe('collection exploration',()=>{
 it('unions selected tags while intersecting status, favourites and other facets',()=>{
  const entries=catalogEntries([work('drama',{tags:['Drama'],favorite:true,developer:'Key'}),work('comedy',{tags:['Comedy'],favorite:true,developer:'Key'}),work('other',{tags:['Action'],favorite:true,developer:'Key'}),work('not-favourite',{tags:['Drama'],developer:'Key'}),work('finished',{tags:['Comedy'],favorite:true,status:'completed',developer:'Key'})],[],[],[]);
  const filters={...emptyFilters,tags:['value:drama','value:comedy'],favorites:true,studio:'value:key'};
- expect(entries.filter(e=>matches(e,filters,'','backlog')).map(e=>e.work.id)).toEqual(['drama','comedy']);
- expect(entries.filter(e=>matches(e,{...filters,tags:['value:comedy']},'','backlog')).map(e=>e.work.id)).toEqual(['comedy']);
+ expect(entries.filter(e=>matches(e,filters,'','none')).map(e=>e.work.id)).toEqual(['drama','comedy']);
+ expect(entries.filter(e=>matches(e,{...filters,tags:['value:comedy']},'','none')).map(e=>e.work.id)).toEqual(['comedy']);
  expect(entries.filter(e=>matches(e,{...emptyFilters,tags:[]},'','all'))).toHaveLength(5);
- expect(entries.filter(e=>matches(e,filters,'comedy','backlog')).map(e=>e.work.id)).toEqual(['comedy']);
+ expect(entries.filter(e=>matches(e,filters,'comedy','none')).map(e=>e.work.id)).toEqual(['comedy']);
 });
 
 it('inverts tag selections with exclusions taking priority, including exclude-only focus',()=>{

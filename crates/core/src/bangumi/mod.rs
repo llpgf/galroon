@@ -83,6 +83,7 @@ async fn apply_choice(a:&App,account:&Account,client:&remote::Client,choice:&Cho
     if actual!=row.remote{return Err(Error("Bangumi status changed after preview. Preview again.".into()));}
     if choice.action=="local"{
         let status=row.local.ok_or_else(||Error("Link a local work before uploading".into()))?;
+        if status==0{return Err(Error("Bangumi cannot clear a collection status".into()));}
         let subject=if actual.is_none(){Some(client.subject(row.subject_id).await?)}else{None};
         store::current(&a.db.lock().unwrap(),&account.mode,choice.subject_id,&choice.fingerprint)?;
         client.set_status(row.subject_id,status,actual.is_some()).await?;
@@ -105,7 +106,7 @@ async fn apply_choice(a:&App,account:&Account,client:&remote::Client,choice:&Cho
             // Matching establishes identity only; differing statuses remain an explicit initial conflict.
         },
         "remote"=>{store::pull(&tx,&row,row.remote.ok_or_else(||Error("Bangumi has no collection status for this work".into()))?)?;},
-        "same"=>{if row.local!=row.remote||row.local.is_none(){return Err(Error("Statuses are no longer equal".into()));}store::baseline(&tx,row.subject_id,row.local.unwrap())?;},
+        "same"=>{if row.local!=Some(row.remote.unwrap_or(0)){return Err(Error("Statuses are no longer equal".into()));}store::baseline(&tx,row.subject_id,row.local.unwrap())?;},
         _=>return Err(Error("Invalid Bangumi sync action".into())),
     }
     tx.commit()?;Ok(())
@@ -182,6 +183,7 @@ async fn sync_client(a:&App,client:&remote::Client)->Result<()> {
     let rows=store::rows(&a.db.lock().unwrap(),&account.mode)?;
     apply_choices(a,&mut account,&client,&automatic_choices(rows)).await?;Ok(())
 }
+fn dirty(c:&rusqlite::Connection)->rusqlite::Result<bool>{c.query_row("SELECT EXISTS(SELECT 1 FROM bangumi_links b JOIN works w ON w.id=b.work_id WHERE b.hidden=0 AND b.base_status IS NOT NULL AND EXISTS(SELECT 1 FROM bangumi_remote r WHERE r.subject_id=b.subject_id AND r.status=b.base_status) AND w.merged_into IS NULL AND w.status!='none' AND w.status!=CASE b.base_status WHEN 0 THEN 'none' WHEN 1 THEN 'backlog' WHEN 2 THEN 'completed' WHEN 3 THEN 'playing' WHEN 4 THEN 'on_hold' WHEN 5 THEN 'dropped' END)",[],|r|r.get::<_,bool>(0))}
 pub fn start(a:App)->Worker{
     let task=tokio::spawn(async move{
         let mut next=0;
@@ -189,7 +191,7 @@ pub fn start(a:App)->Worker{
             if let Ok(_gate)=a.bangumi_gate.try_lock(){
                 let account=store::account(&a.db.lock().unwrap()).ok().flatten();
                 if let Some(account)=account.filter(|a|a.automatic&&a.initialized){
-                    let dirty={let c=a.db.lock().unwrap();c.query_row("SELECT EXISTS(SELECT 1 FROM bangumi_links b JOIN works w ON w.id=b.work_id WHERE b.hidden=0 AND b.base_status IS NOT NULL AND EXISTS(SELECT 1 FROM bangumi_remote r WHERE r.subject_id=b.subject_id AND r.status=b.base_status) AND w.merged_into IS NULL AND w.status!=CASE b.base_status WHEN 1 THEN 'backlog' WHEN 2 THEN 'completed' WHEN 3 THEN 'playing' WHEN 4 THEN 'on_hold' WHEN 5 THEN 'dropped' END)",[],|r|r.get::<_,bool>(0)).unwrap_or(false)};
+                    let dirty=dirty(&a.db.lock().unwrap()).unwrap_or(false);
                     if crate::db::now()>=next||(dirty&&account.error.is_empty()) {
                         if let Err(error)=sync(&a).await{if let Ok(mut current)=connected(&a){current.error=error.0;let _=store::save_account(&a.db.lock().unwrap(),&current);}}
                         next=crate::db::now()+300;

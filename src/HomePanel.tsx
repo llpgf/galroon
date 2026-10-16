@@ -78,7 +78,7 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
 
    <section className="home-tile home-status" aria-labelledby="home-status-title">
     <header>
-     <div><h2 id="home-status-title">{t('homeMyPlay')}</h2><span>{t('homeTotal',{count:total})}</span></div>
+     <div><h2 id="home-status-title">{t('homeMyPlay')}</h2><span>{t('homeTotal',{count:total})}</span><button className="text-button" onClick={()=>onCollection('none')}>{t('homeNoStatus',{count:counts.none||0})}</button></div>
      <div className="home-status-tools">
       <div className="tabs" role="radiogroup" aria-label={t('homeViewMode')}>{(['tabs','board'] as const).map(value=><button key={value} role="radio" aria-checked={view===value} aria-pressed={view===value} onClick={()=>changeView(value)}>{t(value==='tabs'?'homeViewTabs':'homeViewBoard')}</button>)}</div>
       <button className="text-button" onClick={()=>onCollection()}>{t('homeViewInCollection')}<More size={15}/></button>
