@@ -18,7 +18,7 @@ impl From<Error> for ApiError {fn from(e:Error)->Self{Self(e.0)}}
 type Result<T>=std::result::Result<T,Error>;
 fn writable(a:&App,h:&HeaderMap)->std::result::Result<(),ApiError>{if crate::access::authenticate(a,h)?.role=="web"{return Err(ApiError("Desktop access required".into()));}Ok(())}
 fn connected(a:&App)->Result<Account>{store::account(&a.db.lock().unwrap())?.ok_or_else(||Error("Connect a Bangumi account first".into()))}
-fn client(account:&Account)->Result<remote::Client>{remote::Client::new(credentials::read(&account.credential)?)}
+fn client(a:&App,account:&Account)->Result<remote::Client>{remote::Client::new(credentials::read(&a.device_dir,&account.credential)?)}
 fn state(a:&App)->Result<Value> {
     let c=a.db.lock().unwrap();let account=store::account(&c)?;
     let rows=store::rows(&c,account.as_ref().map_or("full",|a|a.mode.as_str()))?;
@@ -32,7 +32,7 @@ pub async fn connect(State(a):State<App>,h:HeaderMap,Json(input):Json<Connect>)-
     let user=remote::Client::new(token.into())?.me().await?;
     let old=store::account(&a.db.lock().unwrap())?;
     if old.as_ref().is_some_and(|old|old.user.id!=user.id){return Err(ApiError("Disconnect the current Bangumi account before switching accounts".into()));}
-    let credential=crate::db::id();credentials::write(&credential,token)?;
+    let credential=crate::db::id();credentials::write(&a.device_dir,&credential,token)?;
     let saved=(||->Result<()>{
         let mut c=a.db.lock().unwrap();let tx=c.transaction()?;
         let account=if let Some(old)=&old{Account{user,credential:credential.clone(),error:String::new(),..old.clone()}}else{
@@ -41,13 +41,13 @@ pub async fn connect(State(a):State<App>,h:HeaderMap,Json(input):Json<Connect>)-
             Account{user,credential:credential.clone(),mode:"full".into(),automatic:false,initialized:false,last_sync:None,preview:String::new(),error:String::new()}
         };store::save_account(&tx,&account)?;tx.commit()?;Ok(())
     })();
-    if let Err(error)=saved{let _=credentials::delete(&credential);return Err(error.into());}
-    if let Some(old)=old{credentials::delete(&old.credential)?;}
+    if let Err(error)=saved{let _=credentials::delete(&a.device_dir,&credential);return Err(error.into());}
+    if let Some(old)=old{credentials::delete(&a.device_dir,&old.credential)?;}
     Ok(Json(state(&a)?))
 }
 pub async fn disconnect(State(a):State<App>,h:HeaderMap)->crate::Result<Value>{
     writable(&a,&h)?;let _gate=a.bangumi_gate.try_lock().map_err(|_|ApiError("Bangumi sync is busy. Retry in a moment.".into()))?;
-    if let Some(account)=store::account(&a.db.lock().unwrap())?{credentials::delete(&account.credential)?;}
+    if let Some(account)=store::account(&a.db.lock().unwrap())?{credentials::delete(&a.device_dir,&account.credential)?;}
     let mut c=a.db.lock().unwrap();let tx=c.transaction()?;
     tx.execute("DELETE FROM settings WHERE key='bangumi.account'",[])?;tx.execute("DELETE FROM bangumi_remote",[])?;tx.execute("DELETE FROM bangumi_ignored",[])?;tx.execute("UPDATE bangumi_links SET base_status=NULL",[])?;tx.commit()?;drop(c);
     Ok(Json(state(&a)?))
@@ -66,7 +66,7 @@ async fn fetch(a:&App,account:&mut Account,client:&remote::Client)->Result<()> {
 }
 pub async fn preview(State(a):State<App>,h:HeaderMap)->crate::Result<Value>{
     writable(&a,&h)?;let _gate=a.bangumi_gate.try_lock().map_err(|_|ApiError("Bangumi sync is busy. Retry in a moment.".into()))?;
-    let mut account=connected(&a)?;let client=client(&account)?;fetch(&a,&mut account,&client).await?;Ok(Json(state(&a)?))
+    let mut account=connected(&a)?;let client=client(&a,&account)?;fetch(&a,&mut account,&client).await?;Ok(Json(state(&a)?))
 }
 #[derive(Clone,Deserialize)]#[serde(deny_unknown_fields)]pub struct Choice{subject_id:i64,fingerprint:String,action:String,work_id:Option<String>}
 #[derive(Deserialize)]#[serde(deny_unknown_fields)]pub struct Apply{preview:String,choices:Vec<Choice>}
@@ -128,7 +128,7 @@ pub async fn apply(State(a):State<App>,h:HeaderMap,Json(input):Json<Apply>)->cra
     writable(&a,&h)?;let _gate=a.bangumi_gate.try_lock().map_err(|_|ApiError("Bangumi sync is busy. Retry in a moment.".into()))?;
     let mut account=connected(&a)?;
     if input.preview.is_empty()||input.preview!=account.preview{return Err(ApiError("Bangumi preview expired. Preview again.".into()));}
-    let client=client(&account)?;let results=apply_choices(&a,&mut account,&client,&input.choices).await?;
+    let client=client(&a,&account)?;let results=apply_choices(&a,&mut account,&client,&input.choices).await?;
     let mut state=state(&a)?;state["results"]=json!(results);Ok(Json(state))
 }
 #[derive(Deserialize)]#[serde(deny_unknown_fields)]pub struct Link{work_id:String,revision:i64,subject:String}
@@ -142,7 +142,7 @@ fn subject_id(value:&str)->Result<i64>{
 pub async fn link(State(a):State<App>,h:HeaderMap,Json(input):Json<Link>)->crate::Result<Value>{
     writable(&a,&h)?;let _gate=a.bangumi_gate.try_lock().map_err(|_|ApiError("Bangumi sync is busy. Retry in a moment.".into()))?;
     let account=connected(&a)?;
-    let subject=if input.subject.trim().is_empty(){None}else{Some(client(&account)?.subject(subject_id(&input.subject)?).await?)};
+    let subject=if input.subject.trim().is_empty(){None}else{Some(client(&a,&account)?.subject(subject_id(&input.subject)?).await?)};
     let mut c=a.db.lock().unwrap();let tx=c.transaction()?;
     let revision:i64=tx.query_row("SELECT revision FROM works WHERE id=?1 AND merged_into IS NULL",[&input.work_id],|r|r.get(0))?;
     if revision!=input.revision{return Err(ApiError("This work changed. Reload before editing.".into()));}
@@ -175,7 +175,7 @@ fn automatic_choices(rows:Vec<Row>)->Vec<Choice>{rows.into_iter().filter_map(|ro
     Some(Choice{subject_id:row.subject_id,fingerprint:row.fingerprint,action:action.into(),work_id:None})
 }).collect()}
 async fn sync(a:&App)->Result<()> {
-    let account=connected(a)?;let client=client(&account)?;sync_client(a,&client).await
+    let account=connected(a)?;let client=client(a,&account)?;sync_client(a,&client).await
 }
 async fn sync_client(a:&App,client:&remote::Client)->Result<()> {
     let mut account=connected(a)?;fetch(a,&mut account,client).await?;

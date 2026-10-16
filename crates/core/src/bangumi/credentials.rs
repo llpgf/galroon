@@ -1,16 +1,18 @@
+use std::path::Path;
 use super::{Error,Result};
 // Credential IDs are random per connection and never included in catalog backups.
 #[cfg(any(windows,target_os="macos"))]
 fn entry(id:&str)->Result<keyring::Entry>{keyring::Entry::new("Galroon.Bangumi",id).map_err(|_|Error("System credential storage is unavailable".into()))}
 #[cfg(any(windows,target_os="macos"))]
-pub fn write(id:&str,token:&str)->Result<()>{entry(id)?.set_password(token).map_err(|_|Error("Cannot save Bangumi token in system credential storage".into()))}
+pub fn write(_:&Path,id:&str,token:&str)->Result<()>{entry(id)?.set_password(token).map_err(|_|Error("Cannot save Bangumi token in system credential storage".into()))}
 #[cfg(any(windows,target_os="macos"))]
-pub fn read(id:&str)->Result<String>{entry(id)?.get_password().map_err(|_|Error("Bangumi token is unavailable. Reconnect your account.".into()))}
+pub fn read(_:&Path,id:&str)->Result<String>{entry(id)?.get_password().map_err(|_|Error("Bangumi token is unavailable. Reconnect your account.".into()))}
 #[cfg(any(windows,target_os="macos"))]
-pub fn delete(id:&str)->Result<()>{match entry(id)?.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err(Error("Cannot remove Bangumi token from system credential storage".into()))}}
+pub fn delete(_:&Path,id:&str)->Result<()>{match entry(id)?.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err(Error("Cannot remove Bangumi token from system credential storage".into()))}}
+// Without a system store (Linux/NAS Core), tokens live in owner-only files under device_dir.
 #[cfg(not(any(windows,target_os="macos")))]
-pub fn write(_: &str,_:&str)->Result<()>{Err(Error("Bangumi credential storage currently requires Windows or macOS".into()))}
+pub fn write(dir:&Path,id:&str,token:&str)->Result<()>{crate::secret_files::write(dir,"bangumi",id,token).map_err(|_|Error("Cannot save Bangumi token in Core credential storage".into()))}
 #[cfg(not(any(windows,target_os="macos")))]
-pub fn read(_: &str)->Result<String>{Err(Error("Bangumi credential storage currently requires Windows or macOS".into()))}
+pub fn read(dir:&Path,id:&str)->Result<String>{crate::secret_files::read(dir,"bangumi",id).map_err(|_|Error("Bangumi token is unavailable. Reconnect your account.".into()))}
 #[cfg(not(any(windows,target_os="macos")))]
-pub fn delete(_: &str)->Result<()>{Ok(())}
+pub fn delete(dir:&Path,id:&str)->Result<()>{crate::secret_files::delete(dir,"bangumi",id).map_err(|_|Error("Cannot remove Bangumi token from Core credential storage".into()))}

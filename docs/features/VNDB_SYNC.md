@@ -1,6 +1,6 @@
 # VNDB 雙向遊玩狀態與評分同步
 
-「設定 → 帳號 → VNDB 雙向同步」連接 [VNDB 個人權杖](https://vndb.org/u/tokens)，必須同時授予 `listread` 和 `listwrite`。權杖保存在執行 Core 的 macOS Keychain 或 Windows Credential Manager；Linux Core 暫不支援憑證儲存。
+「設定 → 帳號 → VNDB 雙向同步」連接 [VNDB 個人權杖](https://vndb.org/u/tokens)，必須同時授予 `listread` 和 `listwrite`。權杖保存在執行 Core 的 macOS Keychain 或 Windows Credential Manager；Linux Core（NAS）存成裝置資料夾下 `credentials/` 的擁有者專用檔案（資料夾 0700、檔案 0600），不進入任何備份。
 
 ## 使用方式
 
