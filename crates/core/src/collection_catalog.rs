@@ -42,14 +42,14 @@ fn digest<T: Serialize>(value: &T) -> Result<String, ApiError> {
 }
 fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Result<Vec<Entry>, ApiError> {
     // O(collection) compact metadata only: descriptions, notes and full resource/release payloads stay out.
-    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
+    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid,personal_rating FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
     let mut entries=statement.query_map([],|r| {
         let title:String=r.get(1)?;let original:String=r.get(2)?;let studio:String=r.get(3)?;let released:String=r.get(4)?;
         let tags=filter::tag_names(&serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or_default());
         let aliases=serde_json::from_str::<Vec<String>>(&r.get::<_,String>(8)?).unwrap_or_default();
         let search=filter::fold(&[vec![title.clone(),original.clone(),studio.clone()],aliases,tags.clone()].concat().join(" "));
         let year=if released.as_bytes().get(..4).is_some_and(|s|s[0]>=b'1'&&s[0]<=b'9'&&s.iter().all(u8::is_ascii_digit)) { released[..4].to_owned() } else { String::new() };
-        Ok(Entry{id:r.get(0)?,title,original,studio:studio.trim().to_owned(),year,tags,status:r.get(6)?,favorite:r.get::<_,i64>(7)?==1,search,added:r.get(9)?,..Default::default()})
+        Ok(Entry{id:r.get(0)?,title,original,studio:studio.trim().to_owned(),year,tags,status:r.get(6)?,favorite:r.get::<_,i64>(7)?==1,search,added:r.get(9)?,rating:r.get(10)?,..Default::default()})
     })?.map(|row|{check(cancelled)?;row.map_err(ApiError::from)}).collect::<Result<Vec<_>,ApiError>>()?;
     let index=entries.iter().enumerate().map(|(i,e)|(e.id.clone(),i)).collect::<BTreeMap<_,_>>();
     let mut statement=c.prepare("SELECT w.work_id,e.languages FROM work_releases w JOIN releases e ON e.id=w.release_id")?;
@@ -122,11 +122,17 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     let entries=read_entries(c,roots,cancelled)?;
     let total=entries.len();
     let mut facets:BTreeMap<&str,BTreeMap<String,String>>=["studio","year","language","tag"].into_iter().map(|k|(k,BTreeMap::new())).collect();
-    let mut tag_counts=BTreeMap::<String,usize>::new();let mut studio_counts=BTreeMap::<String,usize>::new();let mut statuses=BTreeMap::<String,usize>::new();
+    let mut tag_counts=BTreeMap::<String,usize>::new();let mut studio_counts=BTreeMap::<String,usize>::new();let mut year_counts=BTreeMap::<String,usize>::new();let mut language_counts=BTreeMap::<String,usize>::new();let mut availability_counts=BTreeMap::<String,usize>::new();let mut rating_counts=BTreeMap::<String,usize>::new();let mut favorites=0usize;let mut statuses=BTreeMap::<String,usize>::new();
     for e in &entries {
         check(cancelled)?;
         *statuses.entry(e.status.clone()).or_default()+=1;
         if !e.studio.is_empty() { *studio_counts.entry(format!("value:{}",filter::normalized(&e.studio))).or_default()+=1; }
+        // Composition counts for the statistics page cover the whole collection, like tag_counts.
+        if !e.year.is_empty() { *year_counts.entry(format!("value:{}",e.year)).or_default()+=1; }
+        for language in &e.languages { *language_counts.entry(format!("value:{}",filter::normalized(language))).or_default()+=1; }
+        for state in &e.states { *availability_counts.entry(state.clone()).or_default()+=1; }
+        if let Some(rating)=e.rating.filter(|r|*r>0) { *rating_counts.entry(((rating+5)/10).clamp(1,10).to_string()).or_default()+=1; }
+        if e.favorite { favorites+=1; }
         for (key,values) in [("studio",if e.studio.is_empty(){vec![]}else{vec![e.studio.as_str()]}),("year",if e.year.is_empty(){vec![]}else{vec![e.year.as_str()]}),("language",e.languages.iter().map(String::as_str).collect()),("tag",e.tags.iter().map(String::as_str).collect())] {
             for value in values {facets.get_mut(key).unwrap().entry(format!("value:{}",filter::normalized(value))).or_insert_with(||value.to_owned());}
         }
@@ -139,7 +145,7 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     statuses.insert("all".into(),total);
     let custom_tags={let mut s=c.prepare("SELECT id,name FROM custom_tags WHERE deleted=0 ORDER BY name_key")?;let rows=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;rows};
     let ids=visible.iter().map(|e|e.id.clone()).collect::<Vec<_>>();
-    let metadata=json!({"total":total,"filtered":filtered,"revision":revision,"library_id":library,"view_token":token,"options":options,"tag_counts":tag_counts,"studio_counts":studio_counts,"status_counts":statuses,"custom_tags":custom_tags});
+    let metadata=json!({"total":total,"filtered":filtered,"revision":revision,"library_id":library,"view_token":token,"options":options,"tag_counts":tag_counts,"studio_counts":studio_counts,"year_counts":year_counts,"language_counts":language_counts,"availability_counts":availability_counts,"rating_counts":rating_counts,"favorite_count":favorites,"status_counts":statuses,"custom_tags":custom_tags});
     let bytes=ids.iter().map(|id|id.capacity()+std::mem::size_of::<String>()).sum::<usize>()+metadata.to_string().len()*2;
     let view=Arc::new(View{ids,metadata,bytes,created:std::time::Instant::now()});
     let result=render(c,&view,offset,continuation(filtered)?,cancelled)?;if let Some(key)=cache_key {retain(key,view);}trace.complete=true;Ok(result)
@@ -218,8 +224,9 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
         for i in 0..125 {c.execute("INSERT INTO works(id,title,original_title,tags,status,developer,released) VALUES(?1,?2,'原題',?3,?4,'Key','2004-04-28')",params![format!("w{i:03}"),format!("Title {i}"),if i%2==0 {"[\"Drama\",\"Ｄｒａｍａ\"]"}else{"[\"Comedy\"]"},if i%2==0 {"backlog"}else{"completed"}]).unwrap();}
         c.execute("UPDATE works SET aliases='[\"OnlyFirstWork\"]' WHERE id='w000'",[]).unwrap();
+        c.execute("UPDATE works SET personal_rating=85,favorite=1 WHERE id='w001'",[]).unwrap();
         let roots=Roots::new();let q=Query::default();let first=read(&c,&roots,&q,None);
-        assert_eq!(first["total"],125);assert_eq!(first["filtered"],125);assert_eq!(first["items"].as_array().unwrap().len(),60);assert_eq!(first["tag_counts"]["value:drama"],63);assert_eq!(first["status_counts"]["completed"],62);assert_eq!(first["studio_counts"]["value:key"],125);
+        assert_eq!(first["total"],125);assert_eq!(first["filtered"],125);assert_eq!(first["items"].as_array().unwrap().len(),60);assert_eq!(first["tag_counts"]["value:drama"],63);assert_eq!(first["status_counts"]["completed"],62);assert_eq!(first["studio_counts"]["value:key"],125);assert_eq!(first["year_counts"]["value:2004"],125);assert_eq!(first["rating_counts"]["9"],1);assert_eq!(first["favorite_count"],1);
         let second=read(&c,&roots,&q,first["next"].as_str());let third=read(&c,&roots,&q,second["next"].as_str());assert_eq!(third["items"].as_array().unwrap().len(),5);assert!(third["next"].is_null());
         let ids=[&first,&second,&third].iter().flat_map(|p|p["items"].as_array().unwrap()).map(|w|w["id"].as_str().unwrap()).collect::<BTreeSet<_>>();assert_eq!(ids.len(),125);
         let mut filtered=q.clone();filtered.query="OnlyFirstWork".into();let found=read(&c,&roots,&filtered,None);assert_eq!(found["items"][0]["id"],"w000");assert_eq!(found["total"],125);assert_eq!(found["filtered"],1);assert_eq!(found["tag_counts"],first["tag_counts"]);

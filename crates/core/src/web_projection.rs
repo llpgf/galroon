@@ -8,6 +8,7 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/vndb_sync",WebAccess::Deny),
  ("/api/health",WebAccess::Unchanged),
  ("/api/context",WebAccess::Unchanged),
+ ("/api/release-calendar",WebAccess::Unchanged),
  ("/api/updates",WebAccess::Unchanged),
  ("/api/updates/check",WebAccess::Deny),
  ("/api/updates/settings",WebAccess::Deny),

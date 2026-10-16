@@ -15,7 +15,7 @@ import {emptyFilters,titleFor,coverTone,tagNames,type Filters} from './library';
 const STATUS_SEGMENTS=['all','playing','backlog','completed','on_hold'] as const;
 const PAGE_SIZE=60;
 /** A stable tint per work, so artless covers do not reshuffle colours between pages. */
-export function LibraryBrowser({generation,query,setQuery,status,setStatus,safe,canWrite,onAdd,onSource,onSelect,onStudio,titleMode,setTitleMode}:{generation:number;query:string;setQuery:(s:string)=>void;status:string;setStatus:(s:string)=>void;safe:boolean;canWrite:boolean;onAdd:()=>void;onSource:()=>void;onSelect:(w:Work)=>void;onStudio:(w:Work,studio:string)=>void;titleMode:'display'|'original';setTitleMode:(s:'display'|'original')=>void}){
+export function LibraryBrowser({seed=null,generation,query,setQuery,status,setStatus,safe,canWrite,onAdd,onSource,onSelect,onStudio,titleMode,setTitleMode}:{seed?:{filters:Filters;at:number}|null;generation:number;query:string;setQuery:(s:string)=>void;status:string;setStatus:(s:string)=>void;safe:boolean;canWrite:boolean;onAdd:()=>void;onSource:()=>void;onSelect:(w:Work)=>void;onStudio:(w:Work,studio:string)=>void;titleMode:'display'|'original';setTitleMode:(s:'display'|'original')=>void}){
  const [selecting,setSelecting]=useState(false),[selected,setSelected]=useState<string[]>([]);
  const [listScope,setListScope]=useState<ListMember[]|null>(null);
  const [viewMode,setViewMode]=useState<'compact'|'posters'|'details'>(()=>{try{const saved=localStorage.getItem('galroon.collectionView');return saved==='compact'||saved==='details'?saved:'posters';}catch{return 'posters';}});
@@ -34,6 +34,8 @@ export function LibraryBrowser({generation,query,setQuery,status,setStatus,safe,
  const total=metadata?.total,filtered=result?.filtered||0;
  const pages=Math.max(1,Math.ceil(filtered/PAGE_SIZE)),current=catalog.pageIndex,slice=result?.items||[];
  const clear=()=>{setFilters(emptyFilters);setQuery('');setStatus('all');};
+ // A seed from elsewhere (the statistics page) replaces the facet filters once per request.
+ useEffect(()=>{if(seed)setFilters(seed.filters);},[seed]);
  const activeFilters=(status!=='all'?1:0)+(['studio','year','language','availability'] as const).filter(key=>filters[key]).length;
  const filtering=Boolean(query||status!=='all'||Object.values(filters).some(value=>Array.isArray(value)?value.length:Boolean(value)));
  const moreMenu=useRef<HTMLDetailsElement>(null);const closeMore=()=>{if(moreMenu.current)moreMenu.current.open=false;};

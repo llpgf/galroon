@@ -1,8 +1,9 @@
-import {useEffect,useMemo,useState} from 'react';
+import {useState,type DragEvent,type KeyboardEvent} from 'react';
 import {useTranslation} from 'react-i18next';
-import {ChevronRight as More,Shuffle,Heart} from 'lucide-react';
+import {ChevronRight as More,GripVertical,Heart} from 'lucide-react';
 import type {Work} from './api';
 import {CachedImage} from './CachedImage';
+import {ReleaseCalendar} from './ReleaseCalendar';
 import {useCollectionPage,type CollectionQuery} from './useCollectionPage';
 import {emptyFilters,titleFor,coverTone,type Filters} from './library';
 
@@ -10,8 +11,8 @@ type TitleMode='display'|'original';
 type StatusView='tabs'|'board';
 const STATUSES=['playing','completed','backlog','on_hold','dropped'] as const;
 type Status=typeof STATUSES[number];
-const HERO_POOL=6,HAND=3,TAB_COVERS=8,BOARD_ROWS=3;
-const VIEW_KEY='galroon.homeStatusView';
+const HERO_POOL=6,TAB_COVERS=8,BOARD_ROWS=3,FAVORITES=8;
+const VIEW_KEY='galroon.homeStatusView',ORDER_KEY='galroon.homeStatusOrder';
 
 /** Artwork or the tinted title placeholder, shared by every cover on the home page. */
 function Cover({work,safe,className=''}:{work:Work;safe:boolean;className?:string}){
@@ -27,13 +28,14 @@ function useWorks(filters:Filters,status:string,sort:string,titleMode:TitleMode,
 
 const byline=(work:Work)=>[work.developer,work.released?.slice(0,4)].filter(Boolean).join(' · ');
 const randomOther=(current:number,size:number)=>{if(size<2)return current;let next=current;while(next===current)next=Math.floor(Math.random()*size);return next;};
-function randomHand(size:number){const picks:number[]=[];while(picks.length<Math.min(HAND,size)){const n=Math.floor(Math.random()*size);if(!picks.includes(n))picks.push(n);}return picks;}
 function savedView():StatusView{try{return localStorage.getItem(VIEW_KEY)==='board'?'board':'tabs';}catch{return 'tabs';}}
+/** A saved order is used only when it is exactly the five statuses, so a stale or edited value can't drop one. */
+function savedOrder():Status[]{try{const saved=JSON.parse(localStorage.getItem(ORDER_KEY)||'null');if(Array.isArray(saved)&&saved.length===STATUSES.length&&STATUSES.every(s=>saved.includes(s)))return saved;}catch{/* fall back to the default order */}return [...STATUSES];}
 
 /**
- * Home: a bento of the organised collection. A random recent addition, a hand of backlog cards to pick
- * the next game from, play status as tabs or a board, recent additions, favourites and top brands.
- * Everything is read from the same paged collection API the collection page uses; nothing here changes the collection.
+ * Home: a bento of the organised collection. A random recent addition, the release calendar, play status
+ * as tabs or a board whose columns can be reordered, recent additions and favourites.
+ * Collection data comes from the same paged collection API the collection page uses; nothing here changes the collection.
  */
 export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void}){
  const {t}=useTranslation();
@@ -45,22 +47,13 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
  const [hero,setHero]=useState(()=>Math.floor(Math.random()*HERO_POOL));
  const featured=heroes.length?heroes[hero%heroes.length]:null;
 
- const [tag,setTag]=useState('');
- const pickFilters=useMemo<Filters>(()=>({...emptyFilters,availability:'available',tags:tag?[tag]:[]}),[tag]);
- const pool=useWorks(pickFilters,'backlog','added',titleMode,generation);
- const tagChoices=useMemo(()=>{const tagCounts=recent.data?.tag_counts||{};return (recent.data?.options.tag||[]).filter(option=>tagCounts[option.value]).sort((a,b)=>(tagCounts[b.value]||0)-(tagCounts[a.value]||0)).slice(0,5);},[recent.data]);
- const items=pool.data?.items||[];
- const [hand,setHand]=useState<number[]>([]),[front,setFront]=useState(0),[deal,setDeal]=useState(0);
- useEffect(()=>{setHand(randomHand(items.length));setFront(0);},[pool.data]);
- const cards=hand.filter(index=>index<items.length).map(index=>items[index]);
- const chosen=cards[front]||null;
- const shuffle=()=>{if(items.length<2)return;setHand(randomHand(items.length));setFront(0);setDeal(n=>n+1);};
-
  const [view,setView]=useState<StatusView>(savedView);
  const changeView=(next:StatusView)=>{setView(next);try{localStorage.setItem(VIEW_KEY,next);}catch{/* the choice just isn't remembered */}};
  const [status,setStatus]=useState<Status>('playing');
-
- const studios=useMemo(()=>{const studioCounts=recent.data?.studio_counts||{};return (recent.data?.options.studio||[]).map(option=>({label:option.label,count:studioCounts[option.value]||0})).filter(entry=>entry.count).sort((a,b)=>b.count-a.count).slice(0,4);},[recent.data]);
+ const [order,setOrder]=useState<Status[]>(savedOrder);
+ const [dragging,setDragging]=useState<Status|null>(null),[over,setOver]=useState<Status|null>(null);
+ const swap=(a:Status,b:Status)=>{setDragging(null);setOver(null);if(a===b)return;const next=order.map(s=>s===a?b:s===b?a:s);setOrder(next);try{localStorage.setItem(ORDER_KEY,JSON.stringify(next));}catch{/* the order just isn't remembered */}};
+ const drag={dragging,over,setDragging,setOver,swap,order};
 
  return <div className="home">
   <div className="home-top"><h1>{t('homeGreeting')}</h1></div>
@@ -81,20 +74,7 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
     </div>
    </section>}
 
-   <section className="home-tile home-picker" aria-labelledby="home-pick-title">
-    <div className="home-hand" aria-label={t('homePickHand')}>
-     {cards.map((work,index)=>{const position=(index-front+cards.length)%cards.length;return <button key={deal+':'+work.id} className={'home-card-'+position} style={{zIndex:cards.length-position,animationDelay:position*70+'ms'}} aria-label={position===0?t('openWorkNamed',{name:titleFor(work,titleMode)}):t('homePickSwap',{title:titleFor(work,titleMode)})} onClick={()=>position===0?onSelect(work):setFront(index)}><Cover work={work} safe={safe}/></button>;})}
-    </div>
-    <div className="home-pick-copy">
-     <h2 id="home-pick-title" className="home-eyebrow">{t('homePickTitle')} · {pool.data?t('homePickCount',{count:pool.data.filtered}):t('loading')}</h2>
-     {chosen?<><strong>{titleFor(chosen,titleMode)}</strong><span>{byline(chosen)}</span>{cards.length>1&&<small>{t('homePickBackHint')}</small>}</>:pool.data&&<p className="home-pick-none">{t('homePickNone')}</p>}
-     {tagChoices.length>0&&<div className="home-chips">
-      <button aria-pressed={!tag} onClick={()=>setTag('')}>{t('homePickAll')}</button>
-      {tagChoices.map(option=><button key={option.value} aria-pressed={tag===option.value} title={option.label} onClick={()=>setTag(tag===option.value?'':option.value)}><span>{option.label}</span></button>)}
-     </div>}
-    </div>
-    <button className="home-shuffle primary" aria-label={t('homePickDeal')} title={t('homePickDeal')} disabled={items.length<2} onClick={shuffle}><Shuffle size={22}/></button>
-   </section>
+   <ReleaseCalendar safe={safe} titleMode={titleMode} onSelect={onSelect}/>
 
    <section className="home-tile home-status" aria-labelledby="home-status-title">
     <header>
@@ -104,35 +84,33 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
       <button className="text-button" onClick={()=>onCollection()}>{t('homeViewInCollection')}<More size={15}/></button>
      </div>
     </header>
-    {total>0&&<div className="home-bar" aria-hidden="true">{STATUSES.filter(key=>counts[key]).map(key=><span key={key} className={'seg-'+key} style={{flex:counts[key],opacity:view==='tabs'&&key!==status?.45:1}}/>)}</div>}
-    {view==='tabs'?<StatusTabs status={status} setStatus={setStatus} counts={counts} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>
-     :<div className="home-board">{STATUSES.map(key=><StatusColumn key={key} status={key} count={counts[key]||0} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>)}</div>}
+    {total>0&&<div className="home-bar" aria-hidden="true">{order.filter(key=>counts[key]).map(key=><span key={key} className={'seg-'+key} style={{flex:counts[key],opacity:view==='tabs'&&key!==status?.45:1}}/>)}</div>}
+    {view==='tabs'?<StatusTabs order={order} status={status} setStatus={setStatus} counts={counts} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>
+     :<>
+      <p className="home-board-hint">{t('homeBoardHint')}</p>
+      <div className="home-board">{order.map((key,index)=><StatusColumn key={key} status={key} index={index} count={counts[key]||0} drag={drag} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>)}</div>
+     </>}
    </section>
   </div>
 
   <Shelf title={t('homeRecent')} works={recent.data?.items.slice(0,14)||[]} safe={safe} titleMode={titleMode} onSelect={onSelect} onAll={()=>onCollection()}/>
 
-  <div className="home-bento">
-   {!!favorites.data?.items.length&&<section className="home-tile home-favorites" aria-labelledby="home-fav-title">
-    <header><h2 id="home-fav-title">{t('favorite')}</h2><button className="text-button" onClick={()=>onCollection('favorite')}>{t('homeShowAll')}<More size={15}/></button></header>
-    <div>{favorites.data.items.slice(0,6).map(work=><button key={work.id} className="home-mini" onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span>{titleFor(work,titleMode)}</span></button>)}</div>
-   </section>}
-   {studios.length>0&&<section className="home-tile home-studios" aria-labelledby="home-studio-title">
-    <h2 id="home-studio-title">{t('homeTopStudios')}</h2>
-    <ul>{studios.map(entry=><li key={entry.label}><span>{entry.label}</span><span className="home-meter" aria-hidden="true"><span style={{width:entry.count/studios[0].count*100+'%'}}/></span><span>{entry.count}</span></li>)}</ul>
-   </section>}
-  </div>
+  {!!favorites.data?.items.length&&<section className="home-tile home-favorites" aria-labelledby="home-fav-title">
+   <header><h2 id="home-fav-title">{t('favorite')}</h2><button className="text-button" onClick={()=>onCollection('favorite')}>{t('homeShowAll')}<More size={15}/></button></header>
+   <div>{favorites.data.items.slice(0,FAVORITES).map(work=><button key={work.id} className="home-mini" onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span>{titleFor(work,titleMode)}</span></button>)}</div>
+  </section>}
  </div>;
 }
 
 type StatusProps={generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void};
+type Drag={dragging:Status|null;over:Status|null;setDragging:(s:Status|null)=>void;setOver:(s:Status|null)=>void;swap:(a:Status,b:Status)=>void;order:Status[]};
 
-function StatusTabs({status,setStatus,counts,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{status:Status;setStatus:(s:Status)=>void;counts:Record<string,number>}){
+function StatusTabs({order,status,setStatus,counts,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{order:Status[];status:Status;setStatus:(s:Status)=>void;counts:Record<string,number>}){
  const {t}=useTranslation();
  const page=useWorks(emptyFilters,status,'added',titleMode,generation);
  const works=page.data?.items.slice(0,TAB_COVERS)||[];
  return <>
-  <div className="home-status-tabs" role="tablist" aria-label={t('focusStatus')}>{STATUSES.map(key=><button key={key} role="tab" id={'home-tab-'+key} aria-selected={status===key} aria-controls="home-tab-panel" className={'home-status-tab tab-'+key} onClick={()=>setStatus(key)}><span><span className={'dot seg-'+key}/>{t(key)}</span><strong>{counts[key]||0}</strong></button>)}</div>
+  <div className="home-status-tabs" role="tablist" aria-label={t('focusStatus')}>{order.map(key=><button key={key} role="tab" id={'home-tab-'+key} aria-selected={status===key} aria-controls="home-tab-panel" className={'home-status-tab tab-'+key} onClick={()=>setStatus(key)}><span><span className={'dot seg-'+key}/>{t(key)}</span><strong>{counts[key]||0}</strong></button>)}</div>
   <div className="home-tab-panel" id="home-tab-panel" role="tabpanel" aria-labelledby={'home-tab-'+status}>
    {works.length?<>
     <div className="home-tab-covers">{works.map(work=><button key={work.id} className={'home-mini'+(status==='dropped'?' dimmed':'')} onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span>{titleFor(work,titleMode)}</span></button>)}</div>
@@ -142,14 +120,23 @@ function StatusTabs({status,setStatus,counts,generation,safe,titleMode,onSelect,
  </>;
 }
 
-function StatusColumn({status,count,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{status:Status;count:number}){
+/** A board column. The whole column is a drag source and drop target; its grip moves it with ← and →. */
+function StatusColumn({status,index,count,drag,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{status:Status;index:number;count:number;drag:Drag}){
  const {t}=useTranslation();
  const page=useWorks(emptyFilters,status,'added',titleMode,generation);
  const works=page.data?.items.slice(0,BOARD_ROWS)||[];
- return <section className={'home-column column-'+status} aria-label={t(status)}>
-  <button className="home-column-head" onClick={()=>onCollection(status)}><span><span className={'dot seg-'+status}/>{t(status)}</span><strong>{count}</strong></button>
+ const target=drag.over===status&&drag.dragging!==null&&drag.dragging!==status;
+ const start=(e:DragEvent)=>{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',status);drag.setDragging(status);};
+ const enter=(e:DragEvent)=>{if(!drag.dragging)return;e.preventDefault();e.dataTransfer.dropEffect='move';if(drag.over!==status)drag.setOver(status);};
+ const drop=(e:DragEvent)=>{e.preventDefault();if(drag.dragging)drag.swap(drag.dragging,status);};
+ const key=(e:KeyboardEvent)=>{const step=e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0;const neighbour=drag.order[index+step];if(!step||!neighbour)return;e.preventDefault();drag.swap(status,neighbour);};
+ return <section className={'home-column column-'+status+(drag.dragging===status?' dragging':'')+(target?' drop-target':'')} aria-label={t(status)} draggable onDragStart={start} onDragOver={enter} onDragLeave={()=>{if(drag.over===status)drag.setOver(null);}} onDrop={drop} onDragEnd={()=>{drag.setDragging(null);drag.setOver(null);}}>
+  <div className="home-column-top">
+   <button className="home-column-grip" aria-label={t('homeColumnMove',{status:t(status),position:index+1})} title={t('homeColumnMoveHint')} onKeyDown={key}><GripVertical size={16}/></button>
+   <button className="home-column-head" onClick={()=>onCollection(status)}><span><span className={'dot seg-'+status}/>{t(status)}</span><strong>{count}</strong></button>
+  </div>
   <span className={'home-column-rule seg-'+status} aria-hidden="true"/>
-  {works.map(work=><button key={work.id} className="home-row" onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span><strong>{titleFor(work,titleMode)}</strong><span>{work.developer}</span></span></button>)}
+  {works.map(work=><button key={work.id} className="home-row" draggable={false} onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span><strong>{titleFor(work,titleMode)}</strong><span>{work.developer}</span></span></button>)}
   {page.data&&!works.length&&<p className="home-status-empty">{t('homeStatusEmpty')}</p>}
   {count>works.length&&<button className="text-button home-column-more" onClick={()=>onCollection(status)}>{t('homeStatusMore',{count:count-works.length})}<More size={15}/></button>}
  </section>;
