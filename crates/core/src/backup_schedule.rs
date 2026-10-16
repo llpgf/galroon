@@ -53,13 +53,16 @@ impl Schedule{
    if role.is_some()||due||catchup||retry{state.pending.get_or_insert(Pending{since:now,retry:now,requested:role.is_some()});}
    let Some(p)=&state.pending else{return Ok(None)};if now<p.retry{return Ok(None);}state.stored.clone()
   };
-  let executing=a.db.lock().map_err(|e|e.to_string()).and_then(|c|c.query_row("SELECT EXISTS(SELECT 1 FROM plans WHERE state='executing')",[],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string()));
+  // Plan execution holds mutation_lock throughout, so holding it from this check to the end of the export keeps plans from starting mid-backup.
+  let mut mutation=a.mutation_lock.try_lock().ok();
+  let executing=if mutation.is_none(){Ok(true)}else{a.db.lock().map_err(|e|e.to_string()).and_then(|c|c.query_row("SELECT EXISTS(SELECT 1 FROM plans WHERE state='executing')",[],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string()))};
   {let mut state=self.state.lock().unwrap();let p=state.pending.as_mut().unwrap();if executing.as_ref().is_ok_and(|v|*v)&&now-p.since<6*3600{p.retry=now+600;return Ok(None);}state.pending=None;state.stored.last_started=Some(now);}
+  if mutation.is_none(){mutation=a.mutation_lock.lock().ok();}let _mutation=mutation;let executing=executing.map(|_|());
   let result:R<PathBuf>=(||{save(&self.path,&self.state.lock().unwrap().stored)?;executing?;preflight(a,Path::new(&settings.destination),&*self.space)?;let path=backup::export_with(&a.db,Path::new(&settings.destination),Some(&a.device_dir),backup::Options{mode:settings.mode,origin:Origin::Scheduled,artwork:settings.artwork})?;retain(a,Path::new(&settings.destination),settings.keep,Some(&path))?;Ok(path)})();
   let mut state=self.state.lock().unwrap();match &result{Ok(path)=>{state.stored.last_success=Some((self.clock)());state.stored.last_error=None;state.stored.last_path=Some(path.to_string_lossy().into());},Err(e)=>{state.stored.last_error=Some(e.clone());crate::diagnostics::record("error","backups.run",e,None);}}
   if let Err(e)=save(&self.path,&state.stored){state.stored.last_error=Some(e.clone());crate::diagnostics::record("error","backups.save",&e,None);return Err(e);}result.map(Some)
  }
- pub(crate) fn export(&self,a:&App,path:&Path,mode:Mode)->R<PathBuf>{let _gate=self.gate.try_lock().map_err(|_|"A backup is already running. Retry in a moment.")?;preflight(a,path,&*self.space)?;backup::export_with(&a.db,path,Some(&a.device_dir),backup::Options{mode,..Default::default()})}
+ pub(crate) fn export(&self,a:&App,path:&Path,mode:Mode)->R<PathBuf>{let _gate=self.gate.try_lock().map_err(|_|"A backup is already running. Retry in a moment.")?;let _mutation=a.mutation_lock.try_lock().map_err(|_|"Another change is in progress. Retry in a moment.")?;preflight(a,path,&*self.space)?;backup::export_with(&a.db,path,Some(&a.device_dir),backup::Options{mode,..Default::default()})}
 }
 fn destination(a:&App,path:&Path)->R<PathBuf>{
  plans::validate_chain(path)?;let path=path.canonicalize().map_err(|_|"Choose an existing backup destination folder")?;if !path.is_dir(){return Err("Choose an existing backup destination folder".into());}
@@ -134,6 +137,10 @@ pub async fn delete(State(a):State<App>,h:HeaderMap,ApiPath(id):ApiPath<String>)
  #[test]fn executing_plan_defers_every_ten_minutes_for_at_most_six_hours(){
   let f=Fixture::new();f.plan();f.time(60);assert!(f.tick().unwrap().is_none());assert_eq!(f.app.backup_schedule.state.lock().unwrap().pending.as_ref().unwrap().retry,10*DAY+660);assert_eq!(f.count(),0);
   for t in [120,659,660,6*3600]{f.time(t);assert!(f.tick().unwrap().is_none());}f.time(6*3600+600);assert!(f.tick().unwrap().is_some());assert_eq!(f.count(),1);
+ }
+ #[test]fn held_mutation_lock_defers_scheduled_and_manual_backups(){
+  let f=Fixture::new();f.time(60);{let _held=f.app.mutation_lock.lock().unwrap();assert!(f.tick().unwrap().is_none());assert_eq!(f.app.backup_schedule.state.lock().unwrap().pending.as_ref().unwrap().retry,10*DAY+660);assert!(f.app.backup_schedule.export(&f.app,&f.target,Mode::Portable).unwrap_err().ends_with("Retry in a moment."));assert_eq!(f.count(),0);}
+  f.time(660);assert!(f.tick().unwrap().is_some());assert_eq!(f.count(),1);
  }
  #[test]fn deferred_explicit_run_works_when_disabled_and_resumes_after_plan_finishes(){
   let f=Fixture::new();let mut settings=f.config();settings.enabled=false;f.app.backup_schedule.configure(&f.app,settings).unwrap();f.plan();assert!(f.app.backup_schedule.run(&f.app,Some("owner")).unwrap().is_none());f.app.db.lock().unwrap().execute("UPDATE plans SET state='completed'",[]).unwrap();f.time(599);assert!(f.tick().unwrap().is_none());f.time(600);assert!(f.tick().unwrap().is_some());assert_eq!(f.count(),1);
