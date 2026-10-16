@@ -69,6 +69,10 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     assert_eq!(row(2).kind,"match");assert_eq!(row(2).candidates[0].id,"zan");
     assert_eq!(row(4).kind,"import");
     assert_eq!(row(3).candidates.iter().map(|c|c.id.as_str()).collect::<Vec<_>>(),["exact","loose"]);
+    // Only a sole exact or folded candidate is pre-selected for review.
+    assert_eq!(row(1).suggested.as_deref(),Some("saku"));assert_eq!(row(2).suggested.as_deref(),Some("zan"));assert_eq!(row(3).suggested,None);assert_eq!(row(4).suggested,None);
+    c.execute("INSERT INTO bangumi_ignored VALUES(1)",[]).unwrap();let ignored=store::rows(&c,"full").unwrap().into_iter().find(|r|r.subject_id==1).unwrap();assert_eq!((ignored.kind.as_str(),ignored.suggested),("ignored",None));
+    assert!(automatic_choices(store::rows(&c,"full").unwrap()).iter().all(|choice|choice.action!="match"));
 }
 #[test]fn matches_tolerate_spacing_readings_and_same_day_subtitles_but_keep_sequels_apart(){
     let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
@@ -83,6 +87,7 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
         dated(3,"巨乳幽霊さんに癒やされる社畜さんの性活！","2022-09-30"),dated(4,"奥さまの回復術 純愛編","2022-05-28"),dated(5,"年上彼女２","2024-11-29")]).unwrap();
     let rows=store::rows(&c,"full").unwrap();let found=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap().candidates.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
     assert_eq!(found(1),["blue"]);assert_eq!(found(2),["ore"]);assert_eq!(found(3),["ghost"]);
+    assert!(rows.iter().all(|r|r.suggested.is_none()),"compact and same-day matches are never pre-selected");
     // A subtitle-only difference needs the same release day, and a trailing number is a sequel.
     assert!(found(4).is_empty());assert!(found(5).is_empty());
 }

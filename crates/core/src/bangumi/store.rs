@@ -25,7 +25,7 @@ pub fn remote_status(status:&str)->Result<i64> {match status{"backlog"=>Ok(1),"c
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
 pub struct Candidate {pub id:String,pub title:String}
 #[derive(Clone,Debug,Serialize,Deserialize)]
-pub struct Row {pub subject_id:i64,pub title:String,pub work_id:Option<String>,pub local:Option<i64>,pub remote:Option<i64>,pub base:Option<i64>,pub revision:Option<i64>,pub kind:String,pub candidates:Vec<Candidate>,pub fingerprint:String}
+pub struct Row {pub subject_id:i64,pub title:String,pub work_id:Option<String>,pub local:Option<i64>,pub remote:Option<i64>,pub base:Option<i64>,pub revision:Option<i64>,pub kind:String,pub candidates:Vec<Candidate>,#[serde(default)] pub suggested:Option<String>,pub fingerprint:String}
 impl Row {
     fn seal(&mut self)->Result<()> {self.fingerprint.clear();self.fingerprint=hex::encode(Sha256::digest(serde_json::to_vec(self)?));Ok(())}
 }
@@ -47,6 +47,7 @@ pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()> {
 // spell readings inline (「不可視の薬（インビジブル）と」) and drop subtitles. Candidates come in tiers:
 // exact, folded, compact (no spaces or readings), then a title prefix on the very same release date.
 // The user still confirms every match; a prefix never accepts a following digit, so sequels stay apart.
+// A sole exact or folded candidate is pre-selected in the review, never applied without the user.
 struct Local {id:String,title:String,released:String,exact:Vec<String>,folded:Vec<String>,compact:Vec<String>}
 fn compact(title:&str)->String {
     static READING:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
@@ -69,7 +70,7 @@ fn dated_prefix(local:&[String],remote:&[String])->bool {
         short.chars().count()>=4&&short!=long&&long.strip_prefix(short.as_str()).is_some_and(|tail|!tail.starts_with(|c:char|c.is_numeric()))
     }))
 }
-fn candidates(locals:&[Local],subject:&Subject)->Vec<Candidate> {
+fn candidates(locals:&[Local],subject:&Subject)->(Vec<Candidate>,Option<String>) {
     use crate::collection_query::{fold,normalized};
     let names=[subject.title(),subject.name.as_str()];
     let exact=names.map(normalized);let folded=names.map(fold);let compact=names.map(compact).into_iter().filter(|k|!k.is_empty()).collect::<Vec<_>>();
@@ -77,21 +78,22 @@ fn candidates(locals:&[Local],subject:&Subject)->Vec<Candidate> {
     let tier=|l:&Local|if l.exact.iter().any(|n|exact.contains(n)){Some(0)}else if l.folded.iter().any(|n|folded.contains(n)){Some(1)}
         else if l.compact.iter().any(|n|compact.contains(n)){Some(2)}else if !date.is_empty()&&l.released==date&&dated_prefix(&l.compact,&compact){Some(3)}else{None};
     let mut found:Vec<(u8,&Local)>=locals.iter().filter_map(|l|tier(l).map(|t|(t,l))).collect();found.sort_by_key(|(t,_)|*t);
-    found.into_iter().take(10).map(|(_,l)|Candidate{id:l.id.clone(),title:l.title.clone()}).collect()
+    let suggested=match found.as_slice(){[(tier,l)] if *tier<=1=>Some(l.id.clone()),_=>None};
+    (found.into_iter().take(10).map(|(_,l)|Candidate{id:l.id.clone(),title:l.title.clone()}).collect(),suggested)
 }
 pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>> {
     let mut out=Vec::new();
     let mut q=c.prepare("SELECT b.subject_id,w.id,w.title,w.status,w.revision,b.base_status,b.hidden,r.status FROM bangumi_links b JOIN works w ON w.id=b.work_id LEFT JOIN bangumi_remote r ON r.subject_id=b.subject_id WHERE w.merged_into IS NULL ORDER BY w.title")?;
     for row in q.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,bool>(6)?,r.get::<_,Option<i64>>(7)?)))? {
         let(subject_id,id,title,status,revision,base,hidden,remote)=row?;let local=remote_status(&status)?;
-        let mut row=Row{subject_id,title,work_id:Some(id),local:Some(local),remote,base,revision:Some(revision),kind:if hidden{"hidden"}else{classify(local,remote,base)}.into(),candidates:vec![],fingerprint:String::new()};row.seal()?;out.push(row);
+        let mut row=Row{subject_id,title,work_id:Some(id),local:Some(local),remote,base,revision:Some(revision),kind:if hidden{"hidden"}else{classify(local,remote,base)}.into(),candidates:vec![],suggested:None,fingerprint:String::new()};row.seal()?;out.push(row);
     }
     let locals=locals(c)?;
     let mut q=c.prepare("SELECT r.subject_id,r.status,r.subject,EXISTS(SELECT 1 FROM bangumi_ignored i WHERE i.subject_id=r.subject_id) FROM bangumi_remote r WHERE NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.subject_id=r.subject_id) ORDER BY r.subject_id")?;
     for item in q.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?)))? {
-        let(subject_id,status,raw,ignored)=item?;let subject:Subject=serde_json::from_str(&raw)?;let candidates=candidates(&locals,&subject);
+        let(subject_id,status,raw,ignored)=item?;let subject:Subject=serde_json::from_str(&raw)?;let(candidates,suggested)=candidates(&locals,&subject);
         let kind=if ignored{"ignored"}else if !candidates.is_empty(){"match"}else if mode=="existing"{"skipped"}else{"import"};
-        let mut row=Row{subject_id,title:subject.title().into(),work_id:None,local:None,remote:Some(status),base:None,revision:None,kind:kind.into(),candidates,fingerprint:String::new()};row.seal()?;out.push(row);
+        let mut row=Row{subject_id,title:subject.title().into(),work_id:None,local:None,remote:Some(status),base:None,revision:None,suggested:suggested.filter(|_|kind=="match"),kind:kind.into(),candidates,fingerprint:String::new()};row.seal()?;out.push(row);
     }Ok(out)
 }
 pub fn current(c:&Connection,mode:&str,id:i64,fingerprint:&str)->Result<Row> {
