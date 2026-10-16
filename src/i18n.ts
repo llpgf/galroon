@@ -98,6 +98,7 @@ bgmMergeHint:'The Bangumi link and play status move to the destination. If both 
 "bgmKind_import":"Creates a card without files or download tasks",
 "bgmKind_skipped":"Not imported: only linked works are synced",
 "bgmKind_match":"Possible local match; confirm the identity",
+"bgmKind_match_suggested":"Title matches one local work; pre-selected, check before applying",
 "bgmKind_initial":"First sync: choose which status to keep",
 "bgmKind_pull":"Bangumi changed; update Galroon",
 "bgmKind_push":"Galroon changed; update Bangumi",

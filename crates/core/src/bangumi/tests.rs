@@ -59,6 +59,38 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     store::replace_remote(&c,&[collection(1,3),collection(2,2)]).unwrap();let rows=store::rows(&c,"existing").unwrap();assert_eq!(rows[0].kind,"match");assert_eq!(rows[0].candidates[0].id,"w");assert_eq!(rows[1].kind,"skipped");
     assert!(automatic_choices(rows).is_empty());assert_eq!(crate::work_catalog::all(&c).unwrap().len(),1);
 }
+#[test]fn matches_ignore_punctuation_and_spacing_differences_but_not_sequels(){
+    let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
+    c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('saku','Sakura no Uta','サクラノ詩－櫻の森の上を舞う－'),('zan','Zannen','残念な俺達の青春事情。'),('ryu','Ryuuki','竜姫ぐーたらいふ'),('exact','x','Game 3'),('loose','y','Game-3')").unwrap();
+    let named=|id:i64,name:&str|{let mut row=collection(id,2);row.subject.name=name.into();row};
+    store::replace_remote(&c,&[named(1,"サクラノ詩 —櫻の森の上を舞う—"),named(2,"残念な俺達の青春事情"),named(4,"竜姫ぐーたらいふ２"),collection(3,2)]).unwrap();
+    let rows=store::rows(&c,"full").unwrap();let row=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap();
+    assert_eq!(row(1).kind,"match");assert_eq!(row(1).candidates[0].id,"saku");
+    assert_eq!(row(2).kind,"match");assert_eq!(row(2).candidates[0].id,"zan");
+    assert_eq!(row(4).kind,"import");
+    assert_eq!(row(3).candidates.iter().map(|c|c.id.as_str()).collect::<Vec<_>>(),["exact","loose"]);
+    // Only a sole exact or folded candidate is pre-selected for review.
+    assert_eq!(row(1).suggested.as_deref(),Some("saku"));assert_eq!(row(2).suggested.as_deref(),Some("zan"));assert_eq!(row(3).suggested,None);assert_eq!(row(4).suggested,None);
+    c.execute("INSERT INTO bangumi_ignored VALUES(1)",[]).unwrap();let ignored=store::rows(&c,"full").unwrap().into_iter().find(|r|r.subject_id==1).unwrap();assert_eq!((ignored.kind.as_str(),ignored.suggested),("ignored",None));
+    assert!(automatic_choices(store::rows(&c,"full").unwrap()).iter().all(|choice|choice.action!="match"));
+}
+#[test]fn matches_tolerate_spacing_readings_and_same_day_subtitles_but_keep_sequels_apart(){
+    let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
+    c.execute_batch("INSERT INTO works(id,title,original_title,released) VALUES
+        ('blue','Memory Blue','Memory Blue','2023-02-24'),
+        ('ore','Ore no Sugata','俺の姿が、透明に!? 不可視の薬と数奇な運命','2020-03-27'),
+        ('ghost','Kyonyuu','巨乳幽霊さんに癒やされる社畜さんの性活！～えっちなサポートは私におまかせ！～','2022-09-30'),
+        ('kaifuku','Kaifuku','奥さまの回復術','2022-05-27'),
+        ('elder','Elder','年上彼女','2024-11-29')").unwrap();
+    let dated=|id:i64,name:&str,date:&str|{let mut row=collection(id,2);row.subject.name=name.into();row.subject.date=Some(date.into());row};
+    store::replace_remote(&c,&[dated(1,"MemoryBlue","2023-02-24"),dated(2,"俺の姿が、透明に！？ 不可視の薬（インビジブル）と数奇な運命","2020-03-27"),
+        dated(3,"巨乳幽霊さんに癒やされる社畜さんの性活！","2022-09-30"),dated(4,"奥さまの回復術 純愛編","2022-05-28"),dated(5,"年上彼女２","2024-11-29")]).unwrap();
+    let rows=store::rows(&c,"full").unwrap();let found=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap().candidates.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
+    assert_eq!(found(1),["blue"]);assert_eq!(found(2),["ore"]);assert_eq!(found(3),["ghost"]);
+    assert!(rows.iter().all(|r|r.suggested.is_none()),"compact and same-day matches are never pre-selected");
+    // A subtitle-only difference needs the same release day, and a trailing number is a sequel.
+    assert!(found(4).is_empty());assert!(found(5).is_empty());
+}
 #[tokio::test]async fn real_sync_flow_pushes_local_edits_and_pulls_remote_edits(){
     let(_t,a,_)=fixture();link_fixture(&a,"completed",Some(3));let mock=Mock::new(vec![collection(1,3)]);let(client,task)=server(mock.clone()).await;
     sync_client(&a,&client).await.unwrap();assert_eq!(mock.items.lock().unwrap()[&1].status,2);assert_eq!(mock.writes.lock().unwrap()[0],json!({"type":2}));assert_eq!(status(&a),"completed");
