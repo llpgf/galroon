@@ -96,6 +96,7 @@ bgmMergeHint:'Bangumi 關聯與遊玩狀態會一起移轉到目標作品。若�
 "bgmKind_import":"將建立作品卡，不建立遊戲檔案或下載任務",
 "bgmKind_skipped":"未匯入：目前僅同步已關聯作品",
 "bgmKind_match":"找到可能的本機作品，請確認對應",
+"bgmKind_match_suggested":"名稱與一部本機作品相符，已預先選取；套用前請確認",
 "bgmKind_initial":"首次同步：請選擇以哪一邊為準",
 "bgmKind_pull":"Bangumi 有新狀態，將同步回 Galroon",
 "bgmKind_push":"Galroon 有新狀態，將同步到 Bangumi",

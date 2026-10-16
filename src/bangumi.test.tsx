@@ -12,6 +12,13 @@ describe('Bangumi two-way review',()=>{
   expect(defaultBangumiAction(row('push'))).toBe('local');expect(defaultBangumiAction(row('pull'))).toBe('remote');expect(defaultBangumiAction(row('import'))).toBe('import');
   for(const kind of ['conflict','initial','missing','hidden','ignored','match','skipped'])expect(defaultBangumiAction(row(kind))).toBe('');
  });
+ it('pre-selects only the suggested match and says so',()=>{
+  const item={...row('match'),work_id:null,local:null,candidates:[{id:'w1',title:'One'},{id:'w2',title:'Two'}]};
+  expect(defaultBangumiAction(item)).toBe('');expect(defaultBangumiAction({...item,suggested:'w2'})).toBe('match:w2');
+  const html=renderToStaticMarkup(<BangumiRows rows={[{...item,suggested:'w2'}]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);
+  expect(html).toContain('value="match:w2" selected=""');expect(html).toContain('pre-selected, check before applying');
+  expect(renderToStaticMarkup(<BangumiRows rows={[{...item,suggested:'w2'}]} choices={{[item.fingerprint]:''}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>)).toContain('value="" selected=""');
+ });
  it('keeps subject identity and snapshot in every reviewed action',()=>{expect(bangumiChoice(row('match'),'match:work-2')).toEqual({subject_id:1,fingerprint:'match',action:'match',work_id:'work-2'});expect(bangumiChoice(row('push'),'local').action).toBe('local');});
  it('shows both directions and escapes untrusted titles',()=>{const html=renderToStaticMarkup(<BangumiRows rows={[row('conflict')]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);expect(html).toContain('Galroon → Bangumi');expect(html).toContain('Bangumi → Galroon');expect(html).toContain('Both sides changed');expect(html).toContain('A &lt;game&gt;');expect(html).not.toContain('<game>');expect(html).toContain('value="" selected=""');});
  it('offers a restore instead of a sync operation for hidden cards',()=>{const html=renderToStaticMarkup(<BangumiRows rows={[row('hidden')]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);expect(html).toContain('Show and resume sync');expect(html).not.toContain('<select');});
