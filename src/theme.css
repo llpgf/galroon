@@ -263,22 +263,35 @@ main{margin-left:var(--sidebar-w);min-width:0;flex:1;position:relative}
 .home-tile>header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .home-tile h2.home-eyebrow{font-size:12px;font-weight:600;color:var(--muted)}
 .home-tile .text-button{font-size:13px}
-.home-dots{display:flex;gap:6px;margin-left:auto}
-.home-dots span{width:6px;height:6px;border-radius:99px;background:#ffffff66;transition:width .4s var(--ease),background .3s}
-.home-dots span.on{width:18px;background:#fff}
+.home-dots{display:flex;margin-left:auto}
+.home-dots button{min-height:0;padding:9px 3px;background:none;border-radius:99px}
+.home-dots button:hover{background:none;filter:none}
+.home-dots span{display:block;width:6px;height:6px;border-radius:99px;background:#ffffff66;transition:width .4s var(--ease),background .3s}
+.home-dots button:hover span{background:#ffffffb3}
+.home-dots span.on,.home-dots button:hover span.on{width:18px;background:#fff}
 
 /* Random recent addition: blurred artwork behind, cover on the right. */
 .home-hero{overflow:hidden;isolation:isolate;min-height:320px;padding:28px;background:#123a52;color:#fff;box-shadow:0 30px 60px -30px var(--shadow-color);display:flex;flex-direction:column;justify-content:flex-end;gap:16px}
-.home-hero-backdrop{position:absolute;inset:-60px;z-index:-1;filter:blur(70px) saturate(1.6) brightness(.55);transform:scale(1.1)}
-.home-hero-backdrop img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .8s}
-.home-hero-art{position:absolute;top:28px;right:28px;width:150px;padding:0;min-height:0;background:none;border-radius:14px;animation:rise .5s var(--ease) both}
+.home-hero-backdrop{position:absolute;inset:-60px;z-index:-1;filter:blur(28px) saturate(1.4) brightness(.55);transform:scale(1.1)}
+.home-hero-backdrop img,.home-hero-lens img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .8s}
+/* Liquid-glass lens: the same artwork, sharp and slightly magnified around the pointer, shown inside a soft circle. */
+.home-hero{--mx:50%;--my:50%;--lens-zoom:1}
+.home-hero-lens{position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .45s var(--ease);-webkit-mask-image:radial-gradient(circle 170px at var(--mx) var(--my),#000 45%,transparent 100%);mask-image:radial-gradient(circle 170px at var(--mx) var(--my),#000 45%,transparent 100%)}
+.home-hero-lens>div{position:absolute;inset:-60px;filter:saturate(1.15) brightness(.72);transform-origin:0 0;transform:translate(calc(var(--mx) + 60px),calc(var(--my) + 60px)) scale(var(--lens-zoom)) translate(calc(-60px - var(--mx)),calc(-60px - var(--my))) translate(50%,50%) scale(1.1) translate(-50%,-50%);transition:transform .3s var(--ease)}
+.home-hero-glow{position:absolute;inset:0;z-index:-1;pointer-events:none;background:linear-gradient(20deg,#0000008c,#0000 60%)}
+.home-hero-glow::before{content:'';position:absolute;inset:0;opacity:0;transition:opacity .45s var(--ease);background:radial-gradient(circle 170px at var(--mx) var(--my),#ffffff1f,#ffffff08 60%,#0000 72%)}
+@media (hover:hover) and (prefers-reduced-motion:no-preference){
+ .home-hero:hover{--lens-zoom:1.06;box-shadow:0 30px 60px -30px var(--shadow-color),inset 0 0 0 .5px #ffffff4d,inset 0 1px 0 #ffffff40}
+ .home-hero:hover .home-hero-lens,.home-hero:hover .home-hero-glow::before{opacity:1}
+}
+.home-hero-art{position:absolute;top:28px;right:28px;bottom:28px;aspect-ratio:5/7;padding:0;min-height:0;background:none;border-radius:14px;animation:rise .5s var(--ease) both}
 .home-hero-art:hover{background:none;filter:none}
-.home-hero-art .cover{width:150px;border-radius:14px;box-shadow:0 30px 50px -20px #000c,inset 0 0 0 .5px #ffffff40}
-.home-hero-copy{display:flex;flex-direction:column;gap:6px;max-width:calc(100% - 180px);animation:rise .5s var(--ease) both .06s}
+.home-hero-art .cover{width:auto;height:100%;border-radius:14px;box-shadow:0 30px 50px -20px #000c,inset 0 0 0 .5px #ffffff40}
+.home-hero-copy{display:flex;flex-direction:column;gap:6px;max-width:calc(100% - 260px);animation:rise .5s var(--ease) both .06s}
 .home-hero-copy h2.home-eyebrow{color:#ffffffd9}
 .home-hero-copy strong{font-family:var(--font-display);font-size:clamp(28px,3vw,42px);line-height:1.05;letter-spacing:-.03em;overflow-wrap:anywhere}
 .home-hero-copy span{color:#ffffffd9}
-.home-hero-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.home-hero-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;max-width:calc(100% - 260px)}
 .home-hero-primary{min-height:44px;padding:0 22px;background:#fff;color:#000}
 .home-hero-primary:hover{background:#fff;filter:none;transform:scale(1.03)}
 .home-hero-secondary{min-height:44px;padding:0 16px;background:#ffffff2e;color:#fff}
@@ -429,7 +442,7 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 /* Breakpoints follow the content column, not the window: the sidebar takes a varying share of it. */
 @container home (max-width:1000px){.home-tab-covers{grid-template-columns:repeat(6,minmax(0,1fr))}.home-tab-covers>:nth-child(n+7){display:none}.home-board{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @container home (max-width:760px){.home-bento{grid-template-columns:minmax(0,1fr)}.home-status-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.home-tab-covers{grid-template-columns:repeat(4,minmax(0,1fr))}.home-tab-covers>:nth-child(n+5){display:none}.home-board{grid-template-columns:repeat(2,minmax(0,1fr))}.home-favorites>div{grid-template-columns:repeat(4,minmax(0,1fr))}.home-favorites>div>:nth-child(n+5){display:none}}
-@container home (max-width:520px){.home-hero-art{display:none}.home-hero-copy{max-width:none}.home-status-tabs,.home-board{grid-template-columns:minmax(0,1fr)}.home-status-tab{min-height:0;flex-direction:row;justify-content:space-between;align-items:center}}
+@container home (max-width:520px){.home-hero-art{display:none}.home-hero-copy,.home-hero-actions{max-width:none}.home-status-tabs,.home-board{grid-template-columns:minmax(0,1fr)}.home-status-tab{min-height:0;flex-direction:row;justify-content:space-between;align-items:center}}
 
 /* ───────────────────────── Collection ───────────────────────── */
 .collection-heading{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}

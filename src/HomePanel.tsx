@@ -1,4 +1,4 @@
-import {useState,type DragEvent,type KeyboardEvent} from 'react';
+import {useState,type DragEvent,type KeyboardEvent,type PointerEvent} from 'react';
 import {useTranslation} from 'react-i18next';
 import {ChevronRight as More,GripVertical,Heart} from 'lucide-react';
 import type {Work} from './api';
@@ -26,8 +26,14 @@ function useWorks(filters:Filters,status:string,sort:string,titleMode:TitleMode,
  return useCollectionPage(request,generation);
 }
 
+/** Glass lens: the pointer position drives a sharp, magnified circle over the blurred hero backdrop (CSS reads --mx/--my). */
+const followLens=(event:PointerEvent<HTMLElement>)=>{if(event.pointerType!=='mouse')return;const box=event.currentTarget.getBoundingClientRect();event.currentTarget.style.setProperty('--mx',`${event.clientX-box.left}px`);event.currentTarget.style.setProperty('--my',`${event.clientY-box.top}px`);};
 const byline=(work:Work)=>[work.developer,work.released?.slice(0,4)].filter(Boolean).join(' · ');
-const randomOther=(current:number,size:number)=>{if(size<2)return current;let next=current;while(next===current)next=Math.floor(Math.random()*size);return next;};
+/** A random batch of up to HERO_POOL ids, taking ids outside the current batch first so a new batch looks new. */
+function randomBatch(ids:string[],current:string[]){
+ const shuffle=(list:string[])=>{const out=[...list];for(let i=out.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[out[i],out[j]]=[out[j],out[i]];}return out;};
+ return [...shuffle(ids.filter(id=>!current.includes(id))),...shuffle(ids.filter(id=>current.includes(id)))].slice(0,HERO_POOL);
+}
 function savedView():StatusView{try{return localStorage.getItem(VIEW_KEY)==='board'?'board':'tabs';}catch{return 'tabs';}}
 /** A saved order is used only when it is exactly the five statuses, so a stale or edited value can't drop one. */
 function savedOrder():Status[]{try{const saved=JSON.parse(localStorage.getItem(ORDER_KEY)||'null');if(Array.isArray(saved)&&saved.length===STATUSES.length&&STATUSES.every(s=>saved.includes(s)))return saved;}catch{/* fall back to the default order */}return [...STATUSES];}
@@ -43,9 +49,14 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
  const favorites=useWorks({...emptyFilters,favorites:true},'all','added',titleMode,generation);
  const counts=recent.data?.status_counts||{},total=recent.data?.total??0;
 
- const heroes=recent.data?.items.slice(0,HERO_POOL)||[];
+ // The hero rotates through a batch of six: the newest additions first, then a random six from the loaded recent page.
+ const pool=recent.data?.items||[];
+ const [batch,setBatch]=useState<string[]|null>(null);
+ const picked=batch&&batch.map(id=>pool.find(work=>work.id===id)).filter((work):work is Work=>!!work);
+ const heroes=picked?.length?picked:pool.slice(0,HERO_POOL);
  const [hero,setHero]=useState(()=>Math.floor(Math.random()*HERO_POOL));
- const featured=heroes.length?heroes[hero%heroes.length]:null;
+ const current=hero%Math.max(heroes.length,1),featured=heroes.length?heroes[current]:null;
+ const nextBatch=()=>{setBatch(randomBatch(pool.map(work=>work.id),heroes.map(work=>work.id)));setHero(0);};
 
  const [view,setView]=useState<StatusView>(savedView);
  const changeView=(next:StatusView)=>{setView(next);try{localStorage.setItem(VIEW_KEY,next);}catch{/* the choice just isn't remembered */}};
@@ -59,8 +70,10 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
   <div className="home-top"><h1>{t('homeGreeting')}</h1></div>
 
   <div className="home-bento">
-   {featured&&<section className="home-tile home-hero" aria-labelledby="home-hero-title">
+   {featured&&<section className="home-tile home-hero" aria-labelledby="home-hero-title" onPointerMove={followLens}>
     <div className="home-hero-backdrop" aria-hidden="true">{featured.cover&&!safe&&<CachedImage key={featured.id} source={featured.cover}/>}</div>
+    {featured.cover&&!safe&&<div className="home-hero-lens" aria-hidden="true"><div><CachedImage key={featured.id} source={featured.cover}/></div></div>}
+    <div className="home-hero-glow" aria-hidden="true"/>
     <button className="home-hero-art" key={'art-'+featured.id} tabIndex={-1} aria-hidden="true" onClick={()=>onSelect(featured)}><Cover work={featured} safe={safe}/></button>
     <div className="home-hero-copy" key={featured.id}>
      <h2 id="home-hero-title" className="home-eyebrow">{t('homeRandomRecent')}</h2>
@@ -69,8 +82,8 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
     </div>
     <div className="home-hero-actions">
      <button className="home-hero-primary" onClick={()=>onSelect(featured)}>{t('homeViewWork')}</button>
-     {heroes.length>1&&<button className="home-hero-secondary" onClick={()=>setHero(randomOther(hero%heroes.length,heroes.length))}>{t('homeRandomAnother')}</button>}
-     {heroes.length>1&&<span className="home-dots" aria-hidden="true">{heroes.map((work,index)=><span key={work.id} className={index===hero%heroes.length?'on':undefined}/>)}</span>}
+     {pool.length>HERO_POOL&&<button className="home-hero-secondary" onClick={nextBatch}>{t('homeRandomAnother')}</button>}
+     {heroes.length>1&&<span className="home-dots" role="group" aria-label={t('homeHeroPicker')}>{heroes.map((work,index)=><button key={work.id} aria-label={titleFor(work,titleMode)} aria-current={index===current||undefined} onClick={()=>setHero(index)}><span className={index===current?'on':undefined}/></button>)}</span>}
     </div>
    </section>}
 
