@@ -32,8 +32,7 @@ pub async fn list(State(a):State<App>,h:HeaderMap,Query(q):Query<ListQuery>)->Re
 fn list_data(c:&rusqlite::Connection,include_deleted:bool,summary:bool)->std::result::Result<Value,ApiError>{
  let mut statement=c.prepare("SELECT id,name,revision,deleted FROM custom_tags WHERE deleted=0 OR ?1 ORDER BY name_key")?;
  let rows=statement.query_map([include_deleted],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,bool>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
- let dependencies=crate::smart_lists::dependency_counts(&c)?;
- let impact_revision:i64=c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0))?;
+ let dependencies=crate::smart_lists::dependents(c)?;let impacts=impact_revisions(c,None,&dependencies)?;
  let has_merges:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM works WHERE merged_into IS NOT NULL)",[],|r|r.get(0))?;
  let merged_counts=if summary&&has_merges{
   let mut q=c.prepare("WITH RECURSIVE resolved(id,target) AS (SELECT id,id FROM works WHERE merged_into IS NULL UNION SELECT w.id,r.target FROM works w JOIN resolved r ON w.merged_into=r.id) SELECT t.tag_id,count(DISTINCT r.target) FROM custom_tag_works t JOIN resolved r ON r.id=t.work_id GROUP BY t.tag_id")?;
@@ -49,7 +48,7 @@ fn list_data(c:&rusqlite::Connection,include_deleted:bool,summary:bool)->std::re
   }else{let ids=members.query_map([&id],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;(ids.len() as i64,Some(ids))};
   let undo_available=!deleted&&c.query_row("SELECT EXISTS(SELECT 1 FROM tag_undo WHERE tag_id=?1 AND revision=?2)",params![id,revision],|r|r.get::<_,bool>(0))?;
   let entity_count:i64=c.prepare_cached("SELECT count(*) FROM custom_tag_entities WHERE tag_id=?1")?.query_row([&id],|r|r.get(0))?;
-  let mut item=json!({"work_count":work_count,"impact_revision":impact_revision,"smart_list_count":dependencies.get(&id).copied().unwrap_or(0),"entity_count":entity_count,"undo_available":undo_available,"id":id,"name":name,"work_ids":work_ids,"revision":revision,"deleted":deleted});
+  let mut item=json!({"work_count":work_count,"impact_revision":impacts[&id],"smart_list_count":dependencies.get(&id).map_or(0,Vec::len),"entity_count":entity_count,"undo_available":undo_available,"id":id,"name":name,"work_ids":work_ids,"revision":revision,"deleted":deleted});
   if summary{item.as_object_mut().unwrap().remove("work_ids");}result.push(item);
  }
  Ok(json!(result))
@@ -64,7 +63,7 @@ pub async fn membership(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Qu
 fn membership_data(c:&rusqlite::Connection,id:&str,ids:&[String],revision:i64,impact_revision:i64)->std::result::Result<Value,ApiError>{
  if ids.len()>60||ids.iter().collect::<std::collections::HashSet<_>>().len()!=ids.len(){return Err(ApiError("Select at most 60 distinct work IDs".into()));}
  let actual:i64=c.query_row("SELECT revision FROM custom_tags WHERE id=?1",[id],|r|r.get(0))?;
- let impact:i64=c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0))?;
+ let impact=tag_impact_revision(c,id)?;
  if actual!=revision||impact!=impact_revision{return Err(ApiError("Tag or collection changed. Refresh tags before continuing.".into()));}
  // Walk backwards from the requested active identities, including legacy merged assignments.
  let encoded=serde_json::to_string(ids).map_err(|e|ApiError(e.to_string()))?;
@@ -97,6 +96,27 @@ pub async fn create(State(a):State<App>,h:HeaderMap,Json(input):Json<Create>)->R
  /// merge: the tag that receives this tag's works and entities.
  #[serde(default,skip_serializing_if="Option::is_none")]into:Option<String>}
 fn raw_members(c:&rusqlite::Connection,id:&str)->rusqlite::Result<Vec<String>>{let mut q=c.prepare("SELECT work_id FROM custom_tag_works WHERE tag_id=?1 ORDER BY work_id")?;let rows=q.query_map([id],|r|r.get(0))?.collect();rows}
+fn impact_revisions(c:&rusqlite::Connection,id:Option<&str>,dependencies:&std::collections::BTreeMap<String,Vec<(String,i64)>>)->std::result::Result<std::collections::BTreeMap<String,i64>,ApiError>{
+ use std::collections::{BTreeMap,HashMap,HashSet};use sha2::{Digest,Sha256};
+ let mut q=c.prepare("SELECT id FROM custom_tags WHERE ?1 IS NULL OR id=?1")?;
+ let mut tags=q.query_map([id],|r|Ok((r.get::<_,String>(0)?,(Vec::<String>::new(),Vec::<String>::new()))))?.collect::<rusqlite::Result<BTreeMap<_,_>>>()?;
+ for(table,column,entities)in [("custom_tag_works","work_id",false),("custom_tag_entities","entity_id",true)]{
+  let filter=if id.is_some(){"WHERE tag_id=?1"}else{""};let mut q=c.prepare(&format!("SELECT tag_id,{column} FROM {table} {filter} ORDER BY tag_id,{column}"))?;
+  let mut rows=if let Some(id)=id{q.query([id])?}else{q.query([])?};while let Some(row)=rows.next()?{let tag:String=row.get(0)?;let members=tags.get_mut(&tag).unwrap();if entities{members.1.push(row.get(1)?);}else{members.0.push(row.get(1)?);}}
+ }
+ let mut q=c.prepare("SELECT id,merged_into FROM works WHERE merged_into IS NOT NULL")?;
+ let merges=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<HashMap<_,_>>>()?;
+ let mut impacts=BTreeMap::new();
+ for(id,(raw,entities))in tags{
+  let mut resolved=Vec::new();for work in &raw{let mut root=work;let mut seen=HashSet::new();while let Some(parent)=merges.get(root){if !seen.insert(root){break;}root=parent;}if !merges.contains_key(root){resolved.push(root);}}
+  resolved.sort();resolved.dedup();let lists=dependencies.get(&id).map(Vec::as_slice).unwrap_or(&[]);
+  // Fixed-order arrays make the digest canonical; 48 bits stay exact in JavaScript.
+  let digest=Sha256::digest(serde_json::to_vec(&(&raw,resolved,entities,lists)).map_err(|e|ApiError(e.to_string()))?);
+  impacts.insert(id,digest[..6].iter().fold(0i64,|value,byte|(value<<8)|i64::from(*byte)));
+ }
+ Ok(impacts)
+}
+fn tag_impact_revision(c:&rusqlite::Connection,id:&str)->std::result::Result<i64,ApiError>{Ok(impact_revisions(c,Some(id),&crate::smart_lists::dependents(c)?)?[id])}
 fn topology(c:&rusqlite::Connection,ids:&[String])->rusqlite::Result<Vec<(String,Option<String>)>>{ids.iter().map(|id|c.query_row("SELECT id,merged_into FROM works WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))).collect()}
 fn change(c:&rusqlite::Connection,id:&str,input:&Edit)->std::result::Result<Value,ApiError>{
  use rusqlite::OptionalExtension;use sha2::{Digest,Sha256};
@@ -104,7 +124,7 @@ fn change(c:&rusqlite::Connection,id:&str,input:&Edit)->std::result::Result<Valu
  let digest=hex::encode(Sha256::digest(serde_json::to_vec(&(id,input)).map_err(|e|ApiError(e.to_string()))?));
  if let Some((old,result))=c.query_row("SELECT digest,result FROM tag_requests WHERE id=?1",[&input.request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{if old!=digest{return Err(ApiError("Request ID already used for another edit".into()));}return serde_json::from_str(&result).map_err(|e|ApiError(e.to_string()));}
  let(revision,deleted):(i64,bool)=c.query_row("SELECT revision,deleted FROM custom_tags WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;if revision!=input.revision{return Err(ApiError("Tag changed. Reload before editing.".into()));}
- if input.action=="delete"{if let Some(expected)=input.impact_revision{let current:i64=c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0))?;if current!=expected{return Err(ApiError("Tag impact changed. Reload and review deletion again.".into()));}}}
+ if input.action=="delete"{if let Some(expected)=input.impact_revision{let current=tag_impact_revision(c,id)?;if current!=expected{return Err(ApiError("Tag impact changed. Reload and review deletion again.".into()));}}}
  if input.work_ids.len()>10000{return Err(ApiError("Too many selected works".into()));}
  let before=if matches!(input.action.as_str(),"add"|"remove"){Some(raw_members(c,id)?)}else{None};
  let batch_summary=if before.is_some(){
@@ -181,11 +201,46 @@ pub async fn edit(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(inp
  let definition=json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"group","join":"all","children":[predicate("personal_tags"),predicate("related_personal_tags")]}});
  for(id,deleted)in [("active",false),("deleted",true)]{c.execute("INSERT INTO smart_lists(id,name,description,revision,definition,deleted) VALUES(?1,?1,'',1,?2,?3)",params![id,definition.to_string(),deleted]).unwrap();}
  assert_eq!(crate::smart_lists::dependency_counts(&c).ok().unwrap().get("t"),Some(&1));
- let old=c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get::<_,i64>(0)).unwrap();c.execute("UPDATE smart_lists SET deleted=0 WHERE id='deleted'",[]).unwrap();
+ let old=list_data(&c,true,true).ok().unwrap()[0]["impact_revision"].as_i64().unwrap();c.execute("UPDATE smart_lists SET deleted=0 WHERE id='deleted'",[]).unwrap();
  let mut input=Edit{impact_revision:Some(old),revision:1,request_id:"delete".into(),action:"delete".into(),name:None,work_ids:vec![],into:None};
  {let tx=c.transaction().unwrap();assert!(change(&tx,"t",&input).is_err());}
  assert_eq!(c.query_row("SELECT deleted FROM custom_tags WHERE id='t'",[],|r|r.get::<_,bool>(0)).unwrap(),false);
- input.impact_revision=Some(c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0)).unwrap());let tx=c.transaction().unwrap();let first=change(&tx,"t",&input).ok().unwrap();assert_eq!(change(&tx,"t",&input).ok().unwrap(),first);tx.commit().unwrap();assert!(crate::smart_lists::read_one(&c,"active").ok().unwrap()["needs_repair"]==true);
+ input.impact_revision=Some(list_data(&c,true,true).ok().unwrap()[0]["impact_revision"].as_i64().unwrap());let tx=c.transaction().unwrap();let first=change(&tx,"t",&input).ok().unwrap();assert_eq!(change(&tx,"t",&input).ok().unwrap(),first);tx.commit().unwrap();assert!(crate::smart_lists::read_one(&c,"active").ok().unwrap()["needs_repair"]==true);
+ }
+ #[test]fn unrelated_background_writes_do_not_stale_tag_review(){
+ let t=tempfile::tempdir().unwrap();let db=crate::db::open(&t.path().join("library.sqlite")).unwrap();let mut c=db.lock().unwrap();
+ c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('a','A','A'),('b','B','B'),('c','C','C'); INSERT INTO custom_tags(id,name,name_key) VALUES('t1','T1','t1'),('t2','T2','t2'); INSERT INTO custom_tag_works(tag_id,work_id) VALUES('t1','a'),('t1','b'),('t2','b'),('t2','c');").unwrap();
+ let summary=list_data(&c,true,true).ok().unwrap();let revision=summary[0]["revision"].as_i64().unwrap();let impact=summary[0]["impact_revision"].as_i64().unwrap();
+ let catalog=||c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get::<_,i64>(0)).unwrap();let before=catalog();
+ c.execute("UPDATE works SET title='Unrelated title' WHERE id='c'",[]).unwrap();let after_work=catalog();assert!(after_work>before);
+ c.execute("INSERT INTO settings(key,value) VALUES('exploration.test','{}')",[]).unwrap();let after_cache=catalog();assert!(after_cache>after_work);
+ change(&c,"t2",&Edit{impact_revision:None,revision:1,request_id:"rename-t2".into(),action:"rename".into(),name:Some("Renamed".into()),work_ids:vec![],into:None}).ok().unwrap();assert!(catalog()>after_cache);
+ let page=membership_data(&c,"t1",&["a".into(),"b".into(),"c".into()],revision,impact).ok().unwrap();assert_eq!(page["members"],json!(["a","b"]));
+ let tx=c.transaction().unwrap();change(&tx,"t1",&Edit{impact_revision:Some(impact),revision,request_id:"delete-t1".into(),action:"delete".into(),name:None,work_ids:vec![],into:None}).ok().unwrap();tx.commit().unwrap();
+ assert!(c.query_row("SELECT deleted FROM custom_tags WHERE id='t1'",[],|r|r.get::<_,bool>(0)).unwrap());
+ }
+ #[test]fn real_impact_changes_and_concurrent_edits_stale_tag_review(){
+ for mutation in ["INSERT INTO custom_tag_works(tag_id,work_id) VALUES('t','b')","INSERT INTO custom_tag_entities(tag_id,entity_id) VALUES('t','entity')","UPDATE works SET merged_into='b' WHERE id='a'","rename"]{
+  let t=tempfile::tempdir().unwrap();let db=crate::db::open(&t.path().join("library.sqlite")).unwrap();let mut c=db.lock().unwrap();
+  c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('a','A','A'),('b','B','B'); INSERT INTO custom_tags(id,name,name_key) VALUES('t','Tag','tag'); INSERT INTO custom_tag_works(tag_id,work_id) VALUES('t','a');").unwrap();
+  let summary=list_data(&c,true,true).ok().unwrap();let revision=summary[0]["revision"].as_i64().unwrap();let impact=summary[0]["impact_revision"].as_i64().unwrap();
+  if mutation=="rename"{change(&c,"t",&Edit{impact_revision:None,revision,request_id:"other-device".into(),action:"rename".into(),name:Some("Renamed".into()),work_ids:vec![],into:None}).ok().unwrap();assert_eq!(tag_impact_revision(&c,"t").ok().unwrap(),impact);}else{c.execute(mutation,[]).unwrap();assert_eq!(c.query_row("SELECT revision FROM custom_tags WHERE id='t'",[],|r|r.get::<_,i64>(0)).unwrap(),revision);}
+  assert_eq!(membership_data(&c,"t",&["a".into(),"b".into()],revision,impact).err().unwrap().0,"Tag or collection changed. Refresh tags before continuing.");
+  let tx=c.transaction().unwrap();let error=change(&tx,"t",&Edit{impact_revision:Some(impact),revision,request_id:"delete".into(),action:"delete".into(),name:None,work_ids:vec![],into:None}).err().unwrap();
+  assert_eq!(error.0,if mutation=="rename"{"Tag changed. Reload before editing."}else{"Tag impact changed. Reload and review deletion again."});assert!(!tx.query_row("SELECT deleted FROM custom_tags WHERE id='t'",[],|r|r.get::<_,bool>(0)).unwrap());
+ }
+ }
+ #[test]fn impact_fingerprints_are_canonical_and_resolve_chains_and_cycles(){
+ use sha2::{Digest,Sha256};let t=tempfile::tempdir().unwrap();let db=crate::db::open(&t.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+ c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('a','A','A'),('b','B','B'),('c','C','C'),('x','X','X'),('y','Y','Y'); UPDATE works SET merged_into='b' WHERE id='a'; UPDATE works SET merged_into='c' WHERE id='b'; UPDATE works SET merged_into='y' WHERE id='x'; UPDATE works SET merged_into='x' WHERE id='y'; INSERT INTO custom_tags(id,name,name_key) VALUES('t','Tag','tag'),('empty','Empty','empty'); INSERT INTO custom_tag_works(tag_id,work_id) VALUES('t','x'),('t','c'),('t','a'); INSERT INTO custom_tag_entities(tag_id,entity_id) VALUES('t','e2'),('t','e1');").unwrap();
+ let definition=json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"personal_tags","mode":"any","values":["t"]}}});
+ for(id,revision,deleted)in [("z",7,false),("s",2,false),("deleted",9,true)]{c.execute("INSERT INTO smart_lists(id,name,description,revision,definition,deleted) VALUES(?1,?1,'',?2,?3,?4)",params![id,revision,definition.to_string(),deleted]).unwrap();}
+ let digest=Sha256::digest(serde_json::to_vec(&json!([["a","c","x"],["c"],["e1","e2"],[["s",2],["z",7]]])).unwrap());let mut bytes=[0u8;8];bytes[2..].copy_from_slice(&digest[..6]);let expected=i64::from_be_bytes(bytes);
+ let summary=list_data(&c,true,true).ok().unwrap();assert_eq!(summary[1]["impact_revision"],expected);assert!((0..1i64<<48).contains(&expected));assert_eq!(summary[1]["work_count"],1);assert_eq!(summary[1]["smart_list_count"],2);
+ for tag in summary.as_array().unwrap(){assert_eq!(tag_impact_revision(&c,tag["id"].as_str().unwrap()).ok().unwrap(),tag["impact_revision"].as_i64().unwrap());}
+ assert_eq!(list_data(&c,true,false).ok().unwrap()[1]["work_ids"],json!(["c"]));
+ c.execute("UPDATE smart_lists SET revision=revision+1 WHERE id='deleted'",[]).unwrap();assert_eq!(tag_impact_revision(&c,"t").ok().unwrap(),expected);
+ c.execute("UPDATE smart_lists SET revision=revision+1 WHERE id='s'",[]).unwrap();assert_ne!(tag_impact_revision(&c,"t").ok().unwrap(),expected);
  }
  #[test]fn undo_restores_mixed_memberships_after_reopen_and_rejects_identity_changes(){
  let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=crate::db::open(&path).unwrap();db.lock().unwrap().execute_batch("INSERT INTO works(id,title,original_title) VALUES('a','A','A'),('b','B','B');").unwrap();let tag=create_tag(&db,Create{name:"Mixed".into(),work_ids:vec!["a".into()]}).ok().unwrap();let id=tag["id"].as_str().unwrap().to_owned();
