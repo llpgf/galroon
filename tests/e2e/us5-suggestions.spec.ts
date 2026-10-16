@@ -8,7 +8,8 @@ import type { Resource, MatchSuggestion, Work } from '../../src/api';
 let core: Core;
 const MAMA_CD = '善悪 フルHDリマスター版 Webアンケート特典';
 const resources = () => core.api<Resource[]>('/resources');
-const resource = async (text: string) => { const r = (await resources()).find(r => r.path.includes(text)); expect(r, text).toBeTruthy(); return r!; };
+// Paths are compared in NFC: exFAT on macOS reports decomposed names (ぐ = く + ゛). UI lookups use the raw r.path.
+const resource = async (text: string) => { const r = (await resources()).find(r => r.path.normalize('NFC').includes(text.normalize('NFC'))); expect(r, text).toBeTruthy(); return r!; };
 const current = async (id: string) => (await resources()).find(r => r.id === id)!;
 const idle = async () => expect.poll(async () => (await core.api('/jobs')).filter((j: any) => j.kind !== 'artwork' && ['queued', 'running', 'pausing', 'cancelling'].includes(j.state)).length, { timeout: 300_000, intervals: [1000] }).toBe(0);
 const suggest = (r: Resource, works = ['v20672'], query = '善悪') => core.api<MatchSuggestion>(`/resources/${r.id}/suggestions`, { revision: r.revision, works, query, rationale: 'Golden identifies this resource with these works; please review the proposed match.' });
@@ -59,9 +60,9 @@ test('批次只確認已驗證建議，未驗證建議保留', async ({ page }) 
   expect(verified.verified).toBe(true);
   expect(unverified.verified).toBe(false);
   await review(page);
-  await expect(resourceRow(page, appendFolder).locator('.suggestion-badge')).toContainText(T('suggestionUnverified'));
+  await expect(resourceRow(page, append.path).locator('.suggestion-badge')).toContainText(T('suggestionUnverified'));
   // Filtering out the verified resource must not silently limit "all" to visible rows.
-  await page.getByRole('searchbox', { name: T('resourceSearch') }).fill(appendFolder);
+  await page.getByRole('searchbox', { name: T('resourceSearch') }).fill(append.path);
   const request = page.waitForRequest(req => req.url().endsWith('/suggestions/batch-confirm'));
   await page.getByRole('button', { name: T('suggestionConfirmVerified') }).click();
   expect((await request).postDataJSON()).toEqual({ ids: [verified.id], revisions: [verified.resource_revision] });
@@ -70,7 +71,7 @@ test('批次只確認已驗證建議，未驗證建議保留', async ({ page }) 
   expect((await current(verified.resource_id)).work_id).toBeTruthy();
   expect((await current(unverified.resource_id)).work_id).toBeNull();
   expect((await core.api(`/resources/${unverified.resource_id}/suggestions`)).suggestion.id).toBe(unverified.id);
-  await expect(resourceRow(page, appendFolder).locator('.suggestion-badge')).toBeVisible();
+  await expect(resourceRow(page, append.path).locator('.suggestion-badge')).toBeVisible();
   await references(await current(append.id), append.bindings, append.work_id);
   expect((await grade(core)).filter(r => r.verdict !== 'ok')).toEqual([]);
 });

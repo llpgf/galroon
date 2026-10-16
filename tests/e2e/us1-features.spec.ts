@@ -15,7 +15,8 @@ test('US-1.2 生命のスペア 兩份資源：一張卡、一個版本、兩個
   const works = (await core.api('/works')).filter((w: any) => w.vndb_id === 'v19513');
   expect(works, 'one card for v19513').toHaveLength(1);
   const { resources } = await catalog(core);
-  const spare = resources.filter(r => ['生命のスペア', '生命のスペア.rar'].includes(r.path));
+  // exFAT on macOS reports decomposed (NFD) names, so compare in NFC; the UI shows the raw path below.
+  const spare = resources.filter(r => ['生命のスペア', '生命のスペア.rar'].includes(r.path.normalize('NFC')));
   expect(spare).toHaveLength(2);
   for (const r of spare) expect(r.work_id, r.path).toBe(works[0].id);
   const releases = new Set(spare.map(r => r.bindings[0]?.release_id ?? null));

@@ -11,7 +11,7 @@ test.afterEach(async () => { await core?.stop(); });
 // The two 善悪 bonus archives remain for manual review after automatic matching (the title is too short to match safely).
 const MAMA_CD = '善悪 フルHDリマスター版 Webアンケート特典';
 const MAMA_MDF = '原法子との邂逅';
-const bound = async (path: string) => { const { resources, byId } = await catalog(core); const r = resources.find(x => x.path.includes(path))!; return r.work_id ? byId.get(r.work_id)! : null; };
+const bound = async (path: string) => { const { resources, byId } = await catalog(core); const r = resources.find(x => x.path.normalize('NFC').includes(path.normalize('NFC')))!; return r.work_id ? byId.get(r.work_id)! : null; };
 
 test('US-1.5 看原因 → 搜 VNDB → 選候選 → 確認，重新配對/掃描不覆蓋', async ({ page }) => {
   await openApp(page, core);
@@ -80,7 +80,7 @@ test('US-1.5 異常：確認前資源已被其他操作改動 → 顯示衝突�
   await expect(candidate).toBeVisible({ timeout: 30_000 });
   // Meanwhile another client binds the same resource to a different work.
   const { resources, works } = await catalog(core);
-  const r = resources.find(x => x.path.includes(MAMA_CD))!;
+  const r = resources.find(x => x.path.normalize('NFC').includes(MAMA_CD.normalize('NFC')))!;
   const other = works.find(w => w.vndb_id === 'v61834')!;
   await core.api(`/resources/${r.id}/bind`, { work_id: other.id, release: r.release, revision: (r as any).revision });
   await candidate.click();
