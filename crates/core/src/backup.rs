@@ -36,10 +36,11 @@ fn verify_content(folder:&Path,file:&Path,manifest:&Manifest)->R<()>{
 pub fn migrate(c:&Connection)->rusqlite::Result<()>{
  c.execute_batch("CREATE TABLE IF NOT EXISTS backup_history(id TEXT PRIMARY KEY,path TEXT NOT NULL,created INTEGER NOT NULL,manifest TEXT NOT NULL);")?;
  let columns=c.prepare("PRAGMA table_info(backup_history)")?.query_map([],|r|r.get::<_,String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
- for (column,value) in [("origin","manual"),("mode","portable")]{if !columns.iter().any(|n|n==column){c.execute(&format!("ALTER TABLE backup_history ADD COLUMN {column} TEXT NOT NULL DEFAULT '{value}'"),[])?;}}Ok(())
+ for (column,value) in [("origin","manual"),("mode","portable")]{if !columns.iter().any(|n|n==column){c.execute(&format!("ALTER TABLE backup_history ADD COLUMN {column} TEXT NOT NULL DEFAULT '{value}'"),[])?;}}
+ if !columns.iter().any(|n|n=="deleted"){c.execute("ALTER TABLE backup_history ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",[])?;}Ok(())
 }
 fn tables(c:&Connection)->R<Vec<String>>{let mut q=c.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(|e|e.to_string())?;let rows=q.query_map([],|r|r.get(0)).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<String>>>().map_err(|e|e.to_string())?;Ok(rows)}
-pub fn history(db:&Db)->R<serde_json::Value>{let c=db.lock().map_err(|e|e.to_string())?;let mut q=c.prepare("SELECT id,path,created,manifest,origin,mode FROM backup_history ORDER BY created DESC,rowid DESC LIMIT 50").map_err(|e|e.to_string())?;let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;Ok(serde_json::json!(rows.into_iter().map(|(id,path,created,manifest,origin,mode)|serde_json::json!({"id":id,"path":path,"created":created,"origin":origin,"mode":mode,"manifest":serde_json::from_str::<serde_json::Value>(&manifest).unwrap_or_default()})).collect::<Vec<_>>()))}
+pub fn history(db:&Db)->R<serde_json::Value>{let c=db.lock().map_err(|e|e.to_string())?;let mut q=c.prepare("SELECT id,path,created,manifest,origin,mode,deleted FROM backup_history ORDER BY created DESC,rowid DESC LIMIT 50").map_err(|e|e.to_string())?;let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,bool>(6)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;Ok(serde_json::json!(rows.into_iter().map(|(id,path,created,manifest,origin,mode,deleted)|serde_json::json!({"id":id,"path":path,"created":created,"origin":origin,"mode":mode,"deleted":deleted,"manifest":serde_json::from_str::<serde_json::Value>(&manifest).unwrap_or_default()})).collect::<Vec<_>>()))}
 pub(crate) fn clean_credentials(c:&Connection)->R<()>{
  c.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA secure_delete=ON; DELETE FROM sessions; DELETE FROM settings WHERE key NOT IN ('schema_version','organization.managed_root');").map_err(|e|e.to_string())?;
  clean_transient(c)
@@ -104,7 +105,7 @@ pub fn export_with(db:&Db,destination:&Path,device_dir:Option<&Path>,options:Opt
  let result=(||{
  let private=options.mode==Mode::Full;if private{private_permissions(&folder,true)?;}let file=folder.join("collection.sqlite");if private{new_file(&file,true)?;}
  let data_dir={let c=db.lock().map_err(|e|e.to_string())?;c.backup(MAIN_DB,&file,None).map_err(|e|e.to_string())?;c.path().and_then(|p|Path::new(p).parent()).map(Path::to_path_buf)};
- {let c=Connection::open(&file).map_err(|e|e.to_string())?;if private{clean_transient(&c)?;}else{clean_credentials(&c)?;}check(&c)?;}
+ {let c=Connection::open(&file).map_err(|e|e.to_string())?;c.execute_batch("PRAGMA journal_mode=DELETE;").map_err(|e|e.to_string())?;if private{clean_transient(&c)?;}else{clean_credentials(&c)?;}check(&c)?;}
  let(bytes,sha256)=plans::hash(&file)?;let c=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;
  let artwork=if let Some(base)=data_dir.filter(|p|options.artwork&&p.join(crate::artwork_library::FILE).exists()){
   if private{new_file(&folder.join(crate::artwork_library::FILE),true)?;}
@@ -189,6 +190,10 @@ fn restore(folder:&Path,destination:&Path,expected_hash:Option<&str>,full:bool)-
   let(status,pair)=post(app,"/api/access/pairing",&app.token,json!({"name":"Backup fixture","role":"desktop"})).await;assert_eq!(status,200,"{pair}");
   let(status,session)=post(app,"/api/access/pair","",json!({"code":pair["code"]})).await;assert_eq!(status,200,"{session}");session["token"].as_str().unwrap().into()
  }
+ #[test]fn exports_remain_standalone_without_wal_or_shm_after_inspection(){
+  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("active")).unwrap();let artwork=crate::artwork_library::Library::open(&app.state_dir).unwrap();artwork.save_profile("exploration.v4.work.v1.1",&json!({"fixture":true})).unwrap();
+  for mode in [Mode::Portable,Mode::Full]{let folder=export_with(&app.db,t.path(),Some(&app.device_dir),Options{mode,..Default::default()}).unwrap();inspect(&folder).unwrap();verify_sums(&folder);for name in ["collection.sqlite",crate::artwork_library::FILE]{let c=Connection::open_with_flags(folder.join(name),OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();assert_eq!(c.query_row("PRAGMA journal_mode",[],|r|r.get::<_,String>(0)).unwrap(),"delete");for suffix in ["-shm","-wal"]{assert!(!folder.join(format!("{name}{suffix}")).exists());}}}
+ }
  #[test]fn portable_v4_artwork_is_optional_and_legacy_versions_remain_readable(){
   let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("active")).unwrap();crate::artwork_library::Library::open(&app.state_dir).unwrap();
   for artwork in [true,false]{let folder=export_with(&app.db,t.path(),None,Options{artwork,..Default::default()}).unwrap();let mut manifest=inspect(&folder).unwrap();assert_eq!(manifest.version,4);assert_eq!(manifest.mode,Mode::Portable);assert_eq!(manifest.origin,Origin::Manual);assert_eq!(manifest.core_version.as_deref(),Some(env!("CARGO_PKG_VERSION")));assert!(!manifest.includes_credentials);assert!(manifest.identity.is_none());assert_eq!(manifest.artwork.is_some(),artwork);assert_eq!(folder.join(crate::artwork_library::FILE).exists(),artwork);verify_sums(&folder);
@@ -241,9 +246,13 @@ fn restore(folder:&Path,destination:&Path,expected_hash:Option<&str>,full:bool)-
   symlink(t.path().join("missing"),device.join("network.json")).unwrap();assert!(export_with(&db,&target,Some(&device),full()).is_err());assert_eq!(fs::read_dir(&target).unwrap().count(),0);fs::remove_file(device.join("network.json")).unwrap();
   let link=t.path().join("linked-device");symlink(&device,&link).unwrap();assert!(export_with(&db,&target,Some(&link),full()).is_err());assert_eq!(fs::read_dir(&target).unwrap().count(),0);
  }
+ #[test]fn schema_fifty_one_adds_deleted_without_losing_history(){
+  let t=tempfile::tempdir().unwrap();let path=t.path().join("active/library.sqlite");let db=crate::db::open(&path).unwrap();db.lock().unwrap().execute_batch("ALTER TABLE backup_history DROP COLUMN deleted; INSERT INTO backup_history(id,path,created,manifest,origin,mode) VALUES('old','/old/backup',1,'{}','scheduled','full'); PRAGMA user_version=51; UPDATE settings SET value='51' WHERE key='schema_version';").unwrap();drop(db);
+  for _ in 0..2{let db=crate::db::open(&path).unwrap();let rows=history(&db).unwrap();assert_eq!(rows[0]["origin"],"scheduled");assert_eq!(rows[0]["mode"],"full");assert_eq!(rows[0]["deleted"],false);assert_eq!(db.lock().unwrap().query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),52);}assert_eq!(fs::read_dir(path.parent().unwrap().join("migration-backups")).unwrap().count(),1);
+ }
  #[test]fn schema_fifty_backup_history_migrates_existing_rows_once(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("active/library.sqlite");let db=crate::db::open(&path).unwrap();db.lock().unwrap().execute_batch("DROP TABLE backup_history; CREATE TABLE backup_history(id TEXT PRIMARY KEY,path TEXT NOT NULL,created INTEGER NOT NULL,manifest TEXT NOT NULL); INSERT INTO backup_history VALUES('old','/old/backup',1,'{}'); PRAGMA user_version=50; UPDATE settings SET value='50' WHERE key='schema_version';").unwrap();drop(db);
-  for _ in 0..2{let db=crate::db::open(&path).unwrap();assert_eq!(history(&db).unwrap(),json!([{"id":"old","path":"/old/backup","created":1,"manifest":{},"origin":"manual","mode":"portable"}]));assert_eq!(db.lock().unwrap().query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),51);}
+  for _ in 0..2{let db=crate::db::open(&path).unwrap();assert_eq!(history(&db).unwrap(),json!([{"id":"old","path":"/old/backup","created":1,"manifest":{},"origin":"manual","mode":"portable","deleted":false}]));assert_eq!(db.lock().unwrap().query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),crate::db::SCHEMA_VERSION);}
   assert_eq!(fs::read_dir(path.parent().unwrap().join("migration-backups")).unwrap().count(),1);
  }
  #[tokio::test]async fn backup_api_full_requires_owner_and_rejects_invalid_modes(){

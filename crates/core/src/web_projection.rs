@@ -76,6 +76,7 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/smart-lists/{id}",WebAccess::Unchanged),
  ("/api/works/{id}/split-preview",WebAccess::Deny),
  ("/api/backups",WebAccess::Deny),
+ ("/api/backups/schedule",WebAccess::Deny),
  ("/api/plans",WebAccess::Deny),
  ("/api/plans/{id}",WebAccess::Deny),
  ("/api/duplicate-checks/{id}",WebAccess::Deny),

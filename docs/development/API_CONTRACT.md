@@ -273,8 +273,34 @@ See [VNDB sync](../features/VNDB_SYNC.md) for account, preview/apply, link, hide
 
 ## Backup modes and history — 2026-10-16
 
-`POST /api/backups` accepts `{destination, mode?:"portable"|"full"}`. Missing `mode` defaults to `portable`; invalid values return 400. Web sessions remain forbidden. Full backups require an authenticated owner; desktop sessions receive 403 with `"Owner access required for full backups"`. This route always records `origin:"manual"`.
+`POST /api/backups` accepts `{destination, mode?:"portable"|"full"}`. Missing `mode` defaults to `portable`; invalid values return 400. Web sessions remain forbidden. Full backups require role `owner`; `desktop` and `web_owner` sessions receive 403 with `"Owner access required for full backups"`. This route always records `origin:"manual"`.
 
-`GET /api/backups` returns the newest 50 completed exports as `{id,path,created,manifest,origin,mode}`. `origin` is `"manual"|"scheduled"` and `mode` is `"portable"|"full"`; pre-schema-51 history defaults to manual/portable.
+`GET /api/backups` returns the newest 50 completed exports as `{id,path,created,manifest,origin,mode,deleted}`. `origin` is `"manual"|"scheduled"` and `mode` is `"portable"|"full"`; pre-schema-51 history defaults to manual/portable. Schema 52 adds `deleted` (boolean, default false); deleted entries remain visible in history.
 
 New exports write manifest v4 with `mode`, `origin`, `identity`, `core_version`, and `includes_credentials` (true for full). Full includes verified `identity/` files (`device.json`, optional `network.json`, and both LAN PEM files or neither), device UUID and optional SPKI fingerprint. Every export writes sorted `SHA256SUMS` entries for its catalog, optional artwork, identity files and manifest. Checksums are informational for external tools; inspection validates the manifest and file contents independently. Full backups contain the owner password hash, sessions and LAN private key and must be stored privately. See [BACKUP_HISTORY.md](../features/BACKUP_HISTORY.md).
+
+
+## Scheduled Core backups — B2, 2026-10-16
+
+All backup schedule, run and delete routes accept `owner`, `desktop` and `web_owner`; plain `web` receives 403 (including schedule reads). Only role `owner` may save a full schedule or run a schedule whose mode is full. `web_owner` has exactly the same backup permissions as `desktop`, including cookie Origin checks. CORS permits DELETE as well as GET/POST.
+
+`GET /api/backups/schedule` returns the device-local configuration and state, plus `running`, `next_run` (Unix UTC seconds or null when disabled without a pending explicit run), and `available_bytes` (null if unavailable):
+
+```json
+{"version":1,"enabled":false,"destination":"","frequency":"daily","minute_utc":1230,
+ "weekday":null,"keep":14,"mode":"full","artwork":true,
+ "last_started":null,"last_success":null,"last_error":null,"last_path":null,
+ "running":false,"next_run":null,"available_bytes":null}
+```
+
+`POST /api/backups/schedule` replaces the configuration with `{enabled,destination,frequency,minute_utc,weekday,keep,mode,artwork}` and returns the same status shape. Unknown fields (including state fields and `version`) are rejected with 422. Frequency is `daily` or `weekly`; UTC minute is 0–1439; weekly requires weekday 0–6 (Sunday=0); keep is 1–100. Destination must already exist, be writable, and be outside the Core data directory and all library roots. Linked destination paths are rejected. Invalid configuration or destination returns 400 without saving. The initial configuration is disabled, daily at 20:30 UTC (04:30 Taiwan), keep 14, full with artwork. `device_dir/backup-schedule.json` uses atomic writes, rejects symlinks, and resets damaged state to defaults with diagnostics. It is never included in exported identity files.
+
+`POST /api/backups/run` takes no configuration overrides and runs the saved configuration, even when the schedule is disabled. It records `origin:"scheduled"` and participates in retention. Returns `{path,deferred:false}` on completion; while a plan is executing it queues one run and returns `{path:null,deferred:true}`. The worker retries that pending run every 10 minutes, for at most six hours, then runs even if the plan is still executing. A repeated Run request does not reset the deferral deadline. Calling Run on a full schedule requires `owner`.
+
+The worker checks every minute. At startup it checks once, after five minutes, for a missing success or one at least a daily/weekly period old and performs one catch-up, without replaying missed periods. Failed runs record `last_error` and diagnostics; retries, including explicit Run, are limited to once per hour using persisted `last_started`. Stopping Services immediately interrupts the worker's wait; an already-started filesystem export finishes safely.
+
+Manual exports and scheduled runs share one gate. Concurrent manual requests or configuration/deletion while busy return 503 (`Retry in a moment.`); the worker tries again on its next tick. Both export paths require available space of at least `(catalog database + artwork database) × 1.2 + 1 GiB`, including committed WAL pages, before creating an output folder. This check includes artwork size even if the configuration omits artwork. A failed check creates no partial export and performs no retention. Exported SQLite databases use DELETE journal mode and leave no WAL/SHM sidecars.
+
+Only after a successful export, retention scans the destination's top-level `Galroon-backup-*` non-symlink directories with a parsable Galroon manifest, `origin:"scheduled"` and the active library ID. It retains the newest `keep` by manifest `created` (the newly exported folder wins ties, then folder path). Manual, other-library, linked, unrecognized and unparsable entries are untouched. Retention does not use history to discover candidates; matching history entries are marked deleted when present.
+
+`DELETE /api/backups/{id}` removes only an existing manual backup recorded in history, whose non-linked `Galroon-backup-*` folder and manifest still identify this library and manual origin, and whose destination is outside data/library roots. It marks the history entry `deleted:true` and returns `{deleted:true}`; repeating deletion of an already marked entry succeeds. Scheduled or mismatched entries return 400. No full-mode restriction applies to deleting an existing manual backup.
