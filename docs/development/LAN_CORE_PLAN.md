@@ -13,7 +13,7 @@
 
 - **主要部署目標：Core 跑在 Synology NAS 上**（使用者的 DS920+，x86_64，透過 Container Manager 執行 Docker）。也保留 Windows 機器當 Core 主機的方式。
 - 區網內的 Windows 桌面程式透過配對連到 Core，可讀可寫（`desktop` 角色）。
-- 其他裝置的瀏覽器可以唯讀瀏覽（`web` 角色）。
+- 其他裝置的瀏覽器可用配對碼唯讀瀏覽（`web`，12 小時），或以 owner 密碼登入編輯（`web_owner`，30 天，desktop 等級，無 owner-only 權限）。
 - 不在家時，可透過 Tailscale 或 WireGuard 讓客戶端直接連到 Core 的虛擬內網位址（見 4.13）。
 - 預設行為不變：沒開區網模式時，Core 仍然只綁定 loopback，既有行為與 API 契約的回歸測試全部通過。
 
@@ -37,7 +37,7 @@
 
 ### 3.1 已經具備、可沿用的部分
 
-- **三種身分**：本機 owner（程序內 `App.token`，經控制通道取得）、配對桌面 `desktop`（bearer，固定 90 天）、瀏覽器 `web`（cookie，固定 12 小時）。`last_used` 不會延長期限。見 `crates/core/src/access.rs:11`、`access.rs:40`。
+- **四種身分**：本機 owner（程序內 `App.token`，經控制通道取得）、配對桌面 `desktop`（bearer，固定 90 天）、配對瀏覽器 `web`（cookie，固定 12 小時）、密碼登入瀏覽器 `web_owner`（cookie，固定 30 天）。`last_used` 不會延長期限。見 `crates/core/src/access.rs:11`、`access.rs:40`。
 - **配對碼**：只有 owner 能產生；12 位 hex、5 分鐘過期、交易內一次性兌換、同時最多 5 組有效。**目前沒有逐筆撤銷未兌換配對碼的 API**；`revoke` 撤銷的是已發出的 session，改 owner 密碼才會清掉所有配對碼（`access.rs:29`、`access.rs:38`、`access.rs:86`）。
 - **web 角色禁止收藏寫入**：middleware 擋下已認證 web session 的非 GET/HEAD 請求（登出例外）。這不代表 GET 沒有副作用，例如快取或 session `last_used` 更新（`access.rs:61`、`artwork.rs:45`）。
 - **連線身分鎖定**：請求**帶了** `x-galroon-library` / `x-galroon-device` 且不符時回 409；省略標頭仍可通過。`/api/health`、`/api/access/status`、login、pair 不經這項檢查（`access.rs:61`、`access.rs:68`）。
@@ -65,7 +65,7 @@
 | # | 位置 | 問題 |
 |---|---|---|
 | R1 | `access.rs:31`、`access.rs:82`、`lib.rs:93` | 嘗試次數以 `kind` 為單位全域共用：視窗開始後 60 秒內超過 10 次就拒絕。另有全域 `login_gate`（一次只處理一個登入）。區網上任何一台機器都能影響所有人。 |
-| R2 | `access.rs:33`、`access.rs:40` | 瀏覽器登入用的是「owner 密碼」，但它**只能換到 `web` session**，換不到 owner 權限（owner 權限只來自 `App.token`）。真正的風險是：一個長期共用的密碼會在區網上被反覆輸入和傳送。 |
+| R2 | `access.rs:33`、`access.rs:40` | 瀏覽器登入用的是「owner 密碼」，它可換到 **desktop 等級的 `web_owner` session**，換不到 owner 權限（owner 權限只來自 `App.token`）。真正的風險是：一個長期共用的密碼會在區網上被反覆輸入和傳送。 |
 | R3 | `access.rs:82`、`access.rs:87` | 登入與登出的 `Set-Cookie` 都沒有 `Secure`。 |
 | R4 | `src/api.ts:105` 與 6 個呼叫點 | 本機資料夾選擇器 `folder()` 選的是**客戶端**的路徑，但 Core 會在**自己的機器**上使用。受影響的有：新增來源（`main.tsx:138`）、整理目的地（`main.tsx:106`）、重複檔隔離（`DuplicatePanel.tsx:10`）、acquire 目的地（`AcquirePanel.tsx:20`）、備份匯出（`BackupPanel.tsx:17`）、來源重新對應（`SourceRemap.tsx:9`）。其中整理和隔離**只能**用選擇器，遠端連線時根本沒有正確的輸入方式。 |
 | R5 | `src/api.ts:73`、`:95` | 前端用 `fetch` 直接連 Core，這條路沒有憑證綁定能力。WebView2 原生層有憑證錯誤事件可以掛接，但需要另外寫 Tauri 整合並驗證。 |
@@ -134,11 +134,13 @@
 | AI 建議讀取（schema 47） | ✓ | ✓ | ✓（路徑投影） | ✓（路徑投影） |
 | AI 建議建立／確認／批次確認／略過 | ✓ | ✓ | ✗ | ✗ |
 | Core 檔案操作（見 4.7） | ✓ | ✓ | ✗ | ✗ |
-| 密碼登入 | — | — | ✓（維持現狀） | **✗** |
+| 密碼登入（取得 `web_owner`） | — | — | ✓ | ✓（HTTPS） |
 | 瀏覽器配對碼兌換 | — | — | ✓ | ✓ |
 | 產生配對碼、裝置管理、改密碼、網路設定 | ✓ | ✗ | ✗ | ✗ |
 | 診斷、封面快取管理、`/api/timeline` | ✓ | 維持現狀 | ✗ | ✗ |
 | 停止、還原 Core | 僅本機控制器 | ✗ | ✗ | ✗ |
+
+`web_owner` 在 loopback 與 LAN 均具有上表 `desktop` 權限，回應不套用 `web` 路徑投影；所有 cookie 非 GET/HEAD 請求須通過 Origin 檢查（缺少 Origin 也拒絕）。舊有 `web` session 不遷移，配對碼不能產生 `web_owner`。
 
 實作時要附上「角色 × 連線方式 × 端點」的自動化測試矩陣，包含靜態檔、未知 API 路由與 OPTIONS。
 
@@ -206,8 +208,8 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 
 ### 4.6 瀏覽器客戶端（R2、R3）
 
-- **區網監聽器停用密碼登入**：`/api/access/login` 在 LAN 上一律 403。理由是不讓一個長期共用的密碼在區網上反覆傳送；它本來就換不到 owner 權限。
-- 改用 4.4 的 `web` 配對碼。`WebLogin.tsx` 需要新增配對碼表單。
+- **區網 HTTPS 開放密碼登入**（2026-10-16 決策）：`/api/access/login` 要求 socket peer 與精確 `https://{Host}` Origin，發出 30 天 `web_owner` cookie；owner bearer 仍禁止 LAN。缺少或錯誤 Origin 回 403。
+- 保留 4.4 的 `web` 配對碼表單；loopback 與 LAN 都提供密碼登入及配對碼登入。
 - LAN 上發出的 cookie（含登出時清除用的那個）都加上 `Secure`。
 - **瀏覽器的保證比桌面弱**：瀏覽器無法做 SPKI 綁定，使用者第一次連線時會看到自簽憑證警告。第 1 階段的做法是讓 Core 主機畫面顯示**整張憑證的 SHA-256**（瀏覽器憑證資訊顯示的是這個值，不是 SPKI），並在文件寫出逐步比對程序。威脅模型（第 5 節）分開描述桌面與瀏覽器。
 - 本機 CA 或正式憑證延後到第 2 階段評估。
@@ -282,7 +284,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 - 三層上限：**每個 IP**（嚴格）、**每個 IPv6 /64**（較寬）、**全域**（最寬）。`kind` 欄位本來就是 TEXT，可以存複合 key，不一定需要遷移。
 - 只信任 socket 的對端位址（axum `ConnectInfo`），不讀任何 `X-Forwarded-*`。
 - IP 先正規化（IPv4-mapped IPv6 轉回 IPv4）。來源紀錄要有最大數量與淘汰規則。
-- `login_gate` 只保護密碼登入（argon2 很耗 CPU）。LAN 停用密碼登入後，它只會在 loopback 上被用到。配對碼兌換不經過它。
+- `login_gate` 只保護密碼登入（argon2 很耗 CPU）。loopback 與 LAN HTTPS 共用它及既有登入限流。配對碼兌換不經過它。
 
 ### 4.12 Core 主機的生命週期（R9、R14）
 
@@ -293,7 +295,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 ### 4.13 Tailscale 與反向代理
 
 - 第 1 階段支援的方式：Core 的區網監聽器直接綁定 Tailscale 介面位址（`100.64.0.0/10`），客戶端用一般的配對字串連線。
-- **不支援** `tailscale serve` 或任何反向代理。原因是代理會把遠端請求變成 loopback 請求，等於取得 loopback 的權限（密碼登入，甚至 owner bearer）；而改成信任 `X-Forwarded-*` 也不安全。若之後要支援，必須另外提供「代理專用入口」，仍然套用 LAN 規則。
+- **不支援** `tailscale serve` 或任何反向代理。原因是代理會把遠端請求變成 loopback 請求，等於取得 loopback 的權限（owner bearer）；而改成信任 `X-Forwarded-*` 也不安全。若之後要支援，必須另外提供「代理專用入口」，仍然套用 LAN 規則。
 
 ### 4.14 延後的項目
 
@@ -355,6 +357,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 | 指令 | 作用 |
 |---|---|
 | `galroon-core owner setup` | 設定 owner 密碼，從 stdin 讀取，不放在命令列參數 |
+| `galroon-core owner change-password` | 從 stdin 讀取新密碼，撤銷所有 session 與未使用配對碼 |
 | `galroon-core owner pair --name <名稱> [--role desktop\|web]` | 產生配對碼；PR 3 之後輸出 4.4 的配對字串 |
 | `galroon-core owner devices` / `owner revoke <id>` | 列出、撤銷已配對的裝置 |
 | `galroon-core owner network ...` | 區網設定（PR 2、PR 3 之後） |
@@ -408,8 +411,8 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 | 區網上被動竊聽 | TLS | TLS |
 | 區網上中間人 | SPKI 綁定，不符就中止，沒有「仍然信任」 | **僅靠使用者第一次連線時人工比對憑證指紋**；略過警告就沒有保護 |
 | 暴力嘗試配對碼 | 48 位元配對碼、5 分鐘過期、一次性，加上分層的嘗試次數限制 | 同左 |
-| 讓其他人無法登入或配對 | 分層嘗試次數限制；LAN 上沒有密碼登入 | 同左 |
-| 竊取瀏覽器登入密碼 | 不適用 | LAN 上停用密碼登入 |
+| 讓其他人無法登入或配對 | 分層嘗試次數限制；密碼登入維持每 IP 每分鐘 10 次 | 同左 |
+| 竊取瀏覽器登入密碼 | 不適用 | LAN HTTPS；先比對憑證 SHA-256，再於 Mac 鑰匙圈信任一次 |
 | 本機惡意程式取得遠端憑證 | WebView 拿不到 NAS bearer（原生轉發；只取得短期本機密鑰）；bearer 在 Windows 認證管理員 | 不適用 |
 | 惡意網頁做 DNS rebinding | Host 限制，加上憑證不符 | 同左 |
 | 被偷走的 `desktop` 憑證 | owner 可撤銷；**持有者可以做所有 Core 檔案操作**（4.7） | 不適用 |
@@ -485,7 +488,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 
 1. 在 NAS 上以 compose 啟動 Core，執行 `docker exec galroon galroon-core owner session` 取得 session JSON，存到 Mac。
 2. 在 Mac 上開 SSH 通道：`ssh -N -L 127.0.0.1:14800:127.0.0.1:14800 galroon-dev@192.168.50.154`。
-3. 以 `GALROON_DEV_SESSION=<session 檔> npm run dev` 開啟開發版 UI，新增來源 `/volume1/Backup/Galgame`，執行掃描與自動匹配。（一般瀏覽器登入只有 `web` 權限，不能掃描。）
+3. 以 `GALROON_DEV_SESSION=<session 檔> npm run dev` 開啟開發版 UI，新增來源 `/volume1/Backup/Galgame`，執行掃描與自動匹配。（正式瀏覽器以 owner 密碼登入也可掃描；配對碼登入的 `web` 維持唯讀。）
 
 合格條件：
 
@@ -514,7 +517,7 @@ galroon-pair:v1?addr=<host>:<port>&code=<12 hex>&fp=<SPKI SHA-256，base32 無�
 - 從遠端用 Core 路徑輸入新增來源、整理、隔離，檔案在 Core 主機上正確處理。
 - 中斷網路後重連；Core IP 改變後重新輸入位址（指紋不變，不需重新配對）。
 - 撤銷裝置後，該裝置立即失效並顯示「需要重新配對」。
-- 瀏覽器照文件步驟比對憑證指紋後登入，畫面上看不到 Core 主機路徑。
+- 瀏覽器照文件步驟比對憑證指紋並信任後登入：配對碼 `web` 看不到 Core 主機路徑；密碼 `web_owner` 可見真實路徑且可編輯，仍無 owner-only 權限。
 - 透過 Tailscale 位址從外部網路連線。
 - 遵守「零錯誤匹配」與現有使用者故事驗收規則；區網功能不能改變匹配結果。
 

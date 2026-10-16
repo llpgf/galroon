@@ -7,16 +7,16 @@ const PASSWORD:&str="Generated LAN fixture password";
 fn fixture()->(tempfile::TempDir,App,String,String){
  let t=tempfile::tempdir().unwrap();let mut app=crate::initialize(t.path().join("state")).unwrap();app.network=Some(NetworkSettings::for_test("192.168.50.154".parse().unwrap(),14830));setup(&app.db,PASSWORD,false).unwrap();
  let code=create_pair(&app.db,"LAN desktop","desktop").unwrap();let session=redeem(&app.db,code["code"].as_str().unwrap()).unwrap();let desktop=session["token"].as_str().unwrap().to_owned();
- let (token,_)=login(&app.db,PASSWORD,"Browser").unwrap();let cookie=format!("{}={token}",cookie_name(&app));(t,app,desktop,cookie)
+ let code=create_pair(&app.db,"Browser","web").unwrap();let(token,_)=redeem_from(&app.db,code["code"].as_str().unwrap(),"web",Ipv4Addr::LOCALHOST.into()).unwrap();let cookie=format!("{}={token}",cookie_name(&app));(t,app,desktop,cookie)
 }
 #[tokio::test]async fn role_transport_endpoint_matrix(){
- let (_t,app,desktop,cookie)=fixture();
- for transport in [Transport::Loopback,Transport::Lan]{for role in ["owner","desktop","web"]{
+ let (_t,app,desktop,cookie)=fixture();let(token,_)=login(&app.db,PASSWORD,"Owner browser").unwrap();let owner_cookie=format!("{}={token}",cookie_name(&app));
+ for transport in [Transport::Loopback,Transport::Lan]{for role in ["owner","desktop","web","web_owner"]{
   let router=crate::router_for(app.clone(),transport);let host=if transport==Transport::Lan{"192.168.50.154:14830"}else{"localhost:14800"};let origin=format!("{}://{host}",if transport==Transport::Lan{"https"}else{"http"});
-  for (method,path,expected) in [("GET","/api/health",200),("HEAD","/api/health",200),("GET","/api/context",200),("GET","/api/works",200),("POST","/api/works",if role=="web"{403}else{200}),("GET","/api/access/devices",if role=="owner"{200}else{403}),("POST","/api/access/login",if transport==Transport::Lan{403}else{400}),("GET","/__lan_missing_static__.js",404),("GET","/api/__lan_unknown__",404),("OPTIONS","/api/works",200),("POST","/api/access/me",if role=="web"{403}else{405})]{
+  for (method,path,expected) in [("GET","/api/health",200),("HEAD","/api/health",200),("GET","/api/context",200),("GET","/api/works",200),("POST","/api/works",if role=="web"{403}else{200}),("GET","/api/access/devices",if role=="owner"{200}else{403}),("POST","/api/access/login",400),("GET","/__lan_missing_static__.js",404),("GET","/api/__lan_unknown__",404),("OPTIONS","/api/works",200),("POST","/api/access/me",if role=="web"{403}else{405})]{
    let expected=if transport==Transport::Lan&&role=="owner"{403}else{expected};
    let mut request=Request::builder().method(method).uri(path).header(header::HOST,host).header(header::ORIGIN,&origin).header(header::CONTENT_TYPE,"application/json").header(header::ACCESS_CONTROL_REQUEST_METHOD,"POST").extension(ConnectInfo(PeerAddr("192.168.1.40:42000".parse().unwrap()))).extension(Transport::Loopback);
-   request=if role=="web"{request.header(header::COOKIE,&cookie)}else{request.header(header::AUTHORIZATION,format!("Bearer {}",if role=="owner"{&app.token}else{&desktop}))};
+   request=if matches!(role,"web"|"web_owner"){request.header(header::COOKIE,if role=="web"{&cookie}else{&owner_cookie})}else{request.header(header::AUTHORIZATION,format!("Bearer {}",if role=="owner"{&app.token}else{&desktop}))};
    let response=router.clone().oneshot(request.body(Body::from(r#"{"title":"LAN matrix edit","password":"incorrect"}"#)).unwrap()).await.unwrap();assert_eq!(response.status().as_u16(),expected,"{role} {transport:?} {method} {path}");
    if path=="/api/context"&&expected==200{let bytes=axum::body::to_bytes(response.into_body(),4096).await.unwrap();let value:Value=serde_json::from_slice(&bytes).unwrap();assert_eq!(value["core"]["transport"],if transport==Transport::Lan{"lan"}else{"loopback"});assert_eq!(value["core"]["location"],"local");assert_eq!(value["capabilities"]["lan_access"],true);}
   }
@@ -64,7 +64,7 @@ fn fixture()->(tempfile::TempDir,App,String,String){
  assert_eq!(client.get(format!("{base}/api/health")).send().await.unwrap().status(),200);
  assert!(client.get(format!("http://{lan_addr}/api/health")).send().await.is_err());
  assert_eq!(client.get(format!("{base}/api/health")).bearer_auth(&app.token).send().await.unwrap().status(),403);
- assert_eq!(client.post(format!("{base}/api/access/login")).header("Origin",&base).json(&json!({"password":PASSWORD})).send().await.unwrap().status(),403);
+ assert_eq!(client.post(format!("{base}/api/access/login")).header("Origin",&base).json(&json!({"password":PASSWORD})).send().await.unwrap().status(),200);
  assert_eq!(client.get(format!("{base}/api/health")).header("Host","evil.local").send().await.unwrap().status(),403);
  let context=client.get(format!("{base}/api/context")).bearer_auth(&desktop).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(context["core"]["transport"],"lan");
  let code=create_pair(&app.db,"HTTPS redeemed","desktop").unwrap();let paired=client.post(format!("{base}/api/access/pair")).header("Origin",&base).json(&json!({"code":code["code"]})).send().await.unwrap().error_for_status().unwrap().json::<Value>().await.unwrap();assert_eq!(paired["role"],"desktop");

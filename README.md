@@ -35,7 +35,7 @@ Galroon 是以 **Rust Core + React / TypeScript + Tauri 2** 開發的 Windows �
 - **版本與資源**：管理不同版本、偏好版本、附加內容與跨作品共用的資源。
 - **檔案操作**：預覽並確認整理、重複檔案隔離、復原、複製與封存檔解壓操作。
 - **背景任務**：暫停、繼續、檢視任務歷史與分類摘要，並備份／還原收藏資料庫。
-- **Core 與前端分離**：Windows 桌面程式可編輯，本機瀏覽器介面提供唯讀瀏覽。
+- **Core 與前端分離**：Windows 桌面程式與以擁有者密碼登入的瀏覽器可編輯；瀏覽器支援本機及區網 HTTPS，密碼登入有效期為 30 天，配對碼登入維持 12 小時唯讀。存取管理仍僅限本機 owner。區網使用自簽憑證時，先比對指紋，再於 Mac 鑰匙圈信任一次；詳見 [NAS 指南](docs/development/NAS.md)。
 
 ### 使用範圍
 
@@ -136,7 +136,7 @@ The historical `v0.5.0` tag belongs to the earlier prototype and is not a newer 
 - **Editions and resources:** manage editions, preferences, extras and resources shared across works.
 - **File operations:** preview and approve organization, duplicate isolation, restore, copy and archive extraction.
 - **Background jobs:** pause and resume tasks, inspect history and entity summaries, and back up or restore the catalog.
-- **Separate Core and clients:** edit through the Windows desktop application and browse read-only through a local browser.
+- **Separate Core and clients:** edit through the Windows desktop application or a browser signed in with the owner password over loopback or LAN HTTPS. Password sessions last 30 days; paired browsers remain read-only for 12 hours. Access administration remains local-owner-only. For a self-signed LAN certificate, verify its fingerprint before trusting it once in the Mac keychain; see the [NAS guide](docs/development/NAS.md).
 
 ### Scope
 
