@@ -37,7 +37,7 @@ pub struct Entry {
     pub year: String, pub tags: Vec<String>, pub custom_tags: BTreeSet<String>,
     pub languages: BTreeSet<String>, pub states: BTreeSet<String>,
     pub search: String, pub status: String, pub favorite: bool, pub added: i64,
-    pub bonus_only: bool,
+    pub bonus_only: bool, pub rating: Option<i64>,
 }
 impl Entry {
     pub fn title(&self, mode: &str) -> &str {

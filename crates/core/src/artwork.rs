@@ -19,7 +19,7 @@ async fn known(a:&App,url:&str)->Result<bool,ApiError>{
   if c.query_row("SELECT EXISTS(SELECT 1 FROM works WHERE cover=?1 AND merged_into IS NULL)",[&target],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?{return Ok(true);}
   c.query_row("SELECT EXISTS(SELECT 1 FROM artwork_references WHERE url=?1)",[&target],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())
  }).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)?;
- Ok(stored||crate::artwork_library::contains(&a.state_dir,url)?||crate::matching::known_artwork(url).await)
+ Ok(stored||crate::artwork_library::contains(&a.state_dir,url)?||crate::release_calendar::references(&a.state_dir,url).map_err(ApiError)?||crate::matching::known_artwork(url).await)
 }
 async fn cached(base:std::path::PathBuf,url:String)->Result<Option<Image>,ApiError>{
  tokio::task::spawn_blocking(move||match crate::artwork_library::image(&base,&url)?{Some(image)=>Ok(Some(image)),None=>Cache::open(&base)?.get(&url)}).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)

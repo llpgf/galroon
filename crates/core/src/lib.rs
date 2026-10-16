@@ -78,6 +78,7 @@ pub mod watching;
 pub mod access;
 pub mod network;
 pub mod updates;
+pub mod release_calendar;
 pub mod pairing;
 pub mod lan_tls;
 pub mod lan_client;
@@ -144,7 +145,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/bangumi/link",post(bangumi::link))
     .route("/api/bangumi/hide",post(bangumi::hide))
     .route("/api/context",get(context::get).post(context::update))
-    .route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
+    .route("/api/release-calendar",get(release_calendar::get)).route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))
     .route("/api/access/setup",post(access::configure)).route("/api/access/password",post(access::change_password))
     .route("/api/access/login",post(access::web_login_from)).route("/api/access/logout",post(access::logout))
