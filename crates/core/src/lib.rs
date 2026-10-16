@@ -67,6 +67,7 @@ pub mod relation_overrides;
 pub mod entity_overrides;
 pub mod grouping;
 pub mod backup;
+#[cfg_attr(any(windows,target_os="macos"),allow(dead_code))] mod secret_files;
 pub mod backup_schedule;
 pub mod roots;
 pub mod editions;

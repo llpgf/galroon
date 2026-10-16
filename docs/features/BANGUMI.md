@@ -35,7 +35,7 @@
 
 ## 儲存與 API
 
-Schema 49 增加 `bangumi_links`（作品對應、同步基準、隱藏狀態）、`bangumi_remote`（遠端快照）、`bangumi_ignored`（略過清單）。帳號設定位於 `settings`，權杖位於執行 Core 的 Windows Credential Manager 或 macOS Keychain。本版 Linux Core 尚未支援 Bangumi 憑證儲存。
+Schema 49 增加 `bangumi_links`（作品對應、同步基準、隱藏狀態）、`bangumi_remote`（遠端快照）、`bangumi_ignored`（略過清單）。帳號設定位於 `settings`，權杖位於執行 Core 的 Windows Credential Manager 或 macOS Keychain；Linux Core（NAS）存成裝置資料夾下 `credentials/` 的擁有者專用檔案（資料夾 0700、檔案 0600），不進入任何備份。
 
 收藏備份不含帳號設定及憑證，還原後不會自動登入或上傳；作品卡與關聯則保留。唯讀瀏覽器不能讀取帳號同步介面，也不能修改同步設定。
 
