@@ -9,7 +9,7 @@
   不含：檔案整理/搬移、Get files、備份還原、連線配對（之後另批）。
 - **兩層測試環境**
   - **M（Mac 自動化層）**：`ui_core` + Vite，Playwright 驅動瀏覽器；資料用唯讀 NAS 測試集（38 個頂層資料夾，`GALROON_TESTSET` 指向外接 SSD 上的 `/Volumes/新增磁碟區/galroon-testset-2026-10/`）＋真實 VNDB；見[遷移計畫](../plans/2026-10-16-e2e-nas-test-set.md)與[答案卷](../../tests/e2e/golden/nas_testset.json)。每次測試用全新的 GALROON 資料目錄，不碰真實收藏。
-  - **W（Windows 原生層）**：在測試筆電用 NSIS 安裝檔走一次完整流程。
+  - **W（Windows 原生層）**：在測試筆電用 NSIS 安裝檔走一次完整流程。已自動化：`scripts/windows/acceptance.ps1` 靜默安裝、以全新 `GALROON_DATA` 在登入中的桌面開啟 app（WebView2 遠端除錯埠只綁 127.0.0.1），再由 `tests/windows/`（`playwright.windows.config.ts`）操作真實視窗。
 - **完成定義**：所有故事的 M 層測試全綠 ＋ golden 對照錯配數 = 0 ＋ W 層安裝流程走過一次。測試發現 bug → 修 → 重驗，直到綠燈。
 - **共通規則（適用每條故事）**
   - **G1 絕不錯配**：寧可留待處理，也不把資源綁到錯的作品。錯配是硬性失敗。
@@ -234,6 +234,14 @@
 2. 首次開啟 → 自動連上本機 Core，無錯誤畫面。
 3. Sources 加入 sandbox 子集（`D:\galroon-mcp-sandbox\source`）→ 自動掃描與匹配 → 出現封面卡，錯配 = 0。
 4. 原生檔案監視：再複製一個遊戲資料夾進來源 → 不按按鈕即自動出現新卡。
+
+執行（在測試筆電、該 checkout 已 `npm ci` 與 `npm run desktop:build`，且有使用者登入桌面）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\acceptance.ps1'"
+```
+
+答案取自舊 `sandbox_data.json` 中這 4 個資料夾；任何錯配都是硬性失敗。監看步驟用一個標記內容固定的替身資料夾，測完只刪除它自己。
 
 ## 五、AI 協助配對與多作品資源（2026-10-12 核准）
 
