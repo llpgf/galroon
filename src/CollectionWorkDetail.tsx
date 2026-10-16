@@ -26,7 +26,7 @@ export function CollectionWorkDetail({roots,busy,act,refresh,onEdit,onGroup,onRe
  const resolve=(item:Conflict,useProvider:boolean)=>void act(async()=>{let revision=conflicts!.revision;if(useProvider)revision=(await api<{revision:number}>(`/works/${work.id}/metadata`,{revision,reset:[item.field]})).revision;const items=conflicts!.items.filter(c=>c.field!==item.field);setConflicts(items.length?{revision,items}:null);await refresh();});
  const update=(patch:object)=>void act(()=>api(`/works/${work.id}`,{revision:work.revision,...patch}));
  return <WorkExperience {...experience} actions={canWrite?<fieldset className="inline detail-actions">
-  <select className="status-select" disabled={busy} aria-label={t('status')} value={work.status} onChange={e=>update({status:e.target.value})}>{['backlog','playing','completed','on_hold','dropped'].map(s=><option value={s} key={s}>{t(s)}</option>)}</select>
+  <select className="status-select" disabled={busy} aria-label={t('status')} value={work.status} onChange={e=>update({status:e.target.value})}>{['none','backlog','playing','completed','on_hold','dropped'].map(s=><option value={s} key={s}>{t(s)}</option>)}</select>
   <button className="icon-toggle" disabled={busy} aria-pressed={work.favorite} aria-label={t('favorite')} title={t('favorite')} onClick={()=>update({favorite:!work.favorite})}><Heart size={16} fill={work.favorite?'currentColor':'none'}/></button>
   <AddToListButton member={{work_key:'local:'+work.id,title:work.title}}/>
   <details className="toolbar-menu"><summary aria-label={t('moreOptions')} title={t('moreOptions')}><MoreHorizontal size={18}/></summary><div className="toolbar-menu-panel">

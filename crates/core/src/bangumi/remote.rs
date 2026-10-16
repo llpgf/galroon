@@ -64,7 +64,8 @@ impl Client {
             rows.extend(page.data);
             if rows.len()>=page.total {break;}
         }
-        for row in &rows { super::store::local_status(row.status)?; if row.subject_type!=4||row.subject.id!=row.subject_id {return Err(Error("Bangumi returned an invalid game collection".into()));} }
+        for row in &rows { if !(1..=5).contains(&row.status){return Err(Error("Invalid Bangumi collection status".into()));}
+            if row.subject_type!=4||row.subject.id!=row.subject_id {return Err(Error("Bangumi returned an invalid game collection".into()));} }
         Ok(rows)
     }
     pub async fn status(&self,user:&str,id:i64)->Result<Option<i64>> {
@@ -72,9 +73,10 @@ impl Client {
         let response=self.send(reqwest::Method::GET,&format!("/v0/users/{user}/collections/{id}"),None).await?;
         if response.status()==404 {return Ok(None);}
         #[derive(Deserialize)]struct Status{#[serde(rename="type")]status:i64}
-        let value:Status=Self::json(response).await?;super::store::local_status(value.status)?;Ok(Some(value.status))
+        let value:Status=Self::json(response).await?;if !(1..=5).contains(&value.status){return Err(Error("Invalid Bangumi collection status".into()));}Ok(Some(value.status))
     }
     pub async fn set_status(&self,id:i64,status:i64,exists:bool)->Result<()> {
+        if !(1..=5).contains(&status){return Err(Error("Bangumi cannot clear a collection status".into()));}
         // Only status is patched. Existing ratings, comments, tags and visibility are untouched.
         let body=if exists {json!({"type":status})} else {json!({"type":status,"private":true})};
         let method=if exists{reqwest::Method::PATCH}else{reqwest::Method::POST};

@@ -198,7 +198,7 @@ pub async fn read(State(a):State<crate::App>,h:HeaderMap,Path(id):Path<String>,Q
  }
  #[test]fn manual_compute_discards_changes_and_replays_receipts_without_reevaluation(){
  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().into()).unwrap();
- {let c=app.db.lock().unwrap();c.execute("INSERT INTO works(id,title,original_title) VALUES('w','W','W')",[]).unwrap();let definition=json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"status","mode":"any","values":["backlog"]}}});c.execute("INSERT INTO smart_lists(id,name,description,revision,definition) VALUES('s','S','',1,?1)",[definition.to_string()]).unwrap();}
+ {let c=app.db.lock().unwrap();c.execute("INSERT INTO works(id,title,original_title) VALUES('w','W','W')",[]).unwrap();let definition=json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"status","mode":"any","values":["none"]}}});c.execute("INSERT INTO smart_lists(id,name,description,revision,definition) VALUES('s','S','',1,?1)",[definition.to_string()]).unwrap();}
  let input=Build{revision:1,request_id:"manual".into()};
  assert!(compute_unlocked(&app,"s",&input,&||false,&||{app.db.try_lock().unwrap().execute("UPDATE works SET title='Changed'",[]).unwrap();}).err().unwrap().0.contains("Collection changed"));
  assert_eq!(app.db.lock().unwrap().query_row("SELECT count(*) FROM smart_snapshot_requests",[],|r|r.get::<_,i64>(0)).unwrap(),0);
@@ -217,7 +217,7 @@ pub async fn read(State(a):State<crate::App>,h:HeaderMap,Path(id):Path<String>,Q
  #[tokio::test]async fn preview_handler_uses_readonly_connection_and_bounds_work(){
  let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().into()).unwrap();
  app.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w','Fixture','Fixture')",[]).unwrap();
- let definition:Definition=serde_json::from_value(json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"status","mode":"any","values":["backlog"]}}})).unwrap();
+ let definition:Definition=serde_json::from_value(json!({"schema_version":1,"scope":"collection","sort":"title","rule":{"kind":"field","predicate":{"field":"status","mode":"any","values":["none"]}}})).unwrap();
  let mut h=HeaderMap::new();h.insert("authorization",format!("Bearer {}",app.token).parse().unwrap());
  let before=app.db.lock().unwrap().total_changes();
  let result=preview(State(app.clone()),h.clone(),Json(definition.clone())).await.ok().unwrap().0;assert_eq!(result["total"],1);assert_eq!(app.db.lock().unwrap().total_changes(),before);

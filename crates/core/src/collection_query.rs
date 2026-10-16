@@ -24,7 +24,7 @@ impl Default for Query {
 impl Query {
     pub fn validate(&self) -> Result<(), String> {
         if self.query.encode_utf16().count()>200 || self.locale.len()>64 { return Err("Collection search is too long".into()); }
-        if !["all","favorite","backlog","playing","completed","on_hold","dropped"].contains(&self.status.as_str()) || !["added","title","newest","oldest"].contains(&self.sort.as_str()) || !["display","original"].contains(&self.title_mode.as_str()) { return Err("Invalid collection view".into()); }
+        if !["all","favorite","none","backlog","playing","completed","on_hold","dropped"].contains(&self.status.as_str()) || !["added","title","newest","oldest"].contains(&self.sort.as_str()) || !["display","original"].contains(&self.title_mode.as_str()) { return Err("Invalid collection view".into()); }
         let f=&self.filters;
         if !["","has_resources","available","missing","unverified","offline","unknown","no_resources"].contains(&f.availability.as_str()) { return Err("Invalid availability filter".into()); }
         if f.tags.len()>100 || f.excluded_tags.len()>100 || [&f.studio,&f.year,&f.language,&f.tag].into_iter().chain(f.tags.iter()).chain(f.excluded_tags.iter()).any(|s| s.len()>1024) { return Err("Too many or oversized collection filters".into()); }

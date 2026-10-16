@@ -39,6 +39,7 @@ pub(super) fn patch(field:&str,value:i64)->Result<Value>{
  match field {
   "rating" if value==0=>Ok(json!({"vote":null})),
   "rating" if (10..=100).contains(&value)=>Ok(json!({"vote":value})),
+  "status" if value==0=>Ok(json!({"labels_unset":[1,2,3,4,5]})),
   "status" if (1..=5).contains(&value)=>Ok(json!({"labels_set":[value],"labels_unset":(1..=4).filter(|id|*id!=value).collect::<Vec<_>>()})),
   _=>Err(Error("Invalid VNDB sync value".into()))
  }

@@ -5,7 +5,7 @@ import {emptyFilters,type Filters} from './library';
 
 type TitleMode='display'|'original';
 type Open=(status?:string,filters?:Partial<Filters>)=>void;
-const STATUSES=['playing','completed','backlog','on_hold','dropped'] as const;
+const STATUSES=['none','playing','completed','backlog','on_hold','dropped'] as const;
 const AVAILABILITY=['available','offline','missing','unverified','no_resources','unknown'] as const;
 type Row={key:string;label:string;count:number;open:()=>void};
 

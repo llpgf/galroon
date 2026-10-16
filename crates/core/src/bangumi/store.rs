@@ -20,8 +20,8 @@ pub fn account(c:&Connection)->Result<Option<Account>> {
 pub fn save_account(c:&Connection,a:&Account)->Result<()> {
     c.execute("INSERT INTO settings(key,value) VALUES('bangumi.account',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(a)?])?;Ok(())
 }
-pub fn local_status(status:i64)->Result<&'static str> {match status{1=>Ok("backlog"),2=>Ok("completed"),3=>Ok("playing"),4=>Ok("on_hold"),5=>Ok("dropped"),_=>Err(Error("Invalid Bangumi collection status".into()))}}
-pub fn remote_status(status:&str)->Result<i64> {match status{"backlog"=>Ok(1),"completed"=>Ok(2),"playing"=>Ok(3),"on_hold"=>Ok(4),"dropped"=>Ok(5),_=>Err(Error("Invalid local play status".into()))}}
+pub fn local_status(status:i64)->Result<&'static str> {match status{0=>Ok("none"),1=>Ok("backlog"),2=>Ok("completed"),3=>Ok("playing"),4=>Ok("on_hold"),5=>Ok("dropped"),_=>Err(Error("Invalid Bangumi collection status".into()))}}
+pub fn remote_status(status:&str)->Result<i64> {match status{"none"=>Ok(0),"backlog"=>Ok(1),"completed"=>Ok(2),"playing"=>Ok(3),"on_hold"=>Ok(4),"dropped"=>Ok(5),_=>Err(Error("Invalid local play status".into()))}}
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
 pub struct Candidate {pub id:String,pub title:String}
 #[derive(Clone,Debug,Serialize,Deserialize)]
@@ -31,6 +31,9 @@ impl Row {
 }
 pub fn classify(local:i64,remote:Option<i64>,base:Option<i64>)->&'static str {
     match (remote,base) {
+        (None,_) if local==0=>"same",
+        (Some(_),None|Some(0)) if local==0=>"pull",
+        (Some(r),Some(b)) if local==0&&r==b=>"cleared",
         (None,_)=>"missing",
         (Some(r),_) if local==r=>"same",
         (Some(_),None)=>"initial",

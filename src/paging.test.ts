@@ -16,7 +16,7 @@ import {emptyFilters} from './library';
 const query:CollectionQuery={filters:emptyFilters,query:'',status:'all',sort:'added',titleMode:'display',locale:'en'};
 function render<T>(fn:()=>T):T{hooks.cursor=0;const result=fn();const effects=hooks.effects.splice(0);effects.forEach(effect=>effect());return result;}
 async function settle<T>(fn:()=>T){await vi.runAllTimersAsync();render(fn);await vi.runAllTimersAsync();return render(fn);}
-function page(ids:string[],next:string|null='page-2',total=120){return {items:ids.map(id=>({id,favorite:false})),next,total,filtered:total,offset:0,revision:1,library_id:'library',view_token:'view',options:{studio:[],year:[],language:[],tag:[]},tag_counts:{},status_counts:{backlog:total},custom_tags:[]} as unknown as CollectionPage&ResourcePage;}
+function page(ids:string[],next:string|null='page-2',total=120){return {items:ids.map(id=>({id,status:'none',favorite:false})),next,total,filtered:total,offset:0,revision:1,library_id:'library',view_token:'view',options:{studio:[],year:[],language:[],tag:[]},tag_counts:{},status_counts:{none:total},custom_tags:[]} as unknown as CollectionPage&ResourcePage;}
 beforeEach(()=>{hooks.slots=[];hooks.effects=[];hooks.cursor=0;vi.resetAllMocks();vi.useFakeTimers();});
 afterEach(()=>{hooks.slots.forEach(slot=>slot?.cleanup?.());vi.useRealTimers();});
 
@@ -30,7 +30,7 @@ for(const kind of ['collection','resources'] as const)describe(kind+' paging ref
   let resolve!:(value:unknown)=>void;mock.readApi.mockImplementationOnce(()=>new Promise(r=>{resolve=r;}));generation++;
   state=render(usePage);expect(state.pageIndex).toBe(1);expect(state.loading).toBe(false);expect(state.data?.items.map(w=>w.id)).toEqual(['kept','removed']);
   await vi.runAllTimersAsync();expect(mock.readApi.mock.lastCall?.[0]).toContain('before=page-2');
-  const fresh=page(['kept','added'],'new-page-3',121);fresh.items[0].favorite=true;fresh.status_counts={playing:1,backlog:120};resolve(fresh);
+  const fresh=page(['kept','added'],'new-page-3',121);fresh.items[0].favorite=true;fresh.status_counts={playing:1,none:120};resolve(fresh);
   state=await settle(usePage);expect(state.pageIndex).toBe(1);expect(state.data).toBe(fresh);expect(state.restarted).toBe(false);
   mock.readApi.mockResolvedValueOnce(page(['third'],null));state.next();render(usePage);await settle(usePage);expect(mock.readApi.mock.lastCall?.[0]).toContain('before=new-page-3');
  });

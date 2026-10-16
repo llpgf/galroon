@@ -378,7 +378,7 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 .home-row strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .home-row>span>span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .home-column-more{align-self:flex-start;margin-top:auto;padding-top:8px}
-.seg-playing{background:var(--accent)}.seg-completed{background:var(--ok)}.seg-on_hold{background:var(--warn)}.seg-backlog{background:var(--track)}.seg-dropped{background:var(--danger)}
+.seg-playing{background:var(--accent)}.seg-completed{background:var(--ok)}.seg-on_hold{background:var(--warn)}.seg-none{background:var(--track)}.seg-backlog{background:var(--accent-soft)}.seg-dropped{background:var(--danger)}
 
 .home-meter{height:8px;border-radius:99px;background:var(--track);overflow:hidden}
 .home-meter span{display:block;height:100%;border-radius:inherit;background:var(--accent)}
