@@ -169,7 +169,7 @@ coreText_releaseConflict:'資料夾標示的品牌與發售日屬於另一部同
 coreText_scanComplete:'掃描完成',
 coreText_scanErrors:'掃描完成，但有部分資料夾無法讀取。',
 coreText_matchComplete:'配對完成。不確定的資源維持未配對。',
-home:'首頁',charRole_main:'主角',charRole_primary:'主要角色',charRole_side:'配角',charRole_appears:'登場',allStatuses:'全部',homeGreeting:'今天想玩哪一部？',homeFeatured:'精選',homeContinue:'繼續遊玩',homeRecent:'最近加入',homeViewWork:'查看作品',homePrevious:'上一個',homeNext:'下一個',homeSlide:'顯示 {{title}}',homePickTitle:'下一部玩什麼？',homePickCount_other:'從收藏裡挑，{{count}} 部符合',homePickShuffle:'幫我挑一部',homePickReady:'檔案可立即遊玩',homePickAll:'全部',homePickLead:'就玩這部',homePickNone:'沒有符合的作品。試著換個標籤，或關掉「檔案可立即遊玩」。',homePickSwap:'改選 {{title}}',homeOverview:'收藏一覽',homeShowAll:'全部顯示',homeNeedsMatching_other:'{{count}} 個資源待配對',homeTasksRunning_other:'{{count}} 個任務進行中',
+home:'首頁',charRole_main:'主角',charRole_primary:'主要角色',charRole_side:'配角',charRole_appears:'登場',allStatuses:'全部',homeGreeting:'今天想玩哪一部？',homeRecent:'最近加入',homeViewWork:'查看作品',homePickTitle:'下一部玩什麼？',homePickCount_other:'待玩中 {{count}} 部可立即遊玩',homePickAll:'全部',homePickNone:'沒有可立即遊玩的待玩作品。試著換個標籤。',homePickSwap:'改選 {{title}}',homeShowAll:'全部顯示',homeRandomRecent:'最近加入 · 隨機一部',homeRandomAnother:'隨機換一部',homePickHand:'候選作品',homePickDeal:'洗牌換一組',homePickBackHint:'點後面的牌可以改選',homeMyPlay:'我的遊玩',homeTotal_other:'共 {{count}} 部',homeViewMode:'顯示方式',homeViewTabs:'分頁',homeViewBoard:'看板',homeViewInCollection:'在收藏中查看',homeStatusAll_other:'全部 {{count}} 部',homeStatusMore_other:'其餘 {{count}} 部',homeStatusEmpty:'目前沒有作品。',homeTopStudios:'收藏最多的品牌',
 eyebrowMatch:'辨識作品',
 eyebrowScan:'唯讀掃描',
 eyebrowSource:'新增來源',
