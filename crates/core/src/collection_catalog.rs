@@ -122,10 +122,11 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     let entries=read_entries(c,roots,cancelled)?;
     let total=entries.len();
     let mut facets:BTreeMap<&str,BTreeMap<String,String>>=["studio","year","language","tag"].into_iter().map(|k|(k,BTreeMap::new())).collect();
-    let mut tag_counts=BTreeMap::<String,usize>::new();let mut statuses=BTreeMap::<String,usize>::new();
+    let mut tag_counts=BTreeMap::<String,usize>::new();let mut studio_counts=BTreeMap::<String,usize>::new();let mut statuses=BTreeMap::<String,usize>::new();
     for e in &entries {
         check(cancelled)?;
         *statuses.entry(e.status.clone()).or_default()+=1;
+        if !e.studio.is_empty() { *studio_counts.entry(format!("value:{}",filter::normalized(&e.studio))).or_default()+=1; }
         for (key,values) in [("studio",if e.studio.is_empty(){vec![]}else{vec![e.studio.as_str()]}),("year",if e.year.is_empty(){vec![]}else{vec![e.year.as_str()]}),("language",e.languages.iter().map(String::as_str).collect()),("tag",e.tags.iter().map(String::as_str).collect())] {
             for value in values {facets.get_mut(key).unwrap().entry(format!("value:{}",filter::normalized(value))).or_insert_with(||value.to_owned());}
         }
@@ -138,7 +139,7 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     statuses.insert("all".into(),total);
     let custom_tags={let mut s=c.prepare("SELECT id,name FROM custom_tags WHERE deleted=0 ORDER BY name_key")?;let rows=s.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;rows};
     let ids=visible.iter().map(|e|e.id.clone()).collect::<Vec<_>>();
-    let metadata=json!({"total":total,"filtered":filtered,"revision":revision,"library_id":library,"view_token":token,"options":options,"tag_counts":tag_counts,"status_counts":statuses,"custom_tags":custom_tags});
+    let metadata=json!({"total":total,"filtered":filtered,"revision":revision,"library_id":library,"view_token":token,"options":options,"tag_counts":tag_counts,"studio_counts":studio_counts,"status_counts":statuses,"custom_tags":custom_tags});
     let bytes=ids.iter().map(|id|id.capacity()+std::mem::size_of::<String>()).sum::<usize>()+metadata.to_string().len()*2;
     let view=Arc::new(View{ids,metadata,bytes,created:std::time::Instant::now()});
     let result=render(c,&view,offset,continuation(filtered)?,cancelled)?;if let Some(key)=cache_key {retain(key,view);}trace.complete=true;Ok(result)
@@ -218,7 +219,7 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         for i in 0..125 {c.execute("INSERT INTO works(id,title,original_title,tags,status,developer,released) VALUES(?1,?2,'原題',?3,?4,'Key','2004-04-28')",params![format!("w{i:03}"),format!("Title {i}"),if i%2==0 {"[\"Drama\",\"Ｄｒａｍａ\"]"}else{"[\"Comedy\"]"},if i%2==0 {"backlog"}else{"completed"}]).unwrap();}
         c.execute("UPDATE works SET aliases='[\"OnlyFirstWork\"]' WHERE id='w000'",[]).unwrap();
         let roots=Roots::new();let q=Query::default();let first=read(&c,&roots,&q,None);
-        assert_eq!(first["total"],125);assert_eq!(first["filtered"],125);assert_eq!(first["items"].as_array().unwrap().len(),60);assert_eq!(first["tag_counts"]["value:drama"],63);assert_eq!(first["status_counts"]["completed"],62);
+        assert_eq!(first["total"],125);assert_eq!(first["filtered"],125);assert_eq!(first["items"].as_array().unwrap().len(),60);assert_eq!(first["tag_counts"]["value:drama"],63);assert_eq!(first["status_counts"]["completed"],62);assert_eq!(first["studio_counts"]["value:key"],125);
         let second=read(&c,&roots,&q,first["next"].as_str());let third=read(&c,&roots,&q,second["next"].as_str());assert_eq!(third["items"].as_array().unwrap().len(),5);assert!(third["next"].is_null());
         let ids=[&first,&second,&third].iter().flat_map(|p|p["items"].as_array().unwrap()).map(|w|w["id"].as_str().unwrap()).collect::<BTreeSet<_>>();assert_eq!(ids.len(),125);
         let mut filtered=q.clone();filtered.query="OnlyFirstWork".into();let found=read(&c,&roots,&filtered,None);assert_eq!(found["items"][0]["id"],"w000");assert_eq!(found["total"],125);assert_eq!(found["filtered"],1);assert_eq!(found["tag_counts"],first["tag_counts"]);

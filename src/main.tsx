@@ -123,7 +123,7 @@ function App(){
  {error&&<div className="error-banner" role="alert"><span>{error}</span><button aria-label={t('close')} onClick={()=>setError('')}><X size={16}/></button></div>}
  <div className="content">{identity?.role==='web'&&<p className="read-only-note">{t('readOnlySession')}</p>}
 
- {view==='home'&&!detail&&<HomePanel generation={collectionGeneration} safe={safe} titleMode={titleMode} unmatched={canWrite?collectionSummary.unassigned:0} activeTasks={active} onSelect={selectWork} onCollection={status=>{navigate('library');if(status)setFilter(status);}} onOrganize={()=>navigate('organize')} onTasks={()=>navigate('tasks')}/>}
+ {view==='home'&&!detail&&<HomePanel generation={collectionGeneration} safe={safe} titleMode={titleMode} onSelect={selectWork} onCollection={status=>{navigate('library');if(status)setFilter(status);}}/>}
  {view==='home'&&detail&&renderLocalWork(detail,backCollection,selectWork,initialSearch,'home')}
  {view==='lists'&&<ListsWorkspace renderLocalWork={renderLocalWork} safe={safe} canWrite={canWrite}/>}
  {view==='library'&&<div hidden={!!detail}><LibraryBrowser generation={collectionGeneration} query={query} setQuery={setQuery} status={filter} setStatus={setFilter} safe={safe} canWrite={canWrite} onAdd={()=>{matchEpoch.current++;setCandidates([]);setMatchInfo(null);setManual(true);setMatchQuery('');setMatcher(null);}} onSource={()=>navigate('sources')} onSelect={selectWork} onStudio={(work,studio)=>{collectionY.current=window.scrollY;setInitialSearch({kind:'studio',value:studio,label:studio});setDetail(work);requestAnimationFrame(()=>window.scrollTo(0,0));}} titleMode={titleMode} setTitleMode={setTitleMode}/></div>}
