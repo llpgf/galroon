@@ -6,7 +6,7 @@ use serde_json::{json,Value};
 type R<T>=Result<T,String>;
 const PIN_MISMATCH:&str="The Core's certificate fingerprint doesn't match the pairing string; refusing to connect";
 const JSON_LIMIT:usize=32*1024*1024;
-const IMAGE_LIMIT:usize=16*1024*1024;
+const IMAGE_LIMIT:usize=crate::artwork_cache::MAX_IMAGE_BYTES;
 #[derive(Debug)]
 struct PinnedVerifier{fingerprint:[u8;32]}
 impl ServerCertVerifier for PinnedVerifier{

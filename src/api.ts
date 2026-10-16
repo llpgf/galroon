@@ -106,7 +106,7 @@ export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
  if(response.status===401){const data=await response.json().catch(()=>null);if(data?.code==='credential_invalid')throw repairRequired();}
  const type=response.headers.get('content-type')?.split(';')[0];
  if(!response.ok||!type||!['image/png','image/jpeg','image/webp'].includes(type)||!response.body)throw new Error('Artwork unavailable');
- const limit=(current.remote?16:8)*1024*1024,length=response.headers.get('content-length');
+ const limit=16*1024*1024,length=response.headers.get('content-length');
  if(length!==null&&Number(length)>limit)throw new Error('Artwork exceeds size limit');
  // Known-length HTTP bodies can go straight to the browser's Blob storage without JS chunk copies.
  let body=response;

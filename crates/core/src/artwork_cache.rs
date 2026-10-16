@@ -4,7 +4,7 @@ use sha2::{Digest,Sha256};
 use std::path::Path;
 // SQLite has one writer; queue our cache mutations before entering its busy timeout.
 static WRITE:std::sync::Mutex<()>=std::sync::Mutex::new(());
-pub const MAX_IMAGE_BYTES:usize=8*1024*1024;
+pub const MAX_IMAGE_BYTES:usize=16*1024*1024;
 pub const MAX_CACHE_BYTES:u64=256*1024*1024;
 pub struct Cache{connection:Connection,budget:u64}
 pub struct Image{pub mime:String,pub bytes:Vec<u8>}

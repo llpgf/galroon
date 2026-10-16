@@ -15,7 +15,7 @@ it('rejects a late response after changing collection and cancels its body',asyn
  finish(new Response(new ReadableStream({cancel:cancelled}),{headers:{'content-type':'image/jpeg'}}));await check;expect(cancelled).toHaveBeenCalledOnce();
 });
 it('rejects wrong Core identity, non-image data and excessive streamed data',async()=>{
- for(const response of [new Response('x',{headers:{'content-type':'image/jpeg','x-galroon-library':'wrong'}}),new Response('<html/>',{headers:{'content-type':'text/html'}}),new Response(new Uint8Array(8*1024*1024+1),{headers:{'content-type':'image/png'}})]){
+ for(const response of [new Response('x',{headers:{'content-type':'image/jpeg','x-galroon-library':'wrong'}}),new Response('<html/>',{headers:{'content-type':'text/html'}}),new Response(new Uint8Array(16*1024*1024+1),{headers:{'content-type':'image/png'}})]){
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));await expect(artworkBlob(url,new AbortController().signal)).rejects.toThrow();
  }
 });
@@ -28,7 +28,7 @@ it('does not send a pre-cancelled request and aborts a hung request at55s',async
 it('uses native Blob consumption for known lengths and enforces declared and received limits',async()=>{
  const response=new Response(new Uint8Array([1,2,3]),{headers:{'content-type':'image/png','content-length':'3'}}),blob=vi.spyOn(response,'blob');
  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));expect((await artworkBlob(url,new AbortController().signal)).size).toBe(3);expect(blob).toHaveBeenCalledOnce();
- for(const length of ['1',String(8*1024*1024+1)]){vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(new Uint8Array(8*1024*1024+1),{headers:{'content-type':'image/png','content-length':length}})));await expect(artworkBlob(url,new AbortController().signal)).rejects.toThrow('Artwork exceeds size limit');}
+ for(const length of ['1',String(16*1024*1024+1)]){vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(new Uint8Array(16*1024*1024+1),{headers:{'content-type':'image/png','content-length':length}})));await expect(artworkBlob(url,new AbortController().signal)).rejects.toThrow('Artwork exceeds size limit');}
 });
 
 it('stops invalid credentials from triggering more artwork requests until a new session is supplied',async()=>{
@@ -61,4 +61,16 @@ it('invalidates cached images once when concurrent requests report revoked crede
  expect(clientArtworkGeneration()).toBe(generation+1);
  await expect(api('/context')).rejects.toBeInstanceOf(RepairRequiredError);
  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('preserves a cover larger than 8 MiB over HTTP and the desktop proxy',async()=>{
+ const bytes=new Uint8Array(10_369_393);bytes.set([255,216,255]);
+ for(const remote of [false,true])for(const declared of [false,true]){
+  setSession(remote?{...session,remote:true,proxy_url:'http://127.0.0.1:41002',proxy_key:'fixture-proxy'}:session);
+  const headers:Record<string,string>={'content-type':'image/jpeg'};if(declared)headers['content-length']=String(bytes.length);
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(bytes,{headers})));
+  const image=await artworkBlob(url,new AbortController().signal);
+  expect(image.size).toBe(bytes.length);expect(image.type).toBe('image/jpeg');
+  const saved=new Uint8Array(await image.arrayBuffer());expect(saved.every((value,i)=>value===bytes[i])).toBe(true);
+ }
 });
