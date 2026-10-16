@@ -87,6 +87,7 @@ async fn apply_choice(a:&App,account:&Account,client:&remote::Client,choice:&Cho
     if actual!=row.remote || (row.field=="entry" && collection.as_ref().map(|c|c.vote.unwrap_or(0))!=row.remote_rating){return Err(Error("VNDB value changed after preview. Preview again.".into()));}
     if choice.action=="local"{
         let status=row.local.ok_or_else(||Error("Link a local work before uploading".into()))?;
+        if row.field=="status"&&status==0&&actual.is_none(){return Err(Error("No VNDB status to clear".into()));}
         let subject=if actual.is_none(){Some(client.subject(row.subject_id).await?)}else{None};
         store::current(&a.db.lock().unwrap(),&account.mode,choice.subject_id,&choice.field,&choice.fingerprint)?;
         client.set_value(row.subject_id,&row.field,status).await?;
@@ -109,7 +110,7 @@ async fn apply_choice(a:&App,account:&Account,client:&remote::Client,choice:&Cho
             // Matching establishes identity only; differing statuses remain an explicit initial conflict.
         },
         "remote"=>{store::pull(&tx,&row,row.remote.ok_or_else(||Error("VNDB has no collection status for this work".into()))?)?;},
-        "same"=>{if row.local!=row.remote||row.local.is_none(){return Err(Error("Values are no longer equal".into()));}store::baseline(&tx,row.subject_id,&row.field,row.local.unwrap())?;},
+        "same"=>{let remote=if row.field=="status"{Some(row.remote.unwrap_or(0))}else{row.remote};if row.local!=remote||row.local.is_none(){return Err(Error("Values are no longer equal".into()));}store::baseline(&tx,row.subject_id,&row.field,row.local.unwrap())?;},
         _=>return Err(Error("Invalid VNDB sync action".into())),
     }
     tx.commit()?;Ok(())

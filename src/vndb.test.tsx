@@ -14,3 +14,7 @@ describe('VNDB two-way review',()=>{
  it('does not offer ambiguous remote status as a valid pull',()=>{const html=renderToStaticMarkup(<VndbRows rows={[{...row('unsupported','status'),remote:-1}]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);expect(html).not.toContain('value="remote"');expect(html).toContain('value="local"');});
  it('renders import rating and Traditional Chinese',async()=>{await i18n.changeLanguage('zh-TW');const html=renderToStaticMarkup(<VndbRows rows={[{...row('import','entry'),work_id:null,local:null,remote:2,remote_rating:87}]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);expect(html).toContain('8.7');expect(html).toContain('匯入為無本機資源的作品卡');});
 });
+
+it('shows zero as no status and allows pulling it',async()=>{
+ expect(vndbValue('status',0,k=>k)).toBe('none');expect(vndbValue('status',-1,k=>k)).toBe('vnsUnknownStatus');await i18n.changeLanguage('zh-TW');const html=renderToStaticMarkup(<VndbRows rows={[{...row('pull','status'),local:1,remote:0}]} choices={{}} onChoice={()=>{}} onRestore={()=>{}} busy={false}/>);expect(html).toContain('無狀態');expect(html).toContain('value="remote" selected=""');
+});

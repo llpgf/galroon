@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use std::{path::Path, sync::{Arc, Mutex}};
 pub type Db = Arc<Mutex<Connection>>;
-pub const SCHEMA_VERSION:i64=52;
+pub const SCHEMA_VERSION:i64=53;
 pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     if path.parent().is_some_and(|p|p.join("restore-incomplete").exists()) {return Err("This restore is incomplete. Restore the backup again to a new collection.".into());}
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
@@ -30,7 +30,7 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     CREATE TABLE IF NOT EXISTS observations(job_id TEXT NOT NULL,file_id TEXT NOT NULL,PRIMARY KEY(job_id,file_id));
     CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY,root_id TEXT NOT NULL REFERENCES roots(id),relative_path TEXT NOT NULL,title TEXT NOT NULL,kind TEXT NOT NULL,work_id TEXT,release_label TEXT NOT NULL DEFAULT 'Unclassified edition',UNIQUE(root_id,relative_path));
     CREATE TABLE IF NOT EXISTS resource_files(resource_id TEXT NOT NULL REFERENCES resources(id),file_id TEXT NOT NULL REFERENCES files(id),PRIMARY KEY(resource_id,file_id));
-    CREATE TABLE IF NOT EXISTS works(id TEXT PRIMARY KEY,title TEXT NOT NULL,original_title TEXT NOT NULL,vndb_id TEXT,description TEXT NOT NULL DEFAULT '',cover TEXT NOT NULL DEFAULT '',developer TEXT NOT NULL DEFAULT '',released TEXT NOT NULL DEFAULT '',tags TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'backlog',favorite INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',source_json TEXT NOT NULL DEFAULT '{}',overrides TEXT NOT NULL DEFAULT '{}',revision INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS works(id TEXT PRIMARY KEY,title TEXT NOT NULL,original_title TEXT NOT NULL,vndb_id TEXT,description TEXT NOT NULL DEFAULT '',cover TEXT NOT NULL DEFAULT '',developer TEXT NOT NULL DEFAULT '',released TEXT NOT NULL DEFAULT '',tags TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'none',favorite INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',source_json TEXT NOT NULL DEFAULT '{}',overrides TEXT NOT NULL DEFAULT '{}',revision INTEGER NOT NULL DEFAULT 1);
     CREATE INDEX IF NOT EXISTS files_root ON files(root_id);
     CREATE INDEX IF NOT EXISTS files_size ON files(size);
     CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL,items TEXT NOT NULL,digest TEXT NOT NULL,created INTEGER NOT NULL,approved INTEGER);
@@ -85,6 +85,17 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     crate::vndb_sync::migrate(&tx)?;
     crate::catalog_changes::migrate(&tx)?;
     crate::collection_download::migrate(&tx,version<48)?;
+    if version>0 && version<53 {
+        tx.execute("UPDATE works SET status='none',revision=revision+1,overrides=json_remove(overrides,'$.status') WHERE status='backlog' AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=works.id AND b.base_status=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links v WHERE v.work_id=works.id AND v.base_status=5)",[])?;
+        // SQLite's DEFAULT-only schema edit: https://www.sqlite.org/lang_altertable.html
+        let schema:i64=tx.query_row("PRAGMA schema_version",[],|r|r.get(0))?;
+        tx.pragma_update(None,"writable_schema",true)?;
+        tx.execute("UPDATE sqlite_schema SET sql=replace(sql,?1,?2) WHERE type='table' AND name='works'",params!["status TEXT NOT NULL DEFAULT 'backlog'","status TEXT NOT NULL DEFAULT 'none'"])?;
+        tx.pragma_update(None,"schema_version",schema+1)?;
+        tx.pragma_update(None,"writable_schema",false)?;
+        let integrity:String=tx.query_row("PRAGMA integrity_check",[],|r|r.get(0))?;
+        if integrity!="ok" {return Err(format!("Catalog integrity validation failed during migration: {integrity}").into());}
+    }
     tx.pragma_update(None,"user_version",SCHEMA_VERSION)?;
     tx.execute("INSERT INTO settings(key,value) VALUES('schema_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[SCHEMA_VERSION.to_string()])?;
     tx.commit()?;
@@ -120,9 +131,28 @@ pub mod anyhow_result { pub type Result<T> = std::result::Result<T, Box<dyn std:
  #[test]fn schema_44_pairing_codes_become_desktop_with_public_ids(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("collection.sqlite");let db=open(&path).unwrap();
   {let c=db.lock().unwrap();c.execute_batch("DROP TABLE pairing_codes; CREATE TABLE pairing_codes(hash TEXT PRIMARY KEY,name TEXT NOT NULL,expires INTEGER NOT NULL); INSERT INTO pairing_codes VALUES('first-secret-hash','Old desktop',9999999999),('second-secret-hash','Other desktop',9999999999); PRAGMA user_version=44; UPDATE settings SET value='44' WHERE key='schema_version';").unwrap();}drop(db);
-  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,52);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
+  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,53);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
    let mut s=c.prepare("SELECT id,role,hash FROM pairing_codes ORDER BY name").unwrap();let rows=s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();assert_eq!(rows.len(),2);for(id,role,hash)in &rows{assert!(!id.is_empty());assert_ne!(id,hash);assert_eq!(role,"desktop");}assert_ne!(rows[0].0,rows[1].0);rows};drop(db);
   let db=open(&path).unwrap();assert_eq!(db.lock().unwrap().query_row("SELECT id FROM pairing_codes WHERE name='Old desktop'",[],|r|r.get::<_,String>(0)).unwrap(),ids[0].0);
   let snapshots=std::fs::read_dir(t.path().join("migration-backups")).unwrap().collect::<std::io::Result<Vec<_>>>().unwrap();assert_eq!(snapshots.len(),1);let saved=Connection::open(snapshots[0].path()).unwrap();assert_eq!(saved.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),44);assert_eq!(saved.query_row("SELECT count(*) FROM pairing_codes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+ }
+}
+
+#[cfg(test)]mod play_status_migration_tests{
+ use super::*;
+ fn revisions(c:&Connection)->(i64,i64,i64){(crate::catalog_changes::seq(c).unwrap(),c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0)).unwrap(),c.query_row("SELECT collection_revision FROM smart_catalog_state",[],|r|r.get(0)).unwrap())}
+ #[test]fn schema_52_migrates_only_unsynced_backlog_and_changes_the_default(){
+  let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=open(&path).unwrap();let before={let c=db.lock().unwrap();
+   c.execute_batch("INSERT INTO works(id,title,original_title,status,overrides) VALUES('plain','Plain','Plain','backlog','{\"status\":\"backlog\",\"notes\":\"keep\"}'),('bgm','Bangumi','Bangumi','backlog','{\"status\":\"backlog\"}'),('vn','VNDB','VNDB','backlog','{}'),('unbased','Unbased','Unbased','backlog','{}'),('playing','Playing','Playing','playing','{}'),('merged','Merged','Merged','backlog','{}'); UPDATE works SET merged_into='playing' WHERE id='merged'; INSERT INTO bangumi_links(work_id,subject_id,base_status) VALUES('bgm',1,1),('unbased',2,NULL); INSERT INTO vndb_sync_links(work_id,subject_id,base_status) VALUES('vn',1,5); INSERT INTO bangumi_remote VALUES(2,1,'{}');").unwrap();
+   let schema:i64=c.query_row("PRAGMA schema_version",[],|r|r.get(0)).unwrap();c.pragma_update(None,"writable_schema",true).unwrap();c.execute("UPDATE sqlite_schema SET sql=replace(sql,?1,?2) WHERE type='table' AND name='works'",params!["status TEXT NOT NULL DEFAULT 'none'","status TEXT NOT NULL DEFAULT 'backlog'"]).unwrap();c.pragma_update(None,"schema_version",schema+1).unwrap();c.pragma_update(None,"writable_schema",false).unwrap();c.pragma_update(None,"user_version",52).unwrap();c.execute("UPDATE settings SET value='52' WHERE key='schema_version'",[]).unwrap();revisions(&c)
+  };drop(db);
+  let db=open(&path).unwrap();let after={let c=db.lock().unwrap();
+   for(id,status,revision)in[("plain","none",2),("bgm","backlog",1),("vn","backlog",1),("unbased","none",2),("playing","playing",1),("merged","none",2)]{assert_eq!(c.query_row("SELECT status,revision FROM works WHERE id=?1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap(),(status.into(),revision));}
+   assert_eq!(c.query_row("SELECT overrides FROM works WHERE id='plain'",[],|r|r.get::<_,String>(0)).unwrap(),"{\"notes\":\"keep\"}");assert_eq!(c.query_row("SELECT json_extract(overrides,'$.status') FROM works WHERE id='bgm'",[],|r|r.get::<_,String>(0)).unwrap(),"backlog");
+   let after=revisions(&c);assert!(after.0>before.0&&after.1>before.1&&after.2>before.2);
+   c.execute("INSERT INTO works(id,title,original_title) VALUES('new','New','New')",[]).unwrap();assert_eq!(c.query_row("SELECT status FROM works WHERE id='new'",[],|r|r.get::<_,String>(0)).unwrap(),"none");assert_eq!(c.query_row("PRAGMA integrity_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");assert_eq!(c.query_row("PRAGMA writable_schema",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+   c.execute("INSERT INTO works(id,title,original_title,status) VALUES('wanted','Wanted','Wanted','backlog')",[]).unwrap();revisions(&c)
+  };drop(db);
+  let db=open(&path).unwrap();let c=db.lock().unwrap();assert_eq!(revisions(&c),after);assert_eq!(c.query_row("SELECT status FROM works WHERE id='wanted'",[],|r|r.get::<_,String>(0)).unwrap(),"backlog");assert_eq!(std::fs::read_dir(t.path().join("migration-backups")).unwrap().count(),1);
  }
 }

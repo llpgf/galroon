@@ -126,3 +126,27 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
         let client=remote::Client::at("generated-token-not-for-logs".into(),base).unwrap();let error=match client.me().await{Ok(_)=>panic!("request unexpectedly succeeded"),Err(error)=>error.0};assert!(error.contains(message),"{error}");assert!(!error.contains("generated"));server.abort();
     }
 }
+
+#[test]fn none_classification_preserves_remote_and_conflicts(){
+ assert_eq!(store::local_status(0).unwrap(),"none");assert_eq!(store::remote_status("none").unwrap(),0);
+ for base in [None,Some(0),Some(1)]{assert_eq!(store::classify(0,None,base),"same");}
+ for base in [None,Some(0)]{assert_eq!(store::classify(0,Some(3),base),"pull");}
+ assert_eq!(store::classify(0,Some(1),Some(1)),"cleared");assert_eq!(store::classify(0,Some(3),Some(1)),"conflict");
+ let(_t,a,_)=fixture();link_fixture(&a,"none",Some(1));let c=a.db.lock().unwrap();store::replace_remote(&c,&[collection(1,1)]).unwrap();let rows=store::rows(&c,"full").unwrap();assert_eq!(rows[0].kind,"cleared");assert!(automatic_choices(rows).is_empty());assert!(!dirty(&c).unwrap());
+ c.execute("UPDATE works SET status='playing' WHERE id='w'",[]).unwrap();assert!(dirty(&c).unwrap());
+ c.execute("UPDATE works SET status='none' WHERE id='w'",[]).unwrap();store::replace_remote(&c,&[]).unwrap();let row=store::rows(&c,"full").unwrap().remove(0);assert_eq!(row.kind,"same");store::baseline(&c,1,0).unwrap();assert!(automatic_choices(store::rows(&c,"full").unwrap()).is_empty());
+ store::replace_remote(&c,&[collection(1,3)]).unwrap();let row=store::rows(&c,"full").unwrap().remove(0);assert_eq!(row.kind,"pull");store::pull(&c,&row,3).unwrap();assert_eq!(crate::work_catalog::one(&c,"w").unwrap().unwrap()["status"],"playing");
+}
+#[tokio::test]async fn none_sync_does_not_create_or_clear_bangumi_collections(){
+ let(_t,a,_)=fixture();link_fixture(&a,"none",None);let mock=Mock::default();let(client,task)=server(mock.clone()).await;
+ sync_client(&a,&client).await.unwrap();assert_eq!(state(&a).unwrap()["rows"][0]["kind"],"same");assert_eq!(state(&a).unwrap()["rows"][0]["base"],0);assert!(connected(&a).unwrap().error.is_empty());assert!(automatic_choices(store::rows(&a.db.lock().unwrap(),"full").unwrap()).is_empty());assert!(mock.writes.lock().unwrap().is_empty());
+ a.db.lock().unwrap().execute("UPDATE bangumi_links SET base_status=NULL",[]).unwrap();mock.items.lock().unwrap().insert(1,collection(1,3));sync_client(&a,&client).await.unwrap();assert_eq!(status(&a),"playing");assert!(mock.writes.lock().unwrap().is_empty());
+ a.db.lock().unwrap().execute_batch("UPDATE works SET status='none';UPDATE bangumi_links SET base_status=1;").unwrap();mock.items.lock().unwrap().get_mut(&1).unwrap().status=1;sync_client(&a,&client).await.unwrap();assert_eq!(state(&a).unwrap()["rows"][0]["kind"],"cleared");assert!(!dirty(&a.db.lock().unwrap()).unwrap());assert!(automatic_choices(store::rows(&a.db.lock().unwrap(),"full").unwrap()).is_empty());
+ assert!(apply_choice(&a,&connected(&a).unwrap(),&client,&choice(&a,1,"local")).await.is_err());assert!(client.set_status(1,0,true).await.is_err());assert!(client.set_status(2,0,false).await.is_err());assert!(mock.writes.lock().unwrap().is_empty());
+ apply_choice(&a,&connected(&a).unwrap(),&client,&choice(&a,1,"remote")).await.unwrap();assert_eq!(status(&a),"backlog");
+ mock.items.lock().unwrap().get_mut(&1).unwrap().status=0;assert!(client.collections("fixture").await.is_err());assert!(client.status("fixture",1).await.is_err());task.abort();
+}
+
+#[tokio::test]async fn zero_push_is_rejected_before_any_http_request(){
+ let client=remote::Client::at("unused".into(),"http://127.0.0.1:9".into()).unwrap();for exists in [false,true]{assert_eq!(client.set_status(1,0,exists).await.unwrap_err().0,"Bangumi cannot clear a collection status");}
+}

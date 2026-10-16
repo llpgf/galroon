@@ -15,12 +15,13 @@ pub fn migrate(c:&Connection)->rusqlite::Result<()>{
 #[derive(Clone,Serialize,Deserialize)]pub struct Account{pub user:User,pub credential:String,pub mode:String,pub automatic:bool,pub initialized:bool,pub last_sync:Option<i64>,pub preview:String,pub error:String,#[serde(default)]pub results:Vec<serde_json::Value>}
 pub fn account(c:&Connection)->Result<Option<Account>>{c.query_row("SELECT value FROM settings WHERE key='vndb_sync.account'",[],|r|r.get::<_,String>(0)).optional()?.map(|v|serde_json::from_str(&v).map_err(Error::from)).transpose()}
 pub fn save_account(c:&Connection,a:&Account)->Result<()>{c.execute("INSERT INTO settings(key,value) VALUES('vndb_sync.account',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(a)?])?;Ok(())}
-pub fn local_status(status:i64)->Result<&'static str>{match status{1=>Ok("playing"),2=>Ok("completed"),3=>Ok("on_hold"),4=>Ok("dropped"),5=>Ok("backlog"),_=>Err(Error("VNDB has no unambiguous play status. Choose the local status explicitly.".into()))}}
-pub fn remote_status(status:&str)->Result<i64>{match status{"playing"=>Ok(1),"completed"=>Ok(2),"on_hold"=>Ok(3),"dropped"=>Ok(4),"backlog"=>Ok(5),_=>Err(Error("Invalid local play status".into()))}}
+pub fn local_status(status:i64)->Result<&'static str>{match status{0=>Ok("none"),1=>Ok("playing"),2=>Ok("completed"),3=>Ok("on_hold"),4=>Ok("dropped"),5=>Ok("backlog"),_=>Err(Error("VNDB has no unambiguous play status. Choose the local status explicitly.".into()))}}
+pub fn remote_status(status:&str)->Result<i64>{match status{"none"=>Ok(0),"playing"=>Ok(1),"completed"=>Ok(2),"on_hold"=>Ok(3),"dropped"=>Ok(4),"backlog"=>Ok(5),_=>Err(Error("Invalid local play status".into()))}}
 #[derive(Clone,Debug,Serialize,Deserialize)]pub struct Candidate{pub id:String,pub title:String}
 #[derive(Clone,Debug,Serialize,Deserialize)]pub struct Row{pub subject_id:i64,pub field:String,pub title:String,pub work_id:Option<String>,pub local:Option<i64>,pub remote:Option<i64>,pub base:Option<i64>,pub remote_rating:Option<i64>,pub kind:String,pub candidates:Vec<Candidate>,pub fingerprint:String}
 impl Row{fn seal(&mut self)->Result<()>{self.fingerprint.clear();self.fingerprint=hex::encode(Sha256::digest(serde_json::to_vec(self)?));Ok(())}}
-pub fn classify(local:i64,remote:Option<i64>,base:Option<i64>)->&'static str{match(remote,base){(None,_)=>"missing",(Some(r),_)if local==r=>"same",(Some(_),None)=>"initial",(Some(_),Some(b))if local==b=>"pull",(Some(r),Some(b))if r==b=>"push",_=>"conflict"}}
+pub fn classify(local:i64,remote:Option<i64>,base:Option<i64>)->&'static str{match(remote,base){(None,_)if local==0=>"same",(Some(0),_)if local==0=>"same",(Some(_),None|Some(0))if local==0=>"pull",_=>classify_value(local,remote,base)}}
+fn classify_value(local:i64,remote:Option<i64>,base:Option<i64>)->&'static str{match(remote,base){(None,_)=>"missing",(Some(r),_)if local==r=>"same",(Some(_),None)=>"initial",(Some(_),Some(b))if local==b=>"pull",(Some(r),Some(b))if r==b=>"push",_=>"conflict"}}
 pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()>{c.execute("DELETE FROM vndb_sync_remote",[])?;for row in rows{let id=super::subject_id(&row.id)?;c.execute("INSERT INTO vndb_sync_remote VALUES(?1,?2,?3,?4)",params![id,row.status(),row.vote.unwrap_or(0),serde_json::to_string(&row.vn)?])?;}Ok(())}
 fn candidates(c:&Connection,id:i64)->Result<Vec<Candidate>>{let mut q=c.prepare("SELECT id,title FROM works w WHERE merged_into IS NULL AND vndb_id=?1 AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id)")?;let rows=q.query_map([format!("v{id}")],|r|Ok(Candidate{id:r.get(0)?,title:r.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)}
 pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>>{
@@ -28,7 +29,7 @@ pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>>{
  for item in q.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,Option<i64>>(6)?,r.get::<_,bool>(7)?,r.get::<_,Option<i64>>(8)?,r.get::<_,Option<i64>>(9)?)))?{
   let(sid,id,title,status,rating,bs,br,hidden,rs,rr)=item?;
   for(field,local,remote,base)in[("status",remote_status(&status)?,rs,bs),("rating",rating,rr,br)]{
-   let kind=if hidden{"hidden"}else if field=="status"&&remote.is_some_and(|v|v<=0){"unsupported"}else{classify(local,remote,base)};
+   let kind=if hidden{"hidden"}else if field=="status"&&remote.is_some_and(|v|v<0){"unsupported"}else if field=="status"{classify(local,remote,base)}else{classify_value(local,remote,base)};
    let mut row=Row{subject_id:sid,field:field.into(),title:title.clone(),work_id:Some(id.clone()),local:Some(local),remote,base,remote_rating:None,kind:kind.into(),candidates:vec![],fingerprint:String::new()};row.seal()?;out.push(row);
   }
  }
@@ -40,8 +41,8 @@ pub fn current(c:&Connection,mode:&str,id:i64,field:&str,fingerprint:&str)->Resu
 pub fn import(c:&Connection,id:i64)->Result<String>{
  if !candidates(c,id)?.is_empty(){return Err(Error("Link the existing VNDB card instead of creating a duplicate".into()));}
  let(status,rating,raw):(i64,i64,String)=c.query_row("SELECT status,rating,subject FROM vndb_sync_remote WHERE subject_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;let subject:Subject=serde_json::from_str(&raw)?;let work=crate::db::id();
- c.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,released,status,personal_rating,source_json) VALUES(?1,?2,?2,?3,?4,?5,?6,?7,nullif(?8,0),?9)",params![work,subject.title,format!("v{id}"),subject.description.as_deref().unwrap_or(""),subject.cover(),subject.released.as_deref().unwrap_or(""),local_status(status).unwrap_or("backlog"),rating,raw])?;
- c.execute("INSERT INTO vndb_sync_links(work_id,subject_id,base_status,base_rating) VALUES(?1,?2,?3,?4)",params![work,id,if status>0{Some(status)}else{None},rating])?;c.execute("DELETE FROM vndb_sync_ignored WHERE subject_id=?1",[id])?;Ok(work)
+ c.execute("INSERT INTO works(id,title,original_title,vndb_id,description,cover,released,status,personal_rating,source_json) VALUES(?1,?2,?2,?3,?4,?5,?6,?7,nullif(?8,0),?9)",params![work,subject.title,format!("v{id}"),subject.description.as_deref().unwrap_or(""),subject.cover(),subject.released.as_deref().unwrap_or(""),local_status(status).unwrap_or("none"),rating,raw])?;
+ c.execute("INSERT INTO vndb_sync_links(work_id,subject_id,base_status,base_rating) VALUES(?1,?2,?3,?4)",params![work,id,if status>=0{Some(status)}else{None},rating])?;c.execute("DELETE FROM vndb_sync_ignored WHERE subject_id=?1",[id])?;Ok(work)
 }
 pub fn baseline(c:&Connection,id:i64,field:&str,value:i64)->Result<()>{let(base,column)=columns(field)?;c.execute(&format!("UPDATE vndb_sync_links SET {base}=?2 WHERE subject_id=?1"),params![id,value])?;c.execute(&format!("UPDATE vndb_sync_remote SET {column}=?2 WHERE subject_id=?1"),params![id,value])?;Ok(())}
 fn columns(field:&str)->Result<(&'static str,&'static str)>{match field{"status"=>Ok(("base_status","status")),"rating"=>Ok(("base_rating","rating")),_=>Err(Error("Invalid VNDB field".into()))}}
