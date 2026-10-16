@@ -11,21 +11,21 @@ test.afterEach(async () => { await core?.stop(); });
 const workBy = async (match: (w: any) => boolean) => (await core.api('/works')).find(match);
 const moreMenu = async (page: Page) => { await page.locator('.detail-actions summary').click(); };
 
-test('US-1.2 ママ×カノEX 兩份資源：一張卡、一個版本、兩個資源', async ({ page }) => {
-  const works = (await core.api('/works')).filter((w: any) => w.vndb_id === 'v59911');
-  expect(works, 'one card for v59911').toHaveLength(1);
+test('US-1.2 生命のスペア 兩份資源：一張卡、一個版本、兩個資源', async ({ page }) => {
+  const works = (await core.api('/works')).filter((w: any) => w.vndb_id === 'v19513');
+  expect(works, 'one card for v19513').toHaveLength(1);
   const { resources } = await catalog(core);
-  const mama = resources.filter(r => r.path.includes('ママ×カノEX'));
-  expect(mama).toHaveLength(2);
-  for (const r of mama) expect(r.work_id, r.path).toBe(works[0].id);
-  const releases = new Set(mama.map(r => r.bindings[0]?.release_id ?? null));
+  const spare = resources.filter(r => ['生命のスペア', '生命のスペア.rar'].includes(r.path));
+  expect(spare).toHaveLength(2);
+  for (const r of spare) expect(r.work_id, r.path).toBe(works[0].id);
+  const releases = new Set(spare.map(r => r.bindings[0]?.release_id ?? null));
   expect(releases.size, 'both resources share one edition').toBe(1);
 
   await openApp(page, core);
-  await searchCollection(page, 'ママ×カノ');
+  await searchCollection(page, '生命のスペア');
   await expect(page.locator('.book-grid .book')).toHaveCount(1);
   await openWork(page, works[0]);
-  for (const r of mama) await expect(page.getByText(r.path).first()).toBeVisible();
+  for (const r of spare) await expect(page.getByText(r.path).first()).toBeVisible();
 });
 
 test('US-1.3 WaffleTokuten 拆成 7 個資源，自動配到 3 部作品（善悪留待手動），卡片標「只有特典」且可篩掉', async ({ page }) => {
@@ -51,9 +51,11 @@ test('US-1.3 WaffleTokuten 拆成 7 個資源，自動配到 3 部作品（善�
     const w = byId.get(id)!;
     await expect(card(page, w).getByText(T('bonusOnly'))).toBeVisible();
   }
+  const bonusOnly = new Set(Object.values(GOLDEN.folders).flatMap(want => want.split ? Object.values(want.split) : [want])
+    .filter(want => want.bonus_only && !want.manual).flatMap(want => want.works || (want.work ? [want.work] : [])));
   await page.getByRole('button', { name: T('hideBonusOnly') }).click();
-  await expect(page.locator('.book-grid .book')).toHaveCount(total - owned.size);
-  await expect(page.getByText(T('filteredWorks', { total, count: total - owned.size })).first()).toBeVisible();
+  await expect(page.locator('.book-grid .book')).toHaveCount(total - bonusOnly.size);
+  await expect(page.getByText(T('filteredWorks', { total, count: total - bonusOnly.size })).first()).toBeVisible();
   for (const id of owned) await expect(card(page, byId.get(id)!)).toHaveCount(0);
 });
 
@@ -98,26 +100,26 @@ test('US-1.9 重製版：獨立卡用重製版發行資料，重抓不改回原�
 });
 
 test('US-2.4 手動改過標題後從 VNDB 更新：顯示差異讓我選', async ({ page }) => {
-  const w = await workBy(x => x.vndb_id === 'v62721'); // マガルミナ
+  const w = await workBy(x => x.vndb_id === 'v61834'); // Relirium
   const providerTitle = w.title;
-  const mine = await core.api(`/works/${w.id}/metadata`, { revision: w.revision, patch: { title: '我的マガルミナ' } });
+  const mine = await core.api(`/works/${w.id}/metadata`, { revision: w.revision, patch: { title: '我的Relirium' } });
   expect(mine.revision).toBeGreaterThan(w.revision);
 
   await openApp(page, core);
-  await searchCollection(page, 'マガルミナ');
-  await openWork(page, { title: '我的マガルミナ' });
+  await searchCollection(page, 'Relirium');
+  await openWork(page, { title: '我的Relirium' });
 
   const refresh = async () => { await moreMenu(page); await page.getByRole('button', { name: T('refreshMetadata') }).click(); };
   await test.step('保留我的', async () => {
     await refresh();
     const region = page.getByRole('region', { name: T('refreshConflicts') });
     await expect(region).toBeVisible({ timeout: 30_000 });
-    await expect(region).toContainText('我的マガルミナ');
+    await expect(region).toContainText('我的Relirium');
     await expect(region).toContainText(providerTitle);
     await expect(region.locator('.plan-item'), 'only the edited field is asked').toHaveCount(1);
     await region.getByRole('button', { name: T('keepMine') }).click();
     await expect(region).toHaveCount(0);
-    await expect(page.locator('h1:visible').first()).toHaveText('我的マガルミナ');
+    await expect(page.locator('h1:visible').first()).toHaveText('我的Relirium');
   });
   await test.step('改用 VNDB', async () => {
     await refresh();

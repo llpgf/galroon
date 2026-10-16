@@ -1,6 +1,6 @@
 // Starts an isolated Galroon Core (crates/core/examples/ui_core.rs) for one test.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,11 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..');
 export const RUNS = join(ROOT, 'test-output/e2e/runs');
 export const SNAPSHOTS = join(ROOT, 'test-output/e2e/snapshots');
-export const SANDBOX = process.env.GALROON_SANDBOX || '/Volumes/新增磁碟區/sandbox_data';
+const testset = process.env.GALROON_TESTSET;
+if (!testset || !statSync(testset, { throwIfNoEntry: false })?.isDirectory()) {
+  throw new Error('GALROON_TESTSET must point at the NAS test set copy (see docs/plans/2026-10-16-e2e-nas-test-set.md)');
+}
+export const TESTSET = testset;
 const BINARY = join(ROOT, 'target/debug/examples/ui_core');
 
 export type Session = { url: string; token: string; library_id: string; device_id: string; instance_id: string; api_min: number; api_max: number };

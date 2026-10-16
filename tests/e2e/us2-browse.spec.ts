@@ -12,11 +12,11 @@ const results = (page: import('@playwright/test').Page) => page.locator('.book-g
 
 test.describe('US-2.1 用日文原名搜尋', () => {
   for (const [query, vndb, why] of [
-    ['マガルミナ', 'v62721', '完整原名'],
+    ['絡恋インヴィテーション', 'v61212', '完整原名'],
     ['やりなおし', 'v59027', '部分字串'],
     ['猫忍えくすはーとＳＰＩＮ！', 'v58009', '全形英數與符號'],
     ['猫忍えくすはーとspin', 'v58009', '大小寫'],
-    ['まがるみな', 'v62721', '平假名查片假名'],
+    ['だうにゃー', 'v60462', '平假名查片假名'],
     ['ヤリナオシ', 'v59027', '片假名查平假名'],
   ] as const) {
     test(`${why}：「${query}」找到作品`, async ({ page }) => {
@@ -37,13 +37,13 @@ test.describe('US-2.1 用日文原名搜尋', () => {
 });
 
 test.describe('US-2.2 用品牌或人物找作品', () => {
-  test('從作品頁點 CloverGAME → 列出收藏中 4 部 CloverGAME 作品', async ({ page }) => {
+  test('從作品頁點 CloverGAME → 列出收藏中 3 部 CloverGAME 作品', async ({ page }) => {
     await openApp(page, core);
     await nav(page, 'library');
     await openWork(page, byVndb('v59027'));
     await page.locator('.work-companies').getByRole('button', { name: /CloverGAME/i }).click();
-    // やりなおしクランクイン, ダウニャーさんと飼い主くん, 飛べない蝶のバレンタイン, メイドちゃんは迷途ちゅう (VJ01004242)
-    const owned = ['v59027', 'v60462', 'v62758', 'v55899'].map(byVndb);
+    // やりなおしクランクイン, ダウニャーさんと飼い主くん, こあくまちゃんの誘惑っ！ (VJ01001192)
+    const owned = ['v59027', 'v60462', 'v48419'].map(byVndb);
     for (const w of owned) await expect(page.locator(`text=${w.original_title}`).locator('visible=true').first(), w.title).toBeVisible({ timeout: 60_000 });
     // Owned works open locally; the others only link to VNDB.
     await expect(page.getByRole('button', { name: T('viewWork') }).locator('visible=true')).toHaveCount(owned.length);

@@ -4,7 +4,7 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { openApp, nav, T, card, searchCollection, openWork } from './support/app';
-import { startCore, SNAPSHOTS, RUNS, SANDBOX, type Core } from './support/core';
+import { startCore, SNAPSHOTS, RUNS, TESTSET, type Core } from './support/core';
 import { catalog } from './support/golden';
 
 let core: Core;
@@ -86,9 +86,10 @@ test.describe('intake 快照', () => {
   test.afterEach(async () => { await core?.stop(); });
 
   test('US-3.1 依品牌篩選 → 全部加入新清單「CloverGAME 合集」，重開後仍在，重複加入不產生重複', async ({ page }) => {
-    const clover = (await works()).filter(w => w.developer === CLOVER);
-    // The story was written for 3 CloverGAME works; the reviewed sandbox catalog has 4 (v59027, v60462, v62758, v55899).
-    expect(clover.map(w => w.vndb_id).sort()).toEqual(['v55899', 'v59027', 'v60462', 'v62758']);
+    const all = await works();
+    const clover = all.filter(w => w.developer === CLOVER);
+    // The NAS test set matches the story: 3 CloverGAME works (v48419, v59027, v60462).
+    expect(clover.map(w => w.vndb_id).sort()).toEqual(['v48419', 'v59027', 'v60462']);
     const LIST = 'CloverGAME 合集';
     await openApp(page, core);
 
@@ -98,7 +99,7 @@ test.describe('intake 快照', () => {
       await page.locator('button.focus-toggle').click();
       await page.locator('#collection-focus-panel').getByLabel(T('facet_studio')).selectOption({ label: CLOVER });
       await expect(cards(page)).toHaveCount(clover.length);
-      await expect(page.getByText(T('filteredWorks', { total: 31, count: clover.length })).first()).toBeVisible();
+      await expect(page.getByText(T('filteredWorks', { total: all.length, count: clover.length })).first()).toBeVisible();
       await page.locator('.library-results .toolbar-menu summary').click();
       await page.getByRole('button', { name: T('listAddFiltered') }).click();
       const dialog = page.locator('dialog.add-to-list-dialog');
@@ -155,7 +156,7 @@ test.describe('intake 快照', () => {
 
   test('US-3.2 清單條目隨作品合併、來源移除與恢復而跟著走，筆記不遺失', async ({ page }) => {
     const LIST = '條目追蹤';
-    const source = await byVndb('v55899'); // Maid-chan wa Meido-chuu (CloverGAME)
+    const source = await byVndb('v48419'); // こあくまちゃんの誘惑っ！ (CloverGAME)
     const target = await byVndb('v59027'); // Yarinaoshi Crank-In (CloverGAME)
     const offline = await byVndb('v63827'); // Nemophilia — its only resource is folder 1366993
     const NOTE_A = '合併前寫的筆記';
@@ -204,11 +205,11 @@ test.describe('intake 快照', () => {
       await page.getByRole('button', { name: T('back') }).first().click();
     });
 
-    const sandbox = (await core.api('/roots'))[0];
+    const testset = (await core.api('/roots'))[0];
     const remap = async (path: string) => {
       await idle();
-      const preview = await core.api(`/roots/${sandbox.id}/remap/preview`, { path });
-      await core.api(`/roots/${sandbox.id}/remap`, { path, digest: preview.digest });
+      const preview = await core.api(`/roots/${testset.id}/remap/preview`, { path });
+      await core.api(`/roots/${testset.id}/remap`, { path, digest: preview.digest });
       // Core rescans a remapped source automatically; give it a moment to queue, then wait.
       await new Promise(r => setTimeout(r, 1_500));
       await idle();
@@ -231,7 +232,7 @@ test.describe('intake 快照', () => {
     });
 
     await test.step('重新加入來源並掃描 → 條目恢復正常狀態', async () => {
-      await remap(SANDBOX);
+      await remap(TESTSET);
       await expect.poll(async () => (await core.api('/roots'))[0].missing, { timeout: 60_000 }).toBe(0);
       const panel = await openList(page, LIST);
       const row = entry(panel, offline.title);
@@ -245,7 +246,7 @@ test.describe('intake 快照', () => {
   });
 
   test('US-3.3 建立「年度最愛」→ 批次貼到 3 部 → 以標籤篩選正好 3 部；相似/重複名稱警告', async ({ page }) => {
-    const chosen = await Promise.all(['v59027', 'v60462', 'v62758'].map(byVndb));
+    const chosen = await Promise.all(['v59027', 'v60462', 'v48419'].map(byVndb));
     const TAG = '年度最愛';
     await openApp(page, core);
 
@@ -278,7 +279,7 @@ test.describe('intake 快照', () => {
       await filterByTag(page, TAG);
       await expect(cards(page)).toHaveCount(3);
       for (const w of chosen) await expect(card(page, w)).toHaveCount(1);
-      await expect(page.getByText(T('filteredWorks', { total: 31, count: 3 })).first()).toBeVisible();
+      await expect(page.getByText(T('filteredWorks', { total: (await works()).length, count: 3 })).first()).toBeVisible();
     });
 
     await test.step('名稱與既有標籤相似/重複時顯示警告', async () => {
@@ -293,8 +294,8 @@ test.describe('intake 快照', () => {
       await name.fill('galroon  pick'); // case and spacing differ from a custom tag
       await expect.soft(warning('Galroon Pick'), 'similar custom tag').toBeVisible();
 
-      await name.fill('time loop'); // VNDB tag "Time Loop" on 飛べない蝶のバレンタイン
-      await expect.soft(dialog.getByText(T('tagSimilarVndb', { names: 'Time Loop' })), 'similar VNDB tag').toBeVisible({ timeout: 5_000 });
+      await name.fill('clone heroine'); // VNDB tag "Clone Heroine" on 宿りし乙女の誓いと魔法
+      await expect.soft(dialog.getByText(T('tagSimilarVndb', { names: 'Clone Heroine' })), 'similar VNDB tag').toBeVisible({ timeout: 5_000 });
 
       await name.fill(TAG); // exact duplicate of a custom tag
       const warned = await dialog.getByRole('status').filter({ hasText: TAG }).isVisible();
@@ -308,33 +309,34 @@ test.describe('intake 快照', () => {
 
   test('US-3.4 VNDB 標籤篩選結果正確，劇透標籤預設隱藏，隱藏不代表不存在', async ({ page }) => {
     const all = await works();
-    const has = (tag: string) => all.filter(w => (w.tags as unknown as string[] | undefined)?.includes(tag));
-    const valentine = all.find(w => w.vndb_id === 'v62758')!; // 飛べない蝶のバレンタイン
+    const has = (tag: string) => all.filter(w => w.tags?.includes(tag));
+    const spoilerWork = all.find(w => w.vndb_id === 'v55281')!; // 宿りし乙女の誓いと魔法
     await openApp(page, core);
 
-    await test.step('選 sandbox 作品有的 VNDB 標籤 → 結果包含該作品，計數一致', async () => {
-      const TAG = 'Male Protagonist';
+    await test.step('選 NAS 測試集作品有的 VNDB 標籤 → 結果包含該作品，計數一致', async () => {
+      // v55281 is tagged Trap Protagonist (not Male Protagonist) on VNDB; this tag is spoiler-free and shared by many works.
+      const TAG = 'High School Student Heroine';
       const expected = has(TAG);
       expect(expected.length).toBeGreaterThan(1);
-      expect(expected.map(w => w.id)).toContain(valentine.id);
+      expect(expected.map(w => w.id)).toContain(spoilerWork.id);
       const dialog = await tagDialog(page);
       await dialog.getByLabel(T('findTags')).fill(TAG);
       await expect(tagOption(dialog, TAG)).toHaveText(new RegExp(`${expected.length}$`));
       await tagOption(dialog, TAG).click();
       await dialog.getByRole('button', { name: T('done'), exact: true }).click();
       await expect(cards(page)).toHaveCount(expected.length);
-      await expect(card(page, valentine)).toHaveCount(1);
+      await expect(card(page, spoilerWork)).toHaveCount(1);
       await expect(page.getByText(T('filteredWorks', { total: all.length, count: expected.length })).first()).toBeVisible();
       await page.getByRole('button', { name: T('clearFilters') }).first().click();
     });
 
     await test.step('劇透標籤預設不顯示；開啟劇透顯示後才出現', async () => {
-      // On VNDB, "Time Loop" is a major spoiler (level 2) for v62758; it is stored in the local catalog,
+      // On VNDB, "Clone Heroine" is a major spoiler (level 2) for v55281; it is stored in the local catalog,
       // so the work page must hide it until spoilers are turned on.
-      const SPOILER = 'Time Loop';
-      expect(has(SPOILER).map(w => w.id)).toContain(valentine.id);
-      await searchCollection(page, valentine.title);
-      await openWork(page, valentine);
+      const SPOILER = 'Clone Heroine';
+      expect(has(SPOILER).map(w => w.id)).toContain(spoilerWork.id);
+      await searchCollection(page, spoilerWork.title);
+      await openWork(page, spoilerWork);
       const tags = page.locator('details.work-tags:visible');
       await tags.locator('summary').click();
       await expect(tags.locator('.pill').first()).toBeVisible();
@@ -345,19 +347,19 @@ test.describe('intake 快照', () => {
     });
 
     await test.step('隱藏的劇透資料不讓篩選少算', async () => {
-      // A major spoiler for v62758, but not hidden for every work that has it.
+      // A major spoiler for v55281, but not hidden for every work that has it.
       const TAG = "Protagonist's Childhood Friend as a Heroine";
       const expected = has(TAG);
-      expect(expected.map(w => w.id)).toContain(valentine.id);
+      expect(expected.map(w => w.id)).toContain(spoilerWork.id);
       await filterByTag(page, TAG);
       await expect(cards(page)).toHaveCount(expected.length);
-      await expect(card(page, valentine)).toHaveCount(1);
+      await expect(card(page, spoilerWork)).toHaveCount(1);
       await expect(page.getByText(T('filteredWorks', { total: all.length, count: expected.length })).first()).toBeVisible();
     });
   });
 
   test('US-3.5 標籤改名／合併／刪除先預覽影響範圍，確認後同步；取消不變更', async ({ page }) => {
-    const [a, b, c, d] = await Promise.all(['v59027', 'v60462', 'v62758', 'v55899'].map(byVndb));
+    const [a, b, c, d] = await Promise.all(['v59027', 'v60462', 'v48419', 'v61834'].map(byVndb));
     const allIds = (await works()).map(w => w.id);
     const favorite = await createTagApi('年度最愛', [a.id, b.id, c.id]);
     const tagA = await createTagApi('A 組', [a.id, b.id]);

@@ -1,14 +1,14 @@
-// Compares Core's catalog with the user-reviewed answer key (tests/e2e/golden/sandbox_data.json).
+// Compares Core's catalog with the user-reviewed answer key (tests/e2e/golden/nas_testset.json).
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Core } from './core';
 
-type Expect = { work?: string; unmatched?: boolean; remake_release?: string; card_title?: string; card_released?: string; same_edition_as?: string; bonus_only?: boolean; manual?: boolean; split?: Record<string, Expect> };
-export const GOLDEN: { folders: Record<string, Expect> } = JSON.parse(readFileSync(fileURLToPath(new URL('../golden/sandbox_data.json', import.meta.url)), 'utf8'));
+type Expect = { work?: string; works?: string[]; unmatched?: boolean; remake_release?: string; card_title?: string; card_released?: string; same_edition_as?: string; bonus_only?: boolean; manual?: boolean; split?: Record<string, Expect> };
+export const GOLDEN: { folders: Record<string, Expect> } = JSON.parse(readFileSync(fileURLToPath(new URL('../golden/nas_testset.json', import.meta.url)), 'utf8'));
 
 export type Resource = { id: string; path: string; files: number; work_id?: string | null; release?: string; bindings: { work_id: string; release_id: string | null; role: string }[] };
-export type Work = { id: string; vndb_id?: string | null; title: string; original_title?: string | null; released?: string | null; developer?: string | null; cover?: string | null; resources?: number };
+export type Work = { id: string; revision: number; tags?: unknown[]; vndb_id?: string | null; title: string; original_title?: string | null; released?: string | null; developer?: string | null; cover?: string | null; resources?: number };
 export type Row = { folder: string; member?: string; expected: string; actual: string; verdict: 'ok' | 'unmatched' | 'FALSE MATCH' | 'missing' };
 
 export async function catalog(core: Core) {
@@ -26,19 +26,29 @@ export async function grade(core: Core) {
   const nfc = (s: string) => s.normalize('NFC');
   const rows: Row[] = [];
   const judge = (folder: string, member: string | undefined, want: Expect, found: Resource[]) => {
-    if (found.length === 0) { rows.push({ folder, member, expected: want.work || 'unmatched', actual: '(no resource)', verdict: 'missing' }); return; }
+    const expectedIds = new Set(want.works || (want.work ? [want.work] : []));
+    const expected = [...expectedIds].sort().join(', ') || 'unmatched';
+    if (found.length === 0) { rows.push({ folder, member, expected, actual: '(no resource)', verdict: 'missing' }); return; }
     for (const r of found) {
-      const work = r.work_id ? byId.get(r.work_id) : undefined;
-      const actual = work?.vndb_id || (work ? `manual:${work.title}` : 'unmatched');
-      const verdict = !work ? (want.unmatched || want.manual ? 'ok' : 'unmatched') : actual === want.work ? 'ok' : 'FALSE MATCH';
-      rows.push({ folder, member, expected: want.work || 'unmatched', actual, verdict });
+      const workIds = new Set(r.bindings.map(b => b.work_id));
+      if (!want.works && r.work_id) workIds.add(r.work_id);
+      const actualIds = new Set([...workIds].map(id => {
+        const work = byId.get(id);
+        return work?.vndb_id || (work ? `manual:${work.title}` : `unknown:${id}`);
+      }));
+      const actual = [...actualIds].sort().join(', ') || 'unmatched';
+      let verdict: Row['verdict'];
+      if (!workIds.size) verdict = want.unmatched || want.manual ? 'ok' : 'unmatched';
+      else if (want.unmatched || [...actualIds].some(id => !expectedIds.has(id))) verdict = 'FALSE MATCH';
+      else verdict = actualIds.size === expectedIds.size ? 'ok' : 'unmatched';
+      rows.push({ folder, member, expected, actual, verdict });
     }
   };
   for (const [folder, want] of Object.entries(GOLDEN.folders)) {
     if (want.split) {
       for (const [member, m] of Object.entries(want.split)) judge(folder, member, m, resources.filter(r => r.path === nfc(`${folder}/${member}`) || r.path === nfc(`${folder}\\${member}`)));
       const whole = resources.filter(r => r.path === nfc(folder));
-      if (whole.length) rows.push({ folder, expected: 'split into members', actual: 'single resource', verdict: whole.some(r => r.work_id) ? 'FALSE MATCH' : 'unmatched' });
+      if (whole.length) rows.push({ folder, expected: 'split into members', actual: 'single resource', verdict: whole.some(r => r.work_id || r.bindings.length) ? 'FALSE MATCH' : 'unmatched' });
     } else judge(folder, undefined, want, resources.filter(r => r.path === nfc(folder)));
   }
   return rows;
@@ -50,11 +60,22 @@ export function summary(rows: Row[]) {
   return { ok: count('ok'), unmatched: count('unmatched') + count('missing'), falseMatches: count('FALSE MATCH'), table };
 }
 
+/** Split members replace their parent folder in the expected graded rows. */
+function expectations() {
+  return Object.values(GOLDEN.folders).flatMap(want => want.split ? Object.values(want.split) : [want]);
+}
+
+export function expectedRows({ includeManual = true } = {}) {
+  return expectations().filter(want => includeManual || !want.manual).length;
+}
+
 /** Expected number of Collection cards: one per distinct work, remakes count separately from originals. */
 export function expectedCards() {
   const keys = new Set<string>();
-  for (const want of Object.values(GOLDEN.folders)) {
-    for (const e of want.split ? Object.values(want.split) : [want]) if (e.work && !e.manual) keys.add(e.remake_release || e.work);
+  for (const e of expectations()) {
+    if (e.manual || e.unmatched) continue;
+    if (e.work) keys.add(e.remake_release || e.work);
+    for (const id of e.works || []) keys.add(id);
   }
   return keys.size;
 }

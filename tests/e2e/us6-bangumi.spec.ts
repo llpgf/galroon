@@ -34,6 +34,7 @@ test('a work without resources has a card and a Bangumi association entry',async
  const created=await core.api('/works',{title:'無本機資源的遊戲'});const work=await core.api(`/works/${created.id}`);
  await openApp(page,core);await nav(page,'library');await openWork(page,work);
  await expect(page.getByRole('heading',{name:T('bgmTitle')})).toBeVisible();
- await expect(page.locator('#work-files').getByText(T('availability_no_resources'),{exact:true})).toBeVisible();
+ // The VNDB section shows the same pill, so look inside the Bangumi section.
+ await expect(page.locator('#work-files section').filter({has:page.getByRole('heading',{name:T('bgmTitle')})}).getByText(T('availability_no_resources'),{exact:true})).toBeVisible();
  await expect(page.getByLabel(T('bgmSubject'))).toBeVisible();
 });

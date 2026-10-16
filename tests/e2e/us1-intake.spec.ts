@@ -1,24 +1,24 @@
 // US-1.1 加入來源後自動出現封面卡 — also produces the "intake" snapshot other stories start from.
 import { test, expect } from '@playwright/test';
 import { openApp, nav, T } from './support/app';
-import { startCore, snapshot, waitFor, SANDBOX, type Core } from './support/core';
+import { startCore, snapshot, waitFor, TESTSET, type Core } from './support/core';
 import { grade, summary, expectedCards, fingerprint } from './support/golden';
 
 let core: Core;
 test.afterAll(async () => { if (core) { await core.stop(); snapshot(core, 'intake'); } });
 
 test('US-1.1 加入來源後不按任何按鈕就出現封面卡', async ({ page }) => {
-  const before = fingerprint(SANDBOX);
+  const before = fingerprint(TESTSET);
   core = await startCore({ name: 'us1-intake' });
   await openApp(page, core);
 
-  await test.step('在 Sources 新增 sandbox_data 並儲存', async () => {
+  await test.step('在 Sources 新增 NAS 測試集 並儲存', async () => {
     await nav(page, 'sources');
     await page.getByRole('button', { name: T('addSource') }).first().click();
-    await page.getByLabel(T('sourceLabel')).fill('sandbox');
-    await page.getByLabel(T('sourcePath')).fill(SANDBOX);
+    await page.getByLabel(T('sourceLabel')).fill('testset');
+    await page.getByLabel(T('sourcePath')).fill(TESTSET);
     await page.getByRole('button', { name: T('save'), exact: true }).click();
-    await expect(page.getByText(SANDBOX)).toBeVisible();
+    await expect(page.getByText(TESTSET)).toBeVisible();
   });
 
   await test.step('Activity 自動出現掃描與配對任務（不點掃描/配對）', async () => {
@@ -64,5 +64,5 @@ test('US-1.1 加入來源後不按任何按鈕就出現封面卡', async ({ page
 
   await test.step('每個 golden 資料夾都配上', async () => { expect.soft(rows.filter(r => r.verdict !== 'ok').map(r => r.folder + (r.member ? ' / ' + r.member : ''))).toEqual([]); });
 
-  await test.step('G3 來源檔案未被改動', async () => { expect(fingerprint(SANDBOX)).toEqual(before); });
+  await test.step('G3 來源檔案未被改動', async () => { expect(fingerprint(TESTSET)).toEqual(before); });
 });
