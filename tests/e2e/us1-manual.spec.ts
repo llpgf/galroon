@@ -8,7 +8,7 @@ let core: Core;
 test.beforeEach(async () => { core = await startCore({ name: 'us1-manual', from: `${SNAPSHOTS}/intake` }); });
 test.afterEach(async () => { await core?.stop(); });
 
-// After automatic matching only the two 善悪 bonus archives remain (the title is too short to match safely).
+// The two 善悪 bonus archives remain for manual review after automatic matching (the title is too short to match safely).
 const MAMA_CD = '善悪 フルHDリマスター版 Webアンケート特典';
 const MAMA_MDF = '原法子との邂逅';
 const bound = async (path: string) => { const { resources, byId } = await catalog(core); const r = resources.find(x => x.path.includes(path))!; return r.work_id ? byId.get(r.work_id)! : null; };
@@ -81,7 +81,7 @@ test('US-1.5 異常：確認前資源已被其他操作改動 → 顯示衝突�
   // Meanwhile another client binds the same resource to a different work.
   const { resources, works } = await catalog(core);
   const r = resources.find(x => x.path.includes(MAMA_CD))!;
-  const other = works.find(w => w.vndb_id === 'v62721')!;
+  const other = works.find(w => w.vndb_id === 'v61834')!;
   await core.api(`/resources/${r.id}/bind`, { work_id: other.id, release: r.release, revision: (r as any).revision });
   await candidate.click();
   await expect(page.locator('.drawer [role=alert], .drawer .error-text')).toBeVisible();
@@ -91,13 +91,13 @@ test('US-1.5 異常：確認前資源已被其他操作改動 → 顯示衝突�
 test('US-1.6 把資源掛到既有作品，並改掛已配資源', async ({ page }) => {
   await openApp(page, core);
   const { works } = await catalog(core);
-  const target = works.find(w => w.vndb_id === 'v62721')!; // マガルミナ
+  const target = works.find(w => w.vndb_id === 'v61834')!; // Relirium
   const worksBefore = works.length;
 
   await test.step('未配資源 → 現有作品 → 選定', async () => {
     const drawer = await openMatcher(page, 'WaffleTokuten');
-    await drawer.getByLabel(T('query')).fill('マガルミナ');
-    const choice = drawer.locator('.match-work-choices button.candidate').filter({ hasText: 'マガルミナ' });
+    await drawer.getByLabel(T('query')).fill('Relirium');
+    const choice = drawer.locator('.match-work-choices button.candidate').filter({ hasText: 'Relirium' });
     await expect(choice).toBeVisible();
     await choice.click();
     await expect(page.locator('.drawer')).toHaveCount(0);
@@ -107,8 +107,8 @@ test('US-1.6 把資源掛到既有作品，並改掛已配資源', async ({ page
 
   await test.step('已配資源改掛 → 原作品沒有資源時不留空殼卡', async () => {
     const drawer = await openMatcher(page, '1330947'); // ギャルズフィクション, its only resource
-    await drawer.getByLabel(T('query')).fill('マガルミナ');
-    await drawer.locator('.match-work-choices button.candidate').filter({ hasText: 'マガルミナ' }).click();
+    await drawer.getByLabel(T('query')).fill('Relirium');
+    await drawer.locator('.match-work-choices button.candidate').filter({ hasText: 'Relirium' }).click();
     await expect(page.locator('.drawer')).toHaveCount(0);
     expect((await bound('1330947'))?.id).toBe(target.id);
     await nav(page, 'library');

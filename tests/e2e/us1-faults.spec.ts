@@ -1,8 +1,8 @@
 // US-1.7 VNDB 連不上或被限速；US-1.8 中途關閉／Core 重啟。
 import { test, expect, type Page } from '@playwright/test';
 import { openApp, nav, T } from './support/app';
-import { startCore, waitFor, SANDBOX, type Core } from './support/core';
-import { grade, summary, GOLDEN } from './support/golden';
+import { startCore, waitFor, TESTSET, type Core } from './support/core';
+import { grade, summary, expectedRows } from './support/golden';
 import { FaultyVndb } from './support/vndb';
 
 let core: Core | undefined, vndb: FaultyVndb;
@@ -11,7 +11,7 @@ test.afterEach(async () => { await core?.stop(); core = undefined; await vndb.st
 
 const env = () => ({ GALROON_VNDB_API: vndb.url });
 const matchJob = async (c: Core) => (await c.api('/matching')).job;
-async function addSource(c: Core) { await c.api('/matching/start', {}); await c.api('/roots', { path: SANDBOX, label: 'sandbox' }); }
+async function addSource(c: Core) { await c.api('/matching/start', {}); await c.api('/roots', { path: TESTSET, label: 'testset' }); }
 async function bindings(c: Core) { return (await c.api('/resources')).filter((r: any) => r.work_id).length; }
 /** The match task card in Activity. */
 const matchCard = (page: Page) => page.locator('article.job').filter({ has: page.getByRole('heading', { name: T('job_match') }) }).first();
@@ -48,7 +48,8 @@ for (const [mode, label] of [['timeout', '逾時'], ['refused', '斷線'], ['429
       const result = summary(await grade(core!));
       console.log(result.table);
       expect(result.falseMatches).toBe(0);
-      expect(result.ok).toBeGreaterThanOrEqual(28);
+      // Manual rows may count as ok while unbound; require at least every non-manual row.
+      expect(result.ok).toBeGreaterThanOrEqual(expectedRows({ includeManual: false }));
     });
   });
 }
@@ -106,7 +107,7 @@ test('US-1.8 配對中途 Core 被關閉 → 重開為「已中斷」→ 繼續 
     expect(new Set(ids).size, 'duplicate VNDB cards').toBe(ids.length);
     const result = summary(await grade(core!));
     expect(result.falseMatches).toBe(0);
-    expect(result.ok).toBeGreaterThanOrEqual(28);
+    expect(result.ok).toBeGreaterThanOrEqual(expectedRows({ includeManual: false }));
   });
 });
 
@@ -128,6 +129,6 @@ test('US-1.8 掃描中途 Core 被關閉 → 繼續 → 資源數與一次跑完
   }
   await waitFor('scans idle', async () => (await core!.api('/jobs')).every((j: any) => j.kind === 'artwork' || !['queued', 'running', 'pausing'].includes(j.state)), 300_000);
   // Same resources as an uninterrupted scan: every golden folder, with split folders counted per member.
-  const expected = Object.values(GOLDEN.folders).reduce((n, f) => n + (f.split ? Object.keys(f.split).length : 1), 0);
+  const expected = expectedRows();
   expect((await core.api('/resources')).filter((r: any) => r.files > 0).length).toBe(expected);
 });

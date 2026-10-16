@@ -48,16 +48,20 @@ test('US-5.1 AI 建議 → 確認 → 出卡，重新掃描保留綁定', async 
 
 test('批次只確認已驗證建議，未驗證建議保留', async ({ page }) => {
   const verified = await suggest(await resource(MAMA_CD));
-  // This append is a release of v47547; release-only titles cannot verify suggestions.
-  const append = await resource('1327332');
+  const appendFolder = '(18禁ゲーム) [190223] [ANIM.teamMM] 僕に抱かれ喘ぐ妻は、他の男に抱かれた話を紡ぐ 追加シナリオDLC (files).rar';
+  const append = await resource(appendFolder);
   await references(append, [], null);
-  const unverified = await suggest(await current(append.id), ['v47547'], 'アンラベル・トリガー -Prelude to War-');
+  // r62408's release-only label is not a VN-owned title, so the query itself cannot verify v22292.
+  // Caveat: suggestions::verify also checks catalog_input.titles; prepare strips this DLC suffix
+  // into the base VN title. With corroborating ANIM.teamMM metadata, this can still be verified
+  // regardless of query. Keep the assertion to expose that fixture conflict in the live run.
+  const unverified = await suggest(await current(append.id), ['v22292'], '追加シナリオDLC');
   expect(verified.verified).toBe(true);
   expect(unverified.verified).toBe(false);
   await review(page);
-  await expect(resourceRow(page, '1327332').locator('.suggestion-badge')).toContainText(T('suggestionUnverified'));
+  await expect(resourceRow(page, appendFolder).locator('.suggestion-badge')).toContainText(T('suggestionUnverified'));
   // Filtering out the verified resource must not silently limit "all" to visible rows.
-  await page.getByRole('searchbox', { name: T('resourceSearch') }).fill('1327332');
+  await page.getByRole('searchbox', { name: T('resourceSearch') }).fill(appendFolder);
   const request = page.waitForRequest(req => req.url().endsWith('/suggestions/batch-confirm'));
   await page.getByRole('button', { name: T('suggestionConfirmVerified') }).click();
   expect((await request).postDataJSON()).toEqual({ ids: [verified.id], revisions: [verified.resource_revision] });
@@ -66,7 +70,7 @@ test('批次只確認已驗證建議，未驗證建議保留', async ({ page }) 
   expect((await current(verified.resource_id)).work_id).toBeTruthy();
   expect((await current(unverified.resource_id)).work_id).toBeNull();
   expect((await core.api(`/resources/${unverified.resource_id}/suggestions`)).suggestion.id).toBe(unverified.id);
-  await expect(resourceRow(page, '1327332').locator('.suggestion-badge')).toBeVisible();
+  await expect(resourceRow(page, appendFolder).locator('.suggestion-badge')).toBeVisible();
   await references(await current(append.id), append.bindings, append.work_id);
   expect((await grade(core)).filter(r => r.verdict !== 'ok')).toEqual([]);
 });
@@ -119,14 +123,18 @@ async function regroup(sourceId: string, fileIds: string[], targetId: string | n
 test('US-5.2 確認兩作品建議，每張作品頁都有合集，檔案只算一次', async ({ page }) => {
   // A real catalog-only collection of two golden resources, each referencing its correct work.
   // No arbitrary second work, fake VNDB response, source write, or golden edit.
-  const a = await resource('1261651'), b = await resource('1326550');
+  const a = await resource('1368659'), b = await resource('1326550');
   const bFiles: string[] = (await core.api(`/resources/${b.id}/members`)).files.map((f: any) => f.id);
   const before = await resources(), totalFiles = before.reduce((n, r) => n + r.files, 0);
   await references(a, [], null);
   await regroup(b.id, bFiles, a.id, a.title);
+  // Regrouping re-queues matching for the bundle, which may bind it and bump its revision; start from an unbound bundle.
+  await settle();
+  const regrouped = await current(a.id);
+  if (regrouped.bindings.length || regrouped.work_id) await references(regrouped, [], null);
   const bundle = await current(a.id);
   expect(bundle.files).toBe(a.files + b.files);
-  await suggest(bundle, ['v47547', 'v55281'], 'アンラベル・トリガー');
+  await suggest(bundle, ['v65539', 'v55281'], 'くりくりクリニック');
   await review(page);
   const row = resourceRow(page, a.title);
   await expect(row.locator('.suggestion-works li')).toHaveCount(2);
@@ -137,7 +145,7 @@ test('US-5.2 確認兩作品建議，每張作品頁都有合集，檔案只算�
   expect((await resources()).reduce((n, r) => n + r.files, 0)).toBe(totalFiles);
   for (const [index, binding] of bound.bindings.entries()) {
     const work = await core.api<Work>(`/works/${binding.work_id}`);
-    expect(['v47547', 'v55281']).toContain(work.vndb_id);
+    expect(['v65539', 'v55281']).toContain(work.vndb_id);
     expect(binding.role).toBe('main');
     const assets = await core.api(`/works/${work.id}/assets`);
     const listed = assets.resources.filter((r: Resource) => r.id === a.id);
