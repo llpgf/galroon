@@ -67,6 +67,7 @@ pub mod relation_overrides;
 pub mod entity_overrides;
 pub mod grouping;
 pub mod backup;
+pub mod backup_schedule;
 pub mod roots;
 pub mod editions;
 pub mod edition_membership;
@@ -92,7 +93,7 @@ use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
+#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
 pub struct ApiError(pub String);
 impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"||self.0=="Owner access required for full backups"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
@@ -114,7 +115,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
-    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
+    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
@@ -211,6 +212,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/smart-lists/options",get(smart_relations::options)).route("/api/smart-lists/preview",post(smart_snapshots::preview)).route("/api/smart-lists/{id}/to-manual",post(smart_snapshots::to_manual)).route("/api/smart-lists/{id}/results",get(smart_snapshots::read)).route("/api/smart-lists/{id}/compute",post(smart_snapshots::refresh))
     .route("/api/smart-lists",get(smart_lists::index)).route("/api/smart-lists/{id}",get(smart_lists::read).post(smart_lists::edit))
     .route("/api/works/{id}/split-preview",get(split_preview)).route("/api/works/{id}/merge",post(merge_work)).route("/api/works/{id}/split",post(split_work))
+    .route("/api/backups/schedule",get(backup_schedule::get).post(backup_schedule::settings)).route("/api/backups/run",post(backup_schedule::run)).route("/api/backups/{id}",axum::routing::delete(backup_schedule::delete))
     .route("/api/backups",get(backup_history).post(export_backup)).route("/api/backups/inspect",post(inspect_backup))
     .route("/api/plans",get(list_plans)).route("/api/plans/organize",post(organize_plan))
     .route("/api/plans/{id}",get(get_plan)).route("/api/plans/{id}/undo",post(undo_plan)).route("/api/plans/{id}/approve",post(approve_plan)).route("/api/plans/{id}/execute",post(execute_plan))
@@ -220,7 +222,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .fallback_service(tower_http::services::ServeDir::new(std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.join("web"))).unwrap_or_default()))
     .layer(axum::middleware::from_fn_with_state(app.clone(),access::guard))
     .layer(axum::middleware::from_fn(diagnostics::requests))
-    .layer(CorsLayer::new().allow_credentials(true).allow_origin(origins).allow_methods([axum::http::Method::GET,axum::http::Method::POST]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))
+    .layer(CorsLayer::new().allow_credentials(true).allow_origin(origins).allow_methods([axum::http::Method::GET,axum::http::Method::POST,axum::http::Method::DELETE]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))
     .layer(axum::middleware::from_fn_with_state((app.clone(),transport),access::transport_host))
     .layer(axum::middleware::from_fn(access::response_headers))
     .with_state(app)
@@ -301,7 +303,7 @@ async fn get_metadata(State(a):State<App>,h:HeaderMap,Path(id):Path<String>)->Re
 async fn preview_root_remap(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let path=text(&v,"path")?;let result=tokio::task::spawn_blocking(move||roots::preview(&a.db,&id,std::path::Path::new(&path))).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!(result)))}
 async fn remap_root(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let path=text(&v,"path")?;let digest=text(&v,"digest")?;let result=tokio::task::spawn_blocking(move||{let _lock=a.mutation_lock.lock().map_err(|e|e.to_string())?;roots::remap(&a.db,&id,std::path::Path::new(&path),&digest)}).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!(result)))}
 async fn backup_history(State(a):State<App>,h:HeaderMap)->Result<Value>{let who=access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Desktop access required".into()));}Ok(Json(backup::history(&a.db)?))}
-async fn export_backup(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{let who=access::authenticate(&a,&h)?;let mode=match v.get("mode"){None=>backup::Mode::Portable,Some(value)=>serde_json::from_value::<backup::Mode>(value.clone()).map_err(|_|ApiError("Mode must be portable or full".into()))?};if mode==backup::Mode::Full&&who.role!="owner"{return Err(ApiError("Owner access required for full backups".into()));}let destination=text(&v,"destination")?;let path=tokio::task::spawn_blocking(move||backup::export_with(&a.db,std::path::Path::new(&destination),Some(&a.device_dir),backup::Options{mode,..Default::default()})).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!({"path":path})))}
+async fn export_backup(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{let who=access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Desktop access required".into()));}let mode=match v.get("mode"){None=>backup::Mode::Portable,Some(value)=>serde_json::from_value::<backup::Mode>(value.clone()).map_err(|_|ApiError("Mode must be portable or full".into()))?};if mode==backup::Mode::Full&&who.role!="owner"{return Err(ApiError("Owner access required for full backups".into()));}let destination=text(&v,"destination")?;let path=tokio::task::spawn_blocking(move||a.backup_schedule.export(&a,std::path::Path::new(&destination),mode)).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!({"path":path})))}
 async fn inspect_backup(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let path=text(&v,"path")?;let manifest=tokio::task::spawn_blocking(move||backup::inspect(std::path::Path::new(&path))).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(serde_json::to_value(manifest).map_err(|e|ApiError(e.to_string()))?))}
 async fn merge_work(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let r=v["revision"].as_i64().ok_or(ApiError("Revision required".into()))?;let tr=v["target_revision"].as_i64().ok_or(ApiError("Destination revision required".into()))?;Ok(Json(grouping::merge(&a.db,&id,&text(&v,"target_id")?,r,tr)?))}
 async fn split_preview(State(a):State<App>,h:HeaderMap,Path(id):Path<String>)->Result<Value>{if access::authenticate(&a,&h)?.role=="web"{return Err(ApiError("Desktop access required".into()));}let c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;Ok(Json(split_private::preview(&c,&id)?))}
