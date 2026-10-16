@@ -12,9 +12,9 @@ Edition comparison shows how many works share an edition. Editing an edition sho
 
 Collection displays 60 works per page. Search, filters, tag counts and sorting cover the entire collection. Selections survive page changes; adding filtered results to a List reviews all matches, not only the visible page. A single selection is limited to 10,000 works and larger requests show an error. If the collection or source availability changes while paging, use Retry to return to the first page with current results. Update Core if the connection screen reports that collection paging is unsupported.
 
-# Galroon 0.0.2 — Windows quick guide
+# Galroon 0.1.0 — Windows quick guide
 
-This is a development build. Installation and selected recovery flows have been tested on the development Windows machine; clean-machine and full native acceptance are still pending.
+Installation, first launch, adding a source, automatic matching and folder watching pass the automated installer acceptance (US-4.1) on the Windows test laptop. A clean, never-used Windows machine and the minimum supported system have not been tested yet.
 
 ## Open your collection
 
