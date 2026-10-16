@@ -20,6 +20,9 @@ if (-not $Installer) {
   $Installer = Get-ChildItem -Recurse -LiteralPath (Join-Path $repo 'target\release\bundle') -Filter '*-setup.exe' | Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName
 }
 if (-not (Test-Path -LiteralPath $Installer)) { throw "Installer not found: $Installer" }
+# An installer from elsewhere could be an older build with the same version; test this checkout's own bundle.
+$bundle = (Resolve-Path -LiteralPath (Join-Path $repo 'target\release\bundle')).Path
+if (-not (Resolve-Path -LiteralPath $Installer).Path.StartsWith($bundle, [StringComparison]::OrdinalIgnoreCase)) { throw "Installer must come from this checkout's build ($bundle): $Installer" }
 if (-not (Test-Path -LiteralPath $Source)) { throw "Test source not found: $Source" }
 
 # Only this test's processes run on the laptop; an open app would lock the install.
@@ -36,6 +39,22 @@ if ($version -ne $expected) { throw "Installed app is $version, expected ${expec
 $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName -eq 'Galroon' | Select-Object -First 1
 if (-not $entry -or $entry.DisplayVersion -ne $expected -or $entry.InstallLocation.Trim('"') -ne $InstallDir) { throw "Uninstall entry is $($entry.DisplayVersion) at $($entry.InstallLocation), expected $expected at $InstallDir" }
 "uninstall entry: $($entry.DisplayVersion) at $($entry.InstallLocation)"
+# Same-version builds exist (all of 0.0.2), so also prove the installed binaries are this checkout's build.
+# Core and MCP must be byte-identical to target\release. The bundler rewrites a few bytes of
+# target\release\galroon-desktop.exe after packaging it, so that one is compared by size only.
+foreach ($name in 'galroon-core.exe', 'galroon-mcp.exe', 'galroon-desktop.exe') {
+  $built = Join-Path $repo "target\release\$name"
+  $installed = Join-Path $InstallDir $name
+  if (-not (Test-Path -LiteralPath $built)) { throw "Build output missing: $built (run npm run desktop:build in this checkout)" }
+  if ($name -eq 'galroon-desktop.exe') {
+    if ((Get-Item -LiteralPath $built).Length -ne (Get-Item -LiteralPath $installed).Length) { throw "Installed $name differs in size from this checkout's build" }
+    "size $name $((Get-Item -LiteralPath $installed).Length) (matches target\release)"
+    continue
+  }
+  $a = (Get-FileHash -LiteralPath $built -Algorithm SHA256).Hash; $b = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+  if ($a -ne $b) { throw "Installed $name ($b) is not this checkout's build ($a)" }
+  "sha256 $name $b (matches target\release)"
+}
 $shortcut = Get-ChildItem -Recurse -Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs" -Filter 'Galroon*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $shortcut) { throw 'No Galroon entry in the Start menu' }
 $target = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut.FullName).TargetPath
