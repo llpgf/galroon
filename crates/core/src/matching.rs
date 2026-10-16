@@ -389,6 +389,23 @@ pub fn candidate_names(candidate: &Value) -> Vec<&str> {
     names.extend(candidate["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str)); names
 }
 pub fn bonus_name(name: &str) -> bool { let s: String = name.nfkc().collect(); Regex::new(r"特典|アンケート|音声データ|ボイスデータ|ドラマCD|サウンドトラック|設定資料|壁紙").unwrap().is_match(&s) }
+/// Paths are relative to the resource folder, so its edition labels cannot imply bonus content.
+pub fn bonus_only_files(files: &[(String, String)]) -> bool {
+    let audio_rip = Regex::new(r"(?i)\((?:wav|flac|mp3|ogg|ape|tak)\b|(?:wav|flac)\+cue").unwrap();
+    let mut found = false;
+    for (path, ext) in files {
+        if matches!(ext.as_str(), "txt"|"nfo"|"url"|"png"|"jpg"|"jpeg"|"gif"|"webp"|"ini"|"htm"|"html"|"md5"|"sfv") { continue; }
+        let path: String = path.nfkc().collect();
+        if !bonus_name(&path) { return false; }
+        match ext.as_str() {
+            "wav"|"flac"|"mp3"|"ogg"|"m4a"|"ape"|"tak"|"cue"|"log"|"mp4"|"mkv"|"pdf" => {},
+            "rar"|"7z"|"zip" if audio_rip.is_match(path.rsplit(['/', '\\']).next().unwrap()) => {},
+            _ => return false,
+        }
+        found = true;
+    }
+    found
+}
 /// A local remake ("下級生リメイク") identified through a VNDB release that VNDB files under the original work.
 /// Returns that release (lowest id among equally named ones) so the remake can have its own card.
 pub fn remake_release(input: &Input, candidate: &Value) -> Option<Value> {
@@ -847,6 +864,50 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         assert_eq!(r[0]["id"], "v47547"); assert_eq!(r[0]["match"]["strength"], "strong");
         // Update archives corroborate the romanized title.
         assert!(corroborates_filename("mamakano_ex_2", &mama)); assert!(corroborates_filename("mamakanoex101", &mama));
+    }
+    #[test] fn bonus_only_files_accepts_monkeys_audio_rip_and_clutter() {
+        let folder="[211029][1142944][HARUKAZE] Monkeys!! パッケージ版 予約特典 主題歌フルコーラスCD (wav+cue+log)";
+        let mut files:Vec<_>=["wav","cue","log"].into_iter().map(|ext|(format!("{folder}/Monkeys！！予約特典主題歌フルコーラスCD.{ext}"),ext.into())).collect();
+        files.extend([(format!("{folder}.rar"),"rar".into()),("readme.txt".into(),"txt".into()),("cover.png".into(),"png".into())]);
+        assert!(bonus_only_files(&files));
+    }
+    #[test] fn bonus_only_files_accepts_unpacked_audio_and_normalized_names() {
+        for separator in ["/","\\"] {
+            let files=[("01.wav","wav"),("cover.png","png"),("readme.txt","txt")].map(|(name,ext)|(format!("作品 限定版音声特典{separator}{name}"),ext.into()));
+            assert!(bonus_only_files(&files));
+        }
+        assert!(bonus_only_files(&[("ﾄﾞﾗﾏＣＤ（ＦＬＡＣ＋ＣＵＥ）.zip".into(),"zip".into())]));
+        for ext in ["wav","flac","mp3","ogg","m4a","ape","tak","cue","log","mp4","mkv","pdf"] {
+            assert!(bonus_only_files(&[(format!("特典/track.{ext}"),ext.into())]),"{ext}");
+        }
+    }
+    #[test] fn bonus_only_files_requires_audio_markers_on_archive_names() {
+        for archive in [
+            "[260731][1368659][ガールズソフトウェア] くりくりクリニック～新人ナースの育て方～ DL&特典 (files).rar",
+            "(18禁ゲーム) [250530] [CloverGAME] メイドちゃんは迷途ちゅう 特典付き限定版 + Theme Song + Drama CD.rar",
+            "特典 (wav)/game.rar", "特典 (wav)\\game.rar", "特典 (wave).rar",
+        ] {
+            assert!(!bonus_only_files(&[(archive.into(),"rar".into()),("cover.png".into(),"png".into()),("readme.txt".into(),"txt".into())]),"{archive}");
+        }
+        for ext in ["rar","7z","zip"] {
+            for marker in ["(WAV)","(flac)","(mp3)","(ogg)","(ape)","(tak)","wav+cue","FLAC+CUE"] {
+                assert!(bonus_only_files(&[(format!("特典 {marker}.{ext}"),ext.into())]),"{marker}.{ext}");
+            }
+        }
+    }
+    #[test] fn bonus_only_files_rejects_game_files_and_paths_without_bonus_words() {
+        for ext in ["exe","iso","bin","mdf","mds","img","dat"] {
+            assert!(!bonus_only_files(&[("特典/track.wav".into(),"wav".into()),(format!("特典/game.{ext}"),ext.into())]),"{ext}");
+        }
+        // The outer resource's "+ 同梱特典" label is not part of these inner paths.
+        assert!(!bonus_only_files(&[("game/track.wav".into(),"wav".into())]));
+        assert!(!bonus_only_files(&[("特典/track.wav".into(),"wav".into()),("track.wav".into(),"wav".into())]));
+    }
+    #[test] fn bonus_only_files_rejects_empty_and_clutter_only_lists() {
+        assert!(!bonus_only_files(&[]));
+        let clutter:Vec<_>=["txt","nfo","url","png","jpg","jpeg","gif","webp","ini","htm","html","md5","sfv"].into_iter().map(|ext|(format!("特典.{ext}"),ext.into())).collect();
+        assert!(!bonus_only_files(&clutter));
+        let mut files=clutter;files.push(("特典.wav".into(),"wav".into()));assert!(bonus_only_files(&files));
     }
     #[test] fn bonus_archives_reduce_to_their_work_and_short_titles_stay_review() {
         assert_eq!(clean_name("[240830][1297042][WAFFLE] 善悪 フルHDリマスター版 Webアンケート特典 (files).rar"), "善悪");

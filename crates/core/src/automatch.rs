@@ -803,6 +803,25 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         apply(&db,&job,"r0",&snap,&enriched).unwrap();assert!(editions::bindings(&db.lock().unwrap(),"r0").unwrap().is_empty());
         assert_eq!(scalar(&db,"SELECT count(*) FROM match_items WHERE state='review'"),1);
     }
+    #[tokio::test] async fn top_level_bonus_only_files_get_extra_and_game_files_stay_unknown(){
+        for separator in ["/","\\"] {
+            let(_t,db)=fixture(&["Clannad","Clannad","Clannad"]);
+            {let c=db.lock().unwrap();
+            for (rid,folder,inner,ext) in [
+                ("r0","Clannad 予約特典","Clannad 限定版音声特典/track.wav","wav"),
+                ("r1","Clannad","game.exe","exe"),
+                ("r2","Clannad + 同梱特典","track.wav","wav"),
+            ] {
+                c.execute("UPDATE resources SET relative_path=?2,kind='folder' WHERE id=?1",params![rid,folder]).unwrap();
+                c.execute("UPDATE files SET relative_path=?2,ext=?3 WHERE id=?1",params![rid,format!("{folder}{separator}{}",inner.replace('/',separator)),ext]).unwrap();
+            }}
+            let job=kick(&db,false).unwrap().unwrap();run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
+            let c=db.lock().unwrap();
+            for (rid,role) in [("r0","extra"),("r1","unknown"),("r2","unknown")] {
+                let bindings=editions::bindings(&c,rid).unwrap();assert_eq!(bindings.len(),1,"{separator}: {rid}");assert_eq!(bindings[0].role,role,"{separator}: {rid}");
+            }
+        }
+    }
     #[tokio::test] async fn binds_unique_results_once_reuses_work_and_preserves_originals(){
         let(t,db)=fixture(&["Clannad","Clannad","Unknown title"]);let job=kick(&db,false).unwrap().unwrap();assert_eq!(kick(&db,true).unwrap(),Some(job.clone()));
         run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
@@ -913,7 +932,15 @@ fn apply(db:&Db,job:&str,rid:&str,expected:&Snapshot,response:&Value)->R<()> {
         let release=if compilation{None}else{editions::legacy_release(&tx,&wid,"Unclassified edition")?};
         // Bonus archives split out of a bundle folder are extras of their work, not the game itself.
         let path:String=sql(tx.query_row("SELECT relative_path FROM resources WHERE id=?1",[rid],|r|r.get(0)))?;
-        let role=if compilation{"main"}else if path.contains(['/','\\'])&&matching::bonus_name(&path){"extra"}else{"unknown"};
+        let role=if compilation{"main"}else if path.contains(['/','\\'])&&matching::bonus_name(&path){"extra"}else if !path.contains(['/','\\']){
+            let mut s=sql(tx.prepare("SELECT f.relative_path,f.ext FROM resource_files rf JOIN files f ON f.id=rf.file_id WHERE rf.resource_id=?1"))?;
+            let files=sql(sql(s.query_map([rid],|r|{
+                let file:String=r.get(0)?;let ext:String=r.get(1)?;
+                let inner=file.strip_prefix(&path).and_then(|p|p.strip_prefix(['/', '\\'])).unwrap_or(&file);
+                Ok((inner.to_string(),ext))
+            }))?.collect::<rusqlite::Result<Vec<_>>>())?;
+            if matching::bonus_only_files(&files){"extra"}else{"unknown"}
+        }else{"unknown"};
         if !bindings.iter().any(|b:&editions::Binding|b.work_id==wid){bindings.push(editions::Binding{work_id:wid,release_id:release,role:role.into()});}
         }
         let primary=bindings.first().map(|b|b.work_id.clone());
