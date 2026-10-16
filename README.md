@@ -2,7 +2,7 @@
 
 **Galgame 收藏管理｜A local catalog for visual novel collections**
 
-[v0.0.2 Pre-release](https://github.com/llpgf/galroon/releases/tag/v0.0.2) · **Windows x64** · [GPL-3.0-only](LICENSE)
+[v0.1.0](https://github.com/llpgf/galroon/releases/tag/v0.1.0) · **Windows x64** · [GPL-3.0-only](LICENSE)
 
 [繁體中文](#繁體中文) · [English](#english)
 
@@ -12,21 +12,21 @@
 
 Galroon 是以 **Rust Core + React / TypeScript + Tauri 2** 開發的 Windows 桌面收藏管理工具。它將「作品、版本、資源包、實體檔案」分開管理：同一作品的不同版本集中在一張作品卡片下，共用資源也不需要複製多份檔案。
 
-目前版本為 **0.0.2**，API **1**，收藏資料庫 schema **44**。主要功能已實作；目前仍屬開發版本，完整發佈驗收尚未完成。
+目前版本為 **0.1.0**，API **1**，收藏資料庫 schema **50**。這是第一個正式版本：Mac 端到端驗收（41 條故事）與 Windows 安裝驗收（US-4.1）皆通過，真實收藏匹配錯配為 0。
 
 ### 下載
 
 | 下載 | 用途 |
 |---|---|
-| [Windows x64 安裝包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) | 安裝 Galroon；已附完整 GPLv3 授權與版權聲明。 |
-| [附授權的源碼包](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon-0.0.2-source.zip) | 本版源碼、建置設定與授權文件。 |
-| [SHA-256 校驗檔](https://github.com/llpgf/galroon/releases/download/v0.0.2/SHA256SUMS.txt) | 核對下載檔案。 |
+| [Windows x64 安裝包](https://github.com/llpgf/galroon/releases/download/v0.1.0/Galroon_0.1.0_x64-setup.exe) | 安裝 Galroon；已附完整 GPLv3 授權與版權聲明。 |
+| [附授權的源碼包](https://github.com/llpgf/galroon/releases/download/v0.1.0/Galroon-0.1.0-source.zip) | 本版源碼、建置設定與授權文件。 |
+| [SHA-256 校驗檔](https://github.com/llpgf/galroon/releases/download/v0.1.0/SHA256SUMS.txt) | 核對下載檔案。 |
 
-下載安裝包後直接執行即可，使用者不需要安裝開發工具。系統需要 WebView2。完整變更與驗證範圍見 [v0.0.2 發佈說明](https://github.com/llpgf/galroon/releases/tag/v0.0.2)。
+下載安裝包後直接執行即可，使用者不需要安裝開發工具。系統需要 WebView2。完整變更與驗證範圍見 [v0.1.0 發佈說明](https://github.com/llpgf/galroon/releases/tag/v0.1.0)。
 
-需要附完整授權的本版源碼時，請使用上方具名源碼包；GitHub 自動產生的原 tag 源碼封存檔早於授權更新。
+需要附完整授權的本版源碼時，請使用上方具名源碼包。
 
-此版本標示為 **Pre-release（預發佈）**。歷史 `v0.5.0` 屬於先前原型；請使用上述連結取得目前版本。
+歷史 `v0.5.0` tag 屬於先前原型，不是較新的版本；請使用上述連結取得目前版本。
 
 ### 主要功能
 
@@ -113,21 +113,21 @@ GALROON_DEV_SESSION=/tmp/galroon-session.json npm run dev
 
 Galroon is a **Windows desktop catalog for visual novel collections**, built with a Rust Core, React / TypeScript and Tauri 2. It treats works, editions, resource packages and physical files as separate entities: multiple editions share one work card, and shared resources do not require duplicate files.
 
-Current version: **0.0.2**, API **1**, catalog schema **44**. Core features are implemented; full release acceptance is still in progress. This is a development build.
+Current version: **0.1.0**, API **1**, catalog schema **50**. This is the first full release: the macOS end-to-end acceptance (41 stories) and the Windows installer acceptance (US-4.1) pass, with 0 false matches on a real collection.
 
 ### Download
 
 | Download | Purpose |
 |---|---|
-| [Windows x64 installer](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon_0.0.2_x64-setup.exe) | Install Galroon, including the full GPLv3 license and copyright notice. |
-| [Source archive with license](https://github.com/llpgf/galroon/releases/download/v0.0.2/Galroon-0.0.2-source.zip) | Source, build configuration and license files for this version. |
-| [SHA-256 checksums](https://github.com/llpgf/galroon/releases/download/v0.0.2/SHA256SUMS.txt) | Verify downloaded files. |
+| [Windows x64 installer](https://github.com/llpgf/galroon/releases/download/v0.1.0/Galroon_0.1.0_x64-setup.exe) | Install Galroon, including the full GPLv3 license and copyright notice. |
+| [Source archive with license](https://github.com/llpgf/galroon/releases/download/v0.1.0/Galroon-0.1.0-source.zip) | Source, build configuration and license files for this version. |
+| [SHA-256 checksums](https://github.com/llpgf/galroon/releases/download/v0.1.0/SHA256SUMS.txt) | Verify downloaded files. |
 
-Run the installer after downloading it; development tools are not needed to use the app. WebView2 is required. See the [v0.0.2 release notes](https://github.com/llpgf/galroon/releases/tag/v0.0.2) for changes and validation scope.
+Run the installer after downloading it; development tools are not needed to use the app. WebView2 is required. See the [v0.1.0 release notes](https://github.com/llpgf/galroon/releases/tag/v0.1.0) for changes and validation scope.
 
-Use the named source archive above for this version with its complete license notices; GitHub's automatic archives of the original tag predate the licensing update.
+Use the named source archive above for this version with its complete license notices.
 
-This is a **Pre-release**. The historical `v0.5.0` belongs to the earlier prototype; use the links above for the current version.
+The historical `v0.5.0` tag belongs to the earlier prototype and is not a newer version; use the links above for the current version.
 
 ### Features
 

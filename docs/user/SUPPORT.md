@@ -1,6 +1,6 @@
 # Galroon Windows support and validation boundary
 
-Applies to product 0.0.2, catalog schema 42. This document describes the development build, not completed MVP acceptance.
+Applies to product 0.1.0, catalog schema 50. Release acceptance (macOS end-to-end and the Windows installer walk-through, US-4.1) passed; a clean Windows machine and the minimum supported system are not yet measured.
 
 ## System and runtime
 
