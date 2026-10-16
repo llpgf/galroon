@@ -12,11 +12,12 @@ pub fn migrate(c:&Connection)->rusqlite::Result<()>{c.execute_batch("CREATE TABL
 #[derive(Serialize,Deserialize)]#[serde(tag="action",rename_all="snake_case",deny_unknown_fields)]pub enum Action{Save{name:String,description:String,pinned:bool,definition:Definition},Delete,Restore}
 #[derive(Serialize,Deserialize)]#[serde(deny_unknown_fields)]pub struct Edit{pub revision:i64,pub request_id:String,pub edit:Action}
 fn dependencies(rule:&Rule,ids:&mut std::collections::BTreeSet<String>){match rule{Rule::Group{children,..}=>for child in children{dependencies(child,ids)},Rule::Field{predicate} if matches!(predicate.field,Field::PersonalTags|Field::RelatedPersonalTags)=>ids.extend(predicate.values.iter().cloned()),_=>{}}}
-pub(crate) fn dependency_counts(c:&Connection)->R<std::collections::BTreeMap<String,usize>>{
- let mut counts=std::collections::BTreeMap::new();let mut q=c.prepare("SELECT definition FROM smart_lists WHERE deleted=0")?;
- for row in q.query_map([],|r|r.get::<_,String>(0))?{let definition:Definition=serde_json::from_str(&row?).map_err(|e|ApiError(e.to_string()))?;let mut ids=std::collections::BTreeSet::new();dependencies(&definition.rule,&mut ids);for id in ids{*counts.entry(id).or_insert(0)+=1;}}
- Ok(counts)
+pub(crate) fn dependents(c:&Connection)->R<std::collections::BTreeMap<String,Vec<(String,i64)>>>{
+ let mut lists=std::collections::BTreeMap::<String,Vec<(String,i64)>>::new();let mut q=c.prepare("SELECT id,revision,definition FROM smart_lists WHERE deleted=0 ORDER BY id")?;
+ for row in q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?{let(list,revision,definition)=row?;let definition:Definition=serde_json::from_str(&definition).map_err(|e|ApiError(e.to_string()))?;let mut ids=std::collections::BTreeSet::new();dependencies(&definition.rule,&mut ids);for id in ids{lists.entry(id).or_default().push((list.clone(),revision));}}
+ Ok(lists)
 }
+#[cfg(test)]pub(crate) fn dependency_counts(c:&Connection)->R<std::collections::BTreeMap<String,usize>>{Ok(dependents(c)?.into_iter().map(|(id,lists)|(id,lists.len())).collect())}
 pub fn broken_dependencies(c:&Connection,definition:&Definition)->R<Vec<String>>{let mut ids=std::collections::BTreeSet::new();dependencies(&definition.rule,&mut ids);let mut broken=Vec::new();for id in ids{let active:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM custom_tags WHERE id=?1 AND deleted=0)",[&id],|r|r.get(0))?;if !active{broken.push(id);}}Ok(broken)}
 fn text(value:&str,max:usize)->R<()>{if value.len()>max||value.chars().any(|c|c.is_control()&&c!='\n'&&c!='\t'){return Err(ApiError("Invalid list text".into()));}Ok(())}
 pub fn change(c:&Connection,id:&str,input:&Edit)->R<Value>{
