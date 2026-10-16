@@ -1,6 +1,6 @@
 # NAS 部署（PR N1b）
 
-適用於 Synology DS920+（J4125、x86_64、DSM Container Manager）。本 PR 僅提供 N1 的部署工具；沿用 N1a 的 Linux CLI、Unix socket 與固定 `127.0.0.1:14800`。完整 N1 驗收還需要 **N1c** 的掃描／封存／watcher 相容性與**匹配計畫 Phase 1b**。不提供 LAN、TLS、N1d 的 `restore` 或 N3 搬移。
+適用於 Synology DS920+（J4125、x86_64、DSM Container Manager）。本 PR 僅提供 N1 的部署工具；沿用 N1a 的 Linux CLI、Unix socket 與固定 `127.0.0.1:14800`。完整 N1 驗收還需要 **N1c** 的掃描／封存／watcher 相容性與**匹配計畫 Phase 1b**。此部署工具不提供 LAN、TLS 或 N3 搬移；Core 層級的 N1d `restore` 命令仍未提供，但可使用下方的 NAS 快照還原。
 
 ## 為何分開建置
 
@@ -144,7 +144,7 @@ ssh galroon-dev@192.168.50.154 'cd /volume1/docker/galroon && sudo -n /usr/local
 
 每次更新會保留原 SHA image tag，並將當時**實際執行中的 image ID** 標為 `galroon:previous`，另記錄 `previous-image-id`。即使 `:local` 已被新 build 覆蓋，也不會誤把新版當前一版。不要刪除尚需回退的 SHA tag；`previous` 只保留最近一次更新前的 image。
 
-需要回退時，先確認舊版支援現在的資料 schema；**image 回退不等於資料還原**。如 schema 不相容，應停止並使用先前的一致備份安排復原，本 PR 不提供 `restore`。在 NAS SSH shell 中執行：
+需要回退時，先確認舊版支援現在的資料 schema；**image 回退不等於資料還原**。如 schema 不相容，應停止並使用先前的一致備份安排復原。Core 層級的 N1d `restore` 命令仍未提供；NAS 快照可依下節還原至全新資料目錄，再搭配相容的 image 啟動。在 NAS SSH shell 中執行：
 
 ```bash
 cd /volume1/docker/galroon
@@ -160,6 +160,107 @@ mv .env.rollback .env
 ```
 
 再跑 `status.sh`、health／UI，並重新取得 session。若需跨多版回退，將 `rollback_image` 換成已記錄的 `galroon:<12碼SHA>`。這些步驟不動其他 container，也不刪除 `/volume1/Backup` 內的任何資料。
+
+## 自動備份與還原
+
+NAS 腳本 `galroon-backup.sh` 提供完整災難復原快照：以 SQLite `.backup` 線上備份 `library.sqlite`，預設每天也備份 `artwork-library.sqlite`，另複製 `device.json`、`network.json` 與 `lan-*.pem`。不複製 `lan-tls.lock`、Core 自有的 `backups/`、`migration-backups/`，也不複製遊戲收藏。Core 的 `backup::export` 會移除憑證與裝置身分，因此不適合此用途。每個資料庫各自取得一致快照；兩個資料庫與身分檔不是同一瞬間的跨檔案交易，變更配對／網路設定時請避開備份時段。
+
+預設從 `/volume1/docker/galroon/.env` 解析 `GALROON_DATA`（例如 `/volume1/docker/galroon/data-production-20261016`），不執行 `.env`。快照存放在 `/volume1/docker/galroon/backups/<UTC時間>-daily|weekly`。最近 6.5 天內沒有完成的 weekly 時，本次為 weekly，否則為 daily；預設保留最新 **7 份 daily＋4 份 weekly**。先在 `.incomplete-*` 目錄完成 SQLite 完整性、筆數與 SHA-256 記錄，轉為不需 WAL 的副本，執行 `sync` 後改名，才清理舊快照。失敗會回傳非零狀態並移除本次暫存目錄；舊 `.incomplete-*` 只警告、不自動刪除。若留下 `.lock`，先確認沒有備份／清理作業執行，再依錯誤訊息用 `rmdir` 移除。
+
+實機收藏目錄資料庫約 **72 MB**、圖片庫約 **358 MB**；每份完整快照約 430 MB，**11 份約 4.7 GB**，只保存收藏目錄則約 **0.8 GB**。NAS 尚有約 **14 TB** 可用空間，因此圖片預設每天保存（`always`），產生新快照時還需額外一份空間。這是 #61 的永久圖片封存庫，雖可重新抓取，但 VNDB 限流使恢復很慢，手動圖片連結也會遺失。圖片備份前要求可用空間大於圖片庫大小的 1.2 倍＋1 GiB；不足時整次備份失敗，不會悄悄略過。
+
+可在 NAS 執行環境調整 `GALROON_BACKUP_DAILY`、`GALROON_BACKUP_WEEKLY`（整數且至少 1）、`GALROON_BACKUP_ARTWORK=always|weekly|never`（預設 `always`；`weekly` 僅週快照含圖片，`never` 不含圖片）、`GALROON_BASE`、`GALROON_BACKUP_DIR`、`GALROON_DATA`、`GALROON_SQLITE` 與 `GALROON_DOCKER`。備份目錄不得等於或位於 data 內。一般備份不需要 sudo；記錄 image 時只嘗試 `sudo -n /usr/local/bin/docker inspect`，失敗記為 `unknown`，不影響備份。NAS 需有 `sqlite3`、`sha256sum`（或 `shasum`）及基本 shell 工具。
+
+**快照包含 owner 密碼雜湊、sessions 與 LAN 私鑰，請勿分享。** 腳本採 `umask 077`，目錄／檔案嘗試設定為 700／600；Synology 共用資料夾 ACL 可能強制目錄為 777，仍須在 DSM 限制其他帳號與共享服務存取。快照與正式資料位於同一個 volume，**無法防護 volume 損毀**；請定期拉回 Mac，及／或用 Hyper Backup 備份 `/volume1/docker/galroon/backups` 到另一個儲存目的地。
+
+### 安裝與排程
+
+在 Mac 的 checkout 執行（只上傳腳本，不啟動排程）：
+
+```bash
+scripts/nas/backup.sh install
+scripts/nas/backup.sh backup
+scripts/nas/backup.sh list
+scripts/nas/backup.sh verify                    # 預設最新，也可指定快照名稱
+scripts/nas/backup.sh pull                      # ~/GalroonBackups/nas/<快照名稱>
+# scripts/nas/backup.sh pull --with-artwork /另一個本機目錄
+scripts/nas/backup.sh install-mac-schedule       # 每天 06:00 拉回 Mac
+# scripts/nas/backup.sh install-mac-schedule /另一個本機目錄
+# scripts/nas/backup.sh uninstall-mac-schedule
+```
+
+`pull [--with-artwork] [local-dir]` 下載最新快照的收藏目錄、身分檔、MANIFEST 與 SHA256SUMS，預設略過 `artwork-library.sqlite`，約 **75 MB／天，保留 14 份約 1 GB**。圖片可重新下載，所以異地副本可選擇省略，但恢復較慢且手動圖片連結會遺失；需要完整副本時加 `--with-artwork`（選項放在本機目錄之前）。下載先放入 `.partial-<快照名稱>`，在 Mac 用 `shasum -a 256 -c` 驗證後才改名；失敗移除本次暫存目錄。最新快照若已在本機且驗證通過，印出訊息並成功退出，不重新下載。既有同名副本若驗證失敗則報錯，請先移開再重試；從 catalog-only 改拉完整副本時也應使用另一個目錄或移開原副本。
+
+成功下載後依 `GALROON_PULL_KEEP`（預設 14，整數且至少 1）保留最新本機快照；只刪除名稱符合 `YYYYMMDDTHHMMSSZ-daily|weekly` 的目錄，不處理符號連結或其他目錄。MANIFEST／SHA256SUMS 保留 NAS 原始內容，省略圖片的副本不能直接當成含 artwork 的完整 NAS 快照通過 `verify`；要保留圖片復原能力，可用 `--with-artwork` 或 Hyper Backup。SSH 包裝器使用預設 NAS 備份路徑；自訂 `GALROON_BACKUP_DIR` 時，請直接在 NAS 使用腳本並自行安排異地複製。
+
+Mac 排程安裝至 `~/Library/LaunchAgents/com.galroon.nas-backup-pull.plist`，每天 **06:00** 執行 `pull`（NAS 於 04:30 備份），不在載入時立即執行。Mac 睡眠錯過排程時，launchd 會在下次喚醒時補跑。輸出與錯誤均寫入 `~/Library/Logs/galroon-nas-backup-pull.log`。安裝時以 `plutil -lint` 檢查，再透過 `launchctl bootout`／`bootstrap` 載入；解除安裝會卸載並移除 plist。
+
+排程使用**此 checkout 的絕對路徑**，請在長期保留的主 checkout 安裝，不要使用暫時 worktree。安裝時會保存已設定的 `GALROON_NAS`，並設定包含 `/opt/homebrew/bin` 的 PATH。`pull` 的 SSH 一律使用 `-o BatchMode=yes`；SSH key 必須能在沒有互動式 agent／密碼提示的情況下使用，並事先確認主機金鑰。預設排程拉 catalog-only 並保留 14 份；若需排程也帶圖片，可在 plist 的 `pull` 後、本機目錄前加入 `--with-artwork`；自訂保留數則加入 plist 的 EnvironmentVariables，修改後重新載入。測試可用 `GALROON_LAUNCH_AGENTS`、`GALROON_LAUNCHCTL` 與 `GALROON_SSH` 替換目錄或命令。
+
+DSM 設定如下：
+
+1. **控制台 → 工作排程器 → 新增 → 排程的工作 → 使用者定義的指令碼**（Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script）。
+2. **一般（General）**：工作名稱 `Galroon backup`，使用者 `galroon-dev`。
+3. **排程（Schedule）**：每日，`04:30`（DSM 本機時間；快照名稱使用 UTC）。
+4. **工作設定（Task Settings）**：設定收件地址並啟用「異常終止時寄送電子郵件」，命令填入：
+
+   ```sh
+   /volume1/docker/galroon/bin/galroon-backup.sh backup
+   ```
+
+儲存後可手動執行一次排程，確認郵件通知設定及 `list`／`verify` 結果。需要單獨清理時使用 `scripts/nas/backup.sh prune`，只處理名稱符合時間＋daily／weekly 且有 MANIFEST 的快照目錄。
+
+### Core 手動匯出與清理
+
+data 內的 `backups/` 是 Backup 面板按 **Export**、目的地填 `/data/backups` 時，透過 `POST /api/backups` 產生的手動匯出；Core 不會自動建立，也不會自動刪除。實機目前有 15 個 `Galroon-backup-<epoch>-<uuid>` 目錄，每份包含 `collection.sqlite`、`artwork-library.sqlite` 與 `manifest.json`，約 40–660 MB，合計 **4.9 GB，約占 data 目錄 93%**。這些匯出會移除憑證與裝置身分，不能替代上述災難復原快照。
+
+先由 owner 檢查清單，建議只保留最新幾份：
+
+```bash
+scripts/nas/backup.sh core-exports
+scripts/nas/backup.sh prune-core-exports --keep 3 --dry-run
+# 確認後才執行：
+scripts/nas/backup.sh prune-core-exports --keep 3
+```
+
+`core-exports` 列出名稱、manifest.json 的 `created` epoch（無法解析時使用名稱中的 epoch）、`size_kib` 與總計。`prune-core-exports` 必須指定 `--keep N`（整數且至少 0）；以**目錄名稱中的 epoch** 排序，只處理 data/backups 直接下一層、名稱符合 `^Galroon-backup-[0-9]+-[0-9a-fA-F-]+$`、有 manifest.json 且不是符號連結的目錄。`--dry-run` 只列印，實際刪除也會逐一印出路徑。刪除後 **Core 的 `backup_history` 資料表仍保留紀錄，Backup 面板「recent backups」仍會列出已刪除的路徑**。
+
+排程 `backup` **永遠不會呼叫 Core 匯出清理，也不複製 data/backups**。另外保留既有更新前手動備份 `/volume1/docker/galroon/backup-before-5147b4c-20261016-152528`，不要隨這次清理刪除。
+
+### 隔離還原測試
+
+```bash
+scripts/nas/backup.sh restore-test
+scripts/nas/backup.sh restore-test 20261016T043000Z-weekly --cleanup
+```
+
+先驗證並還原到 NAS 的 `restore-test-<UTC時間>`，將其中的 `network.json` 改名為 `network.json.disabled-for-test`，再用正式 `galroon` 的 image（查不到時用 `galroon:local`）啟動 `galroon-restore-test`。使用 SSH 帳號的非 root uid/gid、768 MiB 記憶體上限、獨立控制通道 tmpfs、唯讀收藏掛載與 **`--network none`**，只測 container 內的 loopback HTTP。既有同名測試 container 會使測試拒絕執行。
+
+90 秒內須取得 HTTP 200、`"name":"Galroon"`，並核對 works／resources 筆數。成功或失敗都只停止（60 秒）及移除該測試 container；失敗先列出最後 50 行日誌。預設保留並印出 scratch 目錄，`--cleanup` 只在成功後刪除本次目錄。測試會修改 scratch 資料庫，它不再是原始快照。
+
+### 正式還原
+
+1. 公告維護停機時間，從 `list` 選擇快照；若需要完整圖片庫，選 MANIFEST 標示含 artwork 的快照。確認所用 image 支援快照的 schema，必要時參照 MANIFEST 的 image。先完成 `verify` 與 `restore-test`。
+2. 還原到 `/volume1/docker/galroon/` 下**尚不存在**的目錄；父目錄必須存在，路徑不得含 `..` 或單引號。腳本不會切換正式服務，也不會寫入原 data：
+
+   ```bash
+   scripts/nas/backup.sh restore 20261016T043000Z-weekly /volume1/docker/galroon/data-restored-20261016
+   ```
+
+3. 進入停機時段後，以 `GALROON_DATA=/volume1/docker/galroon/data-restored-20261016 scripts/nas/deploy.sh` 部署（其他自訂部署環境設定也須保留）。或在 NAS SSH shell 停止 Core，編輯 `.env` 的 `GALROON_DATA` 指向新目錄，再啟動同一個 service：
+
+   ```sh
+   cd /volume1/docker/galroon
+   sudo -n /usr/local/bin/docker compose --project-name galroon --env-file .env -f compose.yaml stop -t 60 galroon
+   # 編輯 .env：GALROON_DATA='/volume1/docker/galroon/data-restored-20261016'
+   sudo -n /usr/local/bin/docker compose --project-name galroon --env-file .env -f compose.yaml up -d --no-deps galroon
+   ```
+
+4. 執行 `scripts/nas/status.sh`，透過 SSH 通道檢查 `/api/health`、UI 與作品／資源筆數，重新取得 `scripts/nas/owner.sh session`，並檢查桌面配對連線。確認無誤前保留舊 data 目錄，必要時停止 Core 後切回。
+
+還原副本保留原裝置身分，因此已配對桌面可繼續使用。**不要讓兩個相同身分的 Core 同時出現在 LAN**；`restore-test` 使用 `--network none` 隔離。選用 `weekly` 或 `never` 政策產生的不含 artwork 快照仍可復原收藏與身分，但不含圖片封存；需要圖片時優先使用完整快照，不自行混合不同時間點的資料庫。
+
+本機驗證可執行 `scripts/nas/test-backup.sh`，需 SQLite 與 macOS 系統工具（含 `plutil`），不需 Docker／真實 SSH；涵蓋背景 WAL 寫入、預設 daily 圖片與明確 weekly 政策、checksum、權限、保留數、安全還原、Core 匯出清理、mock SSH pull 與 stub launchctl 安裝／移除。真正的 DSM／launchd 排程、ACL、Docker 啟動與實機圖片備份時間仍須在對應主機驗證。
 
 ## 本 PR 驗證界線與風險
 
