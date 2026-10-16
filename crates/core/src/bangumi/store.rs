@@ -43,15 +43,26 @@ pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()> {
     c.execute("DELETE FROM bangumi_remote",[])?;
     for row in rows {c.execute("INSERT INTO bangumi_remote VALUES(?1,?2,?3)",params![row.subject_id,row.status,serde_json::to_string(&row.subject)?])?;}Ok(())
 }
-fn candidates(c:&Connection,subject:&Subject)->Result<Vec<Candidate>> {
-    let names=[crate::collection_query::normalized(subject.title()),crate::collection_query::normalized(&subject.name)];
-    let mut q=c.prepare("SELECT id,title,original_title,aliases FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id)")?;
+// Bangumi and VNDB punctuate the same title differently (「—」/「－」, 「～」 spacing, a trailing 「。」),
+// so compare folded titles. Exact normalized hits are listed first; the user still confirms every match.
+struct Local {id:String,title:String,exact:Vec<String>,folded:Vec<String>}
+fn locals(c:&Connection)->Result<Vec<Local>> {
+    use crate::collection_query::{fold,normalized};
+    let mut q=c.prepare("SELECT id,title,original_title,aliases FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id) ORDER BY title,id")?;
     let mut out=Vec::new();
     for item in q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
         let(id,title,original,aliases)=item?;let mut titles=serde_json::from_str::<Vec<String>>(&aliases)?;titles.push(title.clone());titles.push(original);
-        if titles.iter().any(|title|{let name=crate::collection_query::normalized(title);!name.is_empty()&&names.contains(&name)}) {out.push(Candidate{id,title});}
-        if out.len()==10 {break;}
+        let keep=|names:Vec<String>|names.into_iter().filter(|n|!n.is_empty()).collect();
+        out.push(Local{id,title,exact:keep(titles.iter().map(|t|normalized(t)).collect()),folded:keep(titles.iter().map(|t|fold(t)).collect())});
     }Ok(out)
+}
+fn candidates(locals:&[Local],subject:&Subject)->Vec<Candidate> {
+    use crate::collection_query::{fold,normalized};
+    let exact=[normalized(subject.title()),normalized(&subject.name)];let folded=[fold(subject.title()),fold(&subject.name)];
+    let candidate=|l:&Local|Candidate{id:l.id.clone(),title:l.title.clone()};
+    let mut out:Vec<Candidate>=locals.iter().filter(|l|l.exact.iter().any(|n|exact.contains(n))).map(candidate).collect();
+    out.extend(locals.iter().filter(|l|!l.exact.iter().any(|n|exact.contains(n))&&l.folded.iter().any(|n|folded.contains(n))).map(candidate));
+    out.truncate(10);out
 }
 pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>> {
     let mut out=Vec::new();
@@ -60,9 +71,10 @@ pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>> {
         let(subject_id,id,title,status,revision,base,hidden,remote)=row?;let local=remote_status(&status)?;
         let mut row=Row{subject_id,title,work_id:Some(id),local:Some(local),remote,base,revision:Some(revision),kind:if hidden{"hidden"}else{classify(local,remote,base)}.into(),candidates:vec![],fingerprint:String::new()};row.seal()?;out.push(row);
     }
+    let locals=locals(c)?;
     let mut q=c.prepare("SELECT r.subject_id,r.status,r.subject,EXISTS(SELECT 1 FROM bangumi_ignored i WHERE i.subject_id=r.subject_id) FROM bangumi_remote r WHERE NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.subject_id=r.subject_id) ORDER BY r.subject_id")?;
     for item in q.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?)))? {
-        let(subject_id,status,raw,ignored)=item?;let subject:Subject=serde_json::from_str(&raw)?;let candidates=candidates(c,&subject)?;
+        let(subject_id,status,raw,ignored)=item?;let subject:Subject=serde_json::from_str(&raw)?;let candidates=candidates(&locals,&subject);
         let kind=if ignored{"ignored"}else if !candidates.is_empty(){"match"}else if mode=="existing"{"skipped"}else{"import"};
         let mut row=Row{subject_id,title:subject.title().into(),work_id:None,local:None,remote:Some(status),base:None,revision:None,kind:kind.into(),candidates,fingerprint:String::new()};row.seal()?;out.push(row);
     }Ok(out)

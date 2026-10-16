@@ -59,6 +59,17 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     store::replace_remote(&c,&[collection(1,3),collection(2,2)]).unwrap();let rows=store::rows(&c,"existing").unwrap();assert_eq!(rows[0].kind,"match");assert_eq!(rows[0].candidates[0].id,"w");assert_eq!(rows[1].kind,"skipped");
     assert!(automatic_choices(rows).is_empty());assert_eq!(crate::work_catalog::all(&c).unwrap().len(),1);
 }
+#[test]fn matches_ignore_punctuation_and_spacing_differences_but_not_sequels(){
+    let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
+    c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('saku','Sakura no Uta','サクラノ詩－櫻の森の上を舞う－'),('zan','Zannen','残念な俺達の青春事情。'),('ryu','Ryuuki','竜姫ぐーたらいふ'),('exact','x','Game 3'),('loose','y','Game-3')").unwrap();
+    let named=|id:i64,name:&str|{let mut row=collection(id,2);row.subject.name=name.into();row};
+    store::replace_remote(&c,&[named(1,"サクラノ詩 —櫻の森の上を舞う—"),named(2,"残念な俺達の青春事情"),named(4,"竜姫ぐーたらいふ２"),collection(3,2)]).unwrap();
+    let rows=store::rows(&c,"full").unwrap();let row=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap();
+    assert_eq!(row(1).kind,"match");assert_eq!(row(1).candidates[0].id,"saku");
+    assert_eq!(row(2).kind,"match");assert_eq!(row(2).candidates[0].id,"zan");
+    assert_eq!(row(4).kind,"import");
+    assert_eq!(row(3).candidates.iter().map(|c|c.id.as_str()).collect::<Vec<_>>(),["exact","loose"]);
+}
 #[tokio::test]async fn real_sync_flow_pushes_local_edits_and_pulls_remote_edits(){
     let(_t,a,_)=fixture();link_fixture(&a,"completed",Some(3));let mock=Mock::new(vec![collection(1,3)]);let(client,task)=server(mock.clone()).await;
     sync_client(&a,&client).await.unwrap();assert_eq!(mock.items.lock().unwrap()[&1].status,2);assert_eq!(mock.writes.lock().unwrap()[0],json!({"type":2}));assert_eq!(status(&a),"completed");
