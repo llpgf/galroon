@@ -8,7 +8,7 @@
 - **本批範圍**：① 加入來源 → 掃描 → 匹配；② 瀏覽收藏與作品頁；③ 清單與標籤。
   不含：檔案整理/搬移、Get files、備份還原、連線配對（之後另批）。
 - **兩層測試環境**
-  - **M（Mac 自動化層）**：`ui_core` + Vite，Playwright 驅動瀏覽器；資料用唯讀 NAS 測試集（38 個頂層資料夾，`GALROON_TESTSET` 指向 `~/GalroonTestData/testset-2026-10/`）＋真實 VNDB；見[遷移計畫](../plans/2026-10-16-e2e-nas-test-set.md)與[答案卷](../../tests/e2e/golden/nas_testset.json)。每次測試用全新的 GALROON 資料目錄，不碰真實收藏。
+  - **M（Mac 自動化層）**：`ui_core` + Vite，Playwright 驅動瀏覽器；資料用唯讀 NAS 測試集（38 個頂層資料夾，`GALROON_TESTSET` 指向外接 SSD 上的 `/Volumes/新增磁碟區/galroon-testset-2026-10/`）＋真實 VNDB；見[遷移計畫](../plans/2026-10-16-e2e-nas-test-set.md)與[答案卷](../../tests/e2e/golden/nas_testset.json)。每次測試用全新的 GALROON 資料目錄，不碰真實收藏。
   - **W（Windows 原生層）**：在測試筆電用 NSIS 安裝檔走一次完整流程。
 - **完成定義**：所有故事的 M 層測試全綠 ＋ golden 對照錯配數 = 0 ＋ W 層安裝流程走過一次。測試發現 bug → 修 → 重驗，直到綠燈。
 - **共通規則（適用每條故事）**
@@ -18,7 +18,7 @@
 
 ## 標準答案（golden）
 
-「絕不錯配」需要答案卷：[`tests/e2e/golden/nas_testset.json`](../../tests/e2e/golden/nas_testset.json)。NAS 測試集共 38 個頂層資料夾，唯讀複本在 `~/GalroonTestData/testset-2026-10/`，以必填的 `GALROON_TESTSET` 指定；沒有預設路徑。見[遷移計畫](../plans/2026-10-16-e2e-nas-test-set.md)。
+「絕不錯配」需要答案卷：[`tests/e2e/golden/nas_testset.json`](../../tests/e2e/golden/nas_testset.json)。NAS 測試集共 38 個頂層資料夾，複本在外接 SSD 的 `/Volumes/新增磁碟區/galroon-testset-2026-10/`（exFAT，無法設唯讀；G3 指紋比對照樣檢查是否被寫入），以必填的 `GALROON_TESTSET` 指定；沒有預設路徑。見[遷移計畫](../plans/2026-10-16-e2e-nas-test-set.md)。
 
 2026-10-16 由 owner 逐筆審核定稿。舊 [`sandbox_data.json`](../../tests/e2e/golden/sandbox_data.json) 保留為歷史紀錄，不再用於驗收。
 
@@ -290,7 +290,7 @@
 
 ```bash
 cargo build -p galroon-core --example ui_core
-GALROON_TESTSET="$HOME/GalroonTestData/testset-2026-10" npx playwright test
+GALROON_TESTSET="/Volumes/新增磁碟區/galroon-testset-2026-10" npx playwright test
 ```
 
 每個測試以 `test-output/e2e/runs/` 下全新的資料目錄啟動獨立 Core，不碰真實收藏；報告在 `test-output/e2e/report`。
