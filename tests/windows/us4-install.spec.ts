@@ -86,7 +86,10 @@ test('US-4.1 安裝後首次開啟 → 加來源 → 自動出封面卡 → 監�
   try {
     await test.step('首次開啟自動連上本機 Core，沒有錯誤畫面', async () => {
       await expect(page.getByRole('navigation')).toBeVisible({ timeout: 60_000 });
-      expect((await api(page, '/health')).name).toBe('Galroon');
+      const health = await api(page, '/health');
+      expect(health.name).toBe('Galroon');
+      // The window must be the build under test, not an older install elsewhere on the machine.
+      if (process.env.GALROON_EXPECT_VERSION) expect(health.version, 'running Core version').toBe(process.env.GALROON_EXPECT_VERSION);
       await expect(page.locator('main [role=alert]:visible')).toHaveCount(0);
     });
 
