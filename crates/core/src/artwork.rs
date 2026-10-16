@@ -81,6 +81,14 @@ pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
    let(url,task)=serve(raw.as_bytes().to_vec()).await;let result=download(&url).await.map_err(|e|e.0);assert_eq!(result.unwrap_err(),expected);task.await.unwrap();
   }
  }
+ #[tokio::test]async fn downloader_preserves_large_cover_with_declared_or_streamed_length(){
+  let mut image=vec![7u8;10_369_393];image[..3].copy_from_slice(b"\xff\xd8\xff");
+  for chunked in [false,true]{
+   let mut raw=if chunked{format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",image.len()).into_bytes()}else{format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",image.len()).into_bytes()};
+   raw.extend_from_slice(&image);if chunked{raw.extend_from_slice(b"\r\n0\r\n\r\n");}
+   let(url,task)=serve(raw).await;assert_eq!(download(&url).await.map_err(|e|e.0).unwrap(),image);task.await.unwrap();
+  }
+ }
  #[tokio::test]async fn downloader_bounds_declared_and_chunked_sizes_and_accepts_exact_payload(){
   let raw=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",MAX_IMAGE_BYTES+1);let(url,task)=serve(raw.into_bytes()).await;assert_eq!(download(&url).await.map_err(|e|e.0).unwrap_err(),"Artwork exceeds size limit");task.await.unwrap();
   let mut raw=format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",MAX_IMAGE_BYTES+1).into_bytes();raw.extend(vec![1;MAX_IMAGE_BYTES+1]);raw.extend_from_slice(b"\r\n0\r\n\r\n");let(url,task)=serve(raw).await;assert_eq!(download(&url).await.map_err(|e|e.0).unwrap_err(),"Artwork exceeds size limit");task.await.unwrap();
