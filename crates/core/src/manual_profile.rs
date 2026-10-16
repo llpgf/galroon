@@ -45,13 +45,13 @@ pub async fn get(axum::extract::State(a):axum::extract::State<crate::App>,h:axum
  Ok(axum::Json(page(&c,kind,&id,query.after.as_deref(),query.revision,query.spoilers).map_err(crate::ApiError)?))
 }
 #[cfg(test)]mod api_tests{
- use super::*;use tower::ServiceExt;use axum::{body::{Body,to_bytes},http::Request,extract::State,Json};
+ use tower::ServiceExt;use axum::{body::{Body,to_bytes},http::Request,extract::State};
  #[tokio::test]async fn authenticated_readonly_page_hides_spoilers_and_rejects_writes(){
   let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().into()).unwrap();{
    use crate::{relation_corrections::{Correction,Key,Link},relation_correction_store::{change,Edit}};
    let mut c=a.db.lock().unwrap();change(&mut c,"v1",&Edit{revision:0,request_id:"seed".into(),corrections:vec![Correction{id:"one".into(),replaces:None,link:Some(Link{key:Key::Staff{id:"s1".into(),aid:Some(17),role:"scenario".into(),note:"".into()},name:"Generated secret credit".into(),character_name:None,spoiler:2})}]}).ok().unwrap();c.execute("INSERT INTO works(id,title,original_title,vndb_id,notes) VALUES('w1','Generated title','Generated title','v1','Private notes not for this endpoint')",[]).unwrap();
   }
-  crate::access::setup(&a.db,"Generated manual-profile password!",false).unwrap();let login=crate::access::web_login(State(a.clone()),Json(json!({"password":"Generated manual-profile password!","name":"test"}))).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();let router=crate::router(a.clone());
+  crate::access::setup(&a.db,"Generated manual-profile password!",false).unwrap();let login=crate::access::paired_web(State(a.clone())).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();let router=crate::router(a.clone());
   let response=router.clone().oneshot(Request::builder().uri("/api/entities/s1/manual-works").header("host","127.0.0.1").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),401);
   for spoilers in [false,true]{let response=router.clone().oneshot(Request::builder().uri(format!("/api/entities/s1/manual-works?spoilers={spoilers}")).header("host","127.0.0.1").header("cookie",cookie).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),200);let bytes=to_bytes(response.into_body(),100000).await.unwrap();let text=String::from_utf8(bytes.to_vec()).unwrap();assert!(!text.contains("Private notes"));assert_eq!(text.contains("Generated secret credit"),spoilers);assert_eq!(text.contains("Generated title"),spoilers);}
   let response=router.clone().oneshot(Request::builder().method("POST").uri("/api/entities/s1/manual-works").header("host","127.0.0.1").header("cookie",cookie).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),403);

@@ -5,10 +5,10 @@ use serde_json::{Value,json};
 use axum::{extract::{State,Path},http::{HeaderMap,header},Json};
 type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]#[serde(tag="command",rename_all="lowercase",deny_unknown_fields)]
-pub(crate) enum OwnerCommand{Setup{password:String},Pair{name:String,role:String},Devices,Revoke{id:String},PairingCodes,RevokePairingCode{id:String},NetworkShow,NetworkSet{settings:crate::network::NetworkEdit},Session}
+pub(crate) enum OwnerCommand{Setup{password:String},ChangePassword{password:String},Pair{name:String,role:String},Devices,Revoke{id:String},PairingCodes,RevokePairingCode{id:String},NetworkShow,NetworkSet{settings:crate::network::NetworkEdit},Session}
 pub enum Command{Serve{dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16},Owner{dir:PathBuf,control_dir:PathBuf,action:OwnerAction}}
 pub struct OwnerAction(OwnerCommand);
-const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--control-dir <dir> (default <data-dir>/control)] [--loopback-port <1-65535>] | galroon-core owner <setup|pair --name <name> [--role desktop|web]|pairing-codes [revoke <id>]|network show|network set --address <IP> [--port 14830] [--hostname <name>]... [--enable|--disable]|devices|revoke <id>|session> [--data-dir <dir> (default /data)] [--control-dir <dir> (default <data-dir>/control)]";
+const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--control-dir <dir> (default <data-dir>/control)] [--loopback-port <1-65535>] | galroon-core owner <setup|change-password|pair --name <name> [--role desktop|web]|pairing-codes [revoke <id>]|network show|network set --address <IP> [--port 14830] [--hostname <name>]... [--enable|--disable]|devices|revoke <id>|session> [--data-dir <dir> (default /data)] [--control-dir <dir> (default <data-dir>/control)]";
 pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
  let mut args=args.into_iter();let mode=args.next().ok_or(USAGE)?;let mut rest:Vec<OsString>=args.collect();
  let mut dir=None;let mut device_dir=None;let mut control_dir=None;let mut port=None;let mut name=None;let mut role=None;let mut address=None;let mut network_port=None;let mut hostnames=Vec::new();let mut enabled=None;let mut positional=Vec::new();let mut i=0;
@@ -31,7 +31,7 @@ pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
  if verb!="pair"&&(name.is_some()||role.is_some()){return Err(USAGE.into());}
  if !(verb=="network"&&positional.get(1).is_some_and(|v|v=="set"))&&(address.is_some()||network_port.is_some()||!hostnames.is_empty()||enabled.is_some()){return Err(USAGE.into());}
  let action=match (verb,positional.len()){
-  ("setup",1)=>OwnerCommand::Setup{password:String::new()},("devices",1)=>OwnerCommand::Devices,("session",1)=>OwnerCommand::Session,
+  ("setup",1)=>OwnerCommand::Setup{password:String::new()},("change-password",1)=>OwnerCommand::ChangePassword{password:String::new()},("devices",1)=>OwnerCommand::Devices,("session",1)=>OwnerCommand::Session,
   ("revoke",2)=>OwnerCommand::Revoke{id:positional[1].to_str().ok_or("Invalid device id")?.into()},
   ("pair",1)=>{let name=name.and_then(|n|n.into_string().ok()).ok_or("Pair requires --name")?;let role=match role{Some(r)=>r.into_string().map_err(|_|"Invalid role")?,None=>"desktop".into()};if !matches!(role.as_str(),"desktop"|"web"){return Err("Role must be desktop or web".into());}OwnerCommand::Pair{name,role}},
   ("pairing-codes",1)=>OwnerCommand::PairingCodes,
@@ -45,7 +45,7 @@ pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
 }
 fn action_line(action:OwnerAction,input:&mut impl BufRead)->R<String>{
  let mut command=action.0;
- if let OwnerCommand::Setup{password}= &mut command{
+ if let OwnerCommand::Setup{password}|OwnerCommand::ChangePassword{password}= &mut command{
   let mut bytes=Vec::new();input.take(1027).read_until(b'\n',&mut bytes).map_err(|_|"Could not read password from stdin")?;
   if bytes.last()==Some(&b'\n'){bytes.pop();if bytes.last()==Some(&b'\r'){bytes.pop();}}
   if bytes.len()>1024{return Err("Password exceeds 1024 bytes".into());}*password=String::from_utf8(bytes).map_err(|_|"Password must be UTF-8")?;
@@ -69,6 +69,7 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
  // Reuse the existing owner handlers, without sending secrets through HTTP or diagnostics.
  match command{
   OwnerCommand::Setup{password}=>{let db=app.db.clone();tokio::task::spawn_blocking(move||crate::access::setup(&db,&password,false)).await.map_err(|_|"Owner setup failed")??;Ok(json!({"configured":true}))},
+  OwnerCommand::ChangePassword{password}=>{let db=app.db.clone();tokio::task::spawn_blocking(move||crate::access::setup(&db,&password,true)).await.map_err(|_|"Owner password change failed")??;Ok(json!({"changed":true,"sessions_revoked":true}))},
   OwnerCommand::Pair{name,role}=>{if !matches!(role.as_str(),"desktop"|"web"){return Err("Role must be desktop or web".into());}crate::access::pairing(State(app.clone()),headers,Json(json!({"name":name,"role":role}))).await.map(|Json(v)|v).map_err(|e|e.0)},
   OwnerCommand::Devices=>crate::access::devices(State(app.clone()),headers).await.map(|Json(v)|v).map_err(|e|e.0),
   OwnerCommand::Revoke{id}=>crate::access::revoke(State(app.clone()),headers,Path(id)).await.map(|Json(v)|v).map_err(|e|e.0),
@@ -87,13 +88,13 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
  #[test]fn serve_arguments_and_owner_scope(){
   let Command::Serve{dir,device_dir,control_dir,port}=parsed(&["serve","--data-dir","collection"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(device_dir,dir);assert_eq!(control_dir,dir.join("control"));assert_eq!(port,14800);
   let Command::Serve{device_dir,port,..}=parsed(&["serve","--data-dir","collection","--device-dir","device","--loopback-port","14801"]).unwrap()else{panic!()};assert_eq!(device_dir,PathBuf::from("device"));assert_eq!(port,14801);
-  for args in [vec!["serve","--data-dir","d","--loopback-port","0"],vec!["serve","--data-dir","d","--loopback-port","65536"],vec!["owner","pair","--name","n","--role","owner"],vec!["owner","setup","password-in-argv"],vec!["owner","setup","--password","secret"],vec!["owner","session","--name","n"],vec!["restore"],vec!["serve"]]{assert!(parsed(&args).is_err(),"{args:?}");}
+  for args in [vec!["serve","--data-dir","d","--loopback-port","0"],vec!["serve","--data-dir","d","--loopback-port","65536"],vec!["owner","pair","--name","n","--role","owner"],vec!["owner","setup","password-in-argv"],vec!["owner","setup","--password","secret"],vec!["owner","change-password","password-in-argv"],vec!["owner","change-password","--password","secret"],vec!["owner","pair","--name","n","--role","web_owner"],vec!["owner","session","--name","n"],vec!["restore"],vec!["serve"]]{assert!(parsed(&args).is_err(),"{args:?}");}
   let Command::Owner{dir,control_dir,..}=parsed(&["owner","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("/data"));assert_eq!(control_dir,dir.join("control"));
   let Command::Owner{dir,control_dir,..}=parsed(&["owner","--data-dir","custom","session"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("custom"));assert_eq!(control_dir,dir.join("control"));
  }
  #[test]fn control_directory_arguments_for_serve_and_every_owner_command(){
   let Command::Serve{dir,control_dir,..}=parsed(&["serve","--control-dir","runtime","--data-dir","collection"]).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(control_dir,PathBuf::from("runtime"));
-  for verb in [vec!["setup"],vec!["pair","--name","desktop"],vec!["devices"],vec!["revoke","device-id"],vec!["session"]]{
+  for verb in [vec!["setup"],vec!["change-password"],vec!["pair","--name","desktop"],vec!["devices"],vec!["revoke","device-id"],vec!["session"]]{
    let mut args=vec!["owner","--control-dir","runtime"];args.extend(verb);args.extend(["--data-dir","collection"]);
    let Command::Owner{dir,control_dir,..}=parsed(&args).unwrap()else{panic!()};assert_eq!(dir,PathBuf::from("collection"));assert_eq!(control_dir,PathBuf::from("runtime"));
   }
@@ -103,6 +104,18 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
   let value:Value=serde_json::from_str(&line(&["owner","setup"]," leading spaces stay \r\n")).unwrap();assert_eq!(value["password"]," leading spaces stay ");
   assert_eq!(line(&["owner","session"],"ignored"),"session");
   let Command::Owner{action,..}=parsed(&["owner","setup"]).unwrap()else{panic!()};assert!(action_line(action,&mut std::io::Cursor::new("p".repeat(1025))).is_err());
+ }
+ #[test]fn change_password_reads_bounded_stdin(){
+  let value:Value=serde_json::from_str(&line(&["owner","change-password"]," replacement password \r\n")).unwrap();assert_eq!(value["password"]," replacement password ");
+  let Command::Owner{action,..}=parsed(&["owner","change-password"]).unwrap()else{panic!()};assert!(action_line(action,&mut std::io::Cursor::new("p".repeat(1025))).is_err());
+ }
+ #[tokio::test]async fn change_password_revokes_every_session_and_new_password_works(){
+  let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().join("data")).unwrap();let old="Original CLI owner password";let new="Replacement CLI owner password";crate::access::setup(&a.db,old,false).unwrap();
+  let login=crate::access::web_login(State(a.clone()),Json(json!({"password":old}))).await.map_err(|e|e.0).unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();let mut headers=HeaderMap::new();headers.insert(header::COOKIE,cookie.parse().unwrap());assert_eq!(crate::access::authenticate(&a,&headers).unwrap().role,"web_owner");
+  crate::access::paired_web(State(a.clone())).await.map_err(|e|e.0).unwrap();let code=execute(&a,OwnerCommand::Pair{name:"Desktop".into(),role:"desktop".into()}).await.unwrap();crate::access::pair(State(a.clone()),Json(json!({"code":code["code"]}))).await.map_err(|e|e.0).unwrap();execute(&a,OwnerCommand::Pair{name:"Pending".into(),role:"web".into()}).await.unwrap();
+  let command:OwnerCommand=serde_json::from_str(&line(&["owner","change-password"],new)).unwrap();assert_eq!(execute(&a,command).await.unwrap(),json!({"changed":true,"sessions_revoked":true}));assert!(crate::access::authenticate(&a,&headers).is_err());
+  {let c=a.db.lock().unwrap();assert_eq!(c.query_row("SELECT count(*) FROM sessions WHERE revoked=1",[],|r|r.get::<_,i64>(0)).unwrap(),3);assert_eq!(c.query_row("SELECT count(*) FROM pairing_codes",[],|r|r.get::<_,i64>(0)).unwrap(),0);}
+  assert!(crate::access::web_login(State(a.clone()),Json(json!({"password":old}))).await.is_err());let response=crate::access::web_login(State(a),Json(json!({"password":new}))).await.map_err(|e|e.0).unwrap();assert_eq!(response.status(),200);
  }
  #[tokio::test]async fn setup_pair_redeem_devices_revoke_use_existing_access_logic(){
   let t=tempfile::tempdir().unwrap();let app=crate::initialize(t.path().join("data")).unwrap();

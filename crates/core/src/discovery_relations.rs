@@ -114,7 +114,7 @@ pub async fn manual(axum::extract::State(a):axum::extract::State<App>,h:axum::ht
   {let mut c=a.db.lock().unwrap();add(&mut c,"v054",Key::Company{id:"p1".into()},0);}
   assert!(manual(State(a.clone()),h.clone(),Query(ManualSearch{input:second_input,after:Some("v050".into())})).await.is_err());
   assert_eq!(exploration::cached(&a,&key).unwrap().unwrap(),raw);
-  crate::access::setup(&a.db,"Generated discovery password!",false).unwrap();let login=crate::access::web_login(State(a.clone()),axum::Json(json!({"password":"Generated discovery password!","name":"fixture"}))).await.map_err(|e|e.0).unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();let router=crate::router(a.clone());
+  crate::access::setup(&a.db,"Generated discovery password!",false).unwrap();let login=crate::access::paired_web(State(a.clone())).await.map_err(|e|e.0).unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();let router=crate::router(a.clone());
   for(method,auth,status)in [("GET",false,401),("GET",true,200),("POST",true,403)]{let mut req=Request::builder().method(method).uri("/api/discover/manual?kind=studio&value=Studio&target=works&revision=54&spoilers=false").header("host","127.0.0.1");if auth{req=req.header("cookie",cookie);}let response=router.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status().as_u16(),status);let bytes=to_bytes(response.into_body(),1000000).await.unwrap();assert!(!String::from_utf8_lossy(&bytes).contains("Private generated note"));}
  }
 }

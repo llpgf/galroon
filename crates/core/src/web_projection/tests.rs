@@ -42,7 +42,7 @@ pub(crate) fn url(a:&App,route:&str)->String{
 }
 pub(crate) async fn request(a:&App,transport:Transport,role:&str,credential:&str,method:&str,url:&str)->(StatusCode,Vec<u8>){
  let mut req=Request::builder().method(method).uri(url).header("Host",if transport==Transport::Lan{"192.168.50.154:14830"}else{"localhost"});
- req=if role=="web"{req.header("Cookie",credential)}else{req.header("Authorization",format!("Bearer {credential}"))};
+ req=if matches!(role,"web"|"web_owner"){req.header("Cookie",credential)}else{req.header("Authorization",format!("Bearer {credential}"))};
  let response=crate::router_for(a.clone(),transport).oneshot(req.body(Body::empty()).unwrap()).await.unwrap();let status=response.status();let bytes=to_bytes(response.into_body(),32*1024*1024).await.unwrap().to_vec();(status,bytes)
 }
 #[test]fn classification_covers_the_actual_router(){
@@ -75,4 +75,11 @@ pub(crate) async fn request(a:&App,transport:Transport,role:&str,credential:&str
  let full=router.oneshot(Request::builder().uri("/api/jobs/job").header("Host","localhost").header("Authorization",format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();let full=to_bytes(full.into_body(),4096).await.unwrap();assert!(String::from_utf8_lossy(&full).contains(MARKER));
  for path in [format!("/unknown/{MARKER}/file"),format!(r"X:\{MARKER}\a file"),format!(r"\\server\{MARKER}\a file")]{let mut value=json!({"message":format!("Failed: {path}"),"nested":[{"reason":path}],"metadata":{path.clone():"value"}});scrub(&mut value,&[]);assert!(!value.to_string().contains(MARKER));}
  let mut relative=json!(["Game/game.bin","Fate/stay night","https://t.vndb.org/cv/01/123.jpg"]);let before=relative.clone();scrub(&mut relative,&[]);assert_eq!(relative,before);
+}
+#[tokio::test]async fn owner_browser_reads_match_desktop_without_web_projection_or_deny_routes(){
+ let(_t,a,desktop,cookie)=fixture();a.db.lock().unwrap().execute("UPDATE sessions SET role='web_owner' WHERE role='web'",[]).unwrap();
+ for transport in [Transport::Loopback,Transport::Lan]{for path in ["/api/roots","/api/resources/page","/api/jobs/job","/api/issues","/api/timeline","/api/plans/plan","/api/vns/v1/relationship-decisions","/api/vns/v1/relationship-corrections?spoilers=true","/api/entities/s1/field-decisions"]{
+  let(status,body)=request(&a,transport,"web_owner",&cookie,"GET",path).await;assert_eq!(status,200,"{path}: {}",String::from_utf8_lossy(&body));let(desktop_status,desktop_body)=request(&a,transport,"desktop",&desktop,"GET",path).await;assert_eq!(desktop_status,200);assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),serde_json::from_slice::<Value>(&desktop_body).unwrap(),"{path}");
+  if matches!(path,"/api/roots"|"/api/resources/page"|"/api/jobs/job"|"/api/plans/plan"){assert!(String::from_utf8_lossy(&body).contains(MARKER),"{path}");}
+ }}
 }

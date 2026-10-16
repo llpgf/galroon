@@ -80,17 +80,19 @@ This is the contract used by the bundled Desktop/Web clients. It is not a public
 
 ## Transport and identity
 
-The Core binds loopback at a selected port. Windows Desktop obtains the local endpoint through its identity-checked control channel; do not hardcode a previous port or read/copy a token from local state. Host validation accepts loopback names only. Desktop also pins the selected collection/Core identity and retains paired credentials in Windows credential storage.
+The Core binds loopback at a selected port. Windows Desktop obtains the local endpoint through its identity-checked control channel; do not hardcode a previous port or read/copy a token from local state. The loopback listener accepts loopback hosts only; an enabled LAN listener accepts configured hosts over HTTPS. Desktop also pins the selected collection/Core identity and retains paired credentials in Windows credential storage.
 
 `GET /api/health` returns JSON with `name` and the compiled product `version`. It proves that an endpoint answers, not that it is the selected collection. `GET /api/context` supplies collection/device context after authentication.
 
 Authenticated responses carry `x-galroon-library` and `x-galroon-device`. Requests can pin those values using the same headers. A mismatch receives HTTP 409 with `code: collection_changed`; the client must stop using the old selection, preserve unsaved work for review and reconnect deliberately.
 
-The local owner authenticates through its private control-channel credential. Paired desktops use a bearer session. Browser login creates an HTTP-only collection-specific session cookie. Browser sessions cannot use that cookie as a desktop bearer credential. Owner changes and revocation invalidate sessions. Login and pairing validate origin, have attempt limits and require explicit owner setup/authorization.
+The local `owner` authenticates through its private control-channel credential; this bearer is forbidden on LAN, including static files and OPTIONS. Paired `desktop` sessions use a bearer for 90 days. Password login (`POST /api/access/login`) over loopback or LAN HTTPS issues a `web_owner` session with desktop-level permissions, never owner-only permissions. Its collection-specific cookie is HttpOnly, SameSite=Strict, Path=/api, Max-Age=2592000 (30 days), and Secure on LAN. Pairing codes can only issue `desktop` or `web`; paired `web` cookies last 12 hours (Max-Age=43200). Existing password sessions stored as `web` remain read-only until expiry; no migration changes their role. Session expiry is fixed, not extended by last use. Neither browser role can authenticate as a bearer. Changing the owner password revokes every session and unused pairing code. Login and pairing require an allowed Origin and socket peer; login retains its 10/minute per-IP budget and existing IPv6/global limits. LAN Origin must exactly match `https://{Host}`; missing or foreign origins receive 403.
 
-## Read-only Web boundary
+## Browser permission boundary
 
-The middleware denies authenticated Web methods other than GET/HEAD before mutation handlers. Login/pair are bootstrap routes with separate checks; same-origin logout is the session-management exception. Some owner-only reads, including Core diagnostics and device administration, are also denied to Web/paired sessions. Hiding an editing button is not the authorization boundary.
+The middleware denies `web` methods other than GET/HEAD before mutation handlers, except logout. `web` reads retain path projection and denied-route restrictions. `web_owner` responses are unprojected, include real Core paths, and can access desktop routes such as `/api/issues`. Every non-GET/HEAD cookie-authenticated request, including logout and `web_owner` writes, requires `origin_allowed`; missing Origin is rejected with 403 because SameSite=Strict does not separate ports. Login/pair are bootstrap routes with their own Origin checks. Setup, password changes, pairing-code management, network settings, devices, Core diagnostics, artwork cache clearing and full backup exports remain owner-only. Hiding an editing button is not the authorization boundary.
+
+On Unix/NAS, `galroon-core owner change-password` reads the new password from stdin, like `setup`, and revokes sessions through the private owner control channel. Browser folder pickers, restore and desktop diagnostics remain desktop-only.
 
 Reads may populate provider caches, update session last-use or materialize normal derived catalog state. “Read-only” means the browser cannot issue owner edits or file-operation commands; it does not mean the Core never maintains internal cache/session records while serving a read.
 

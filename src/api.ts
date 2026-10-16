@@ -30,7 +30,7 @@ function repairRequired(){if(!stopRequested||connection.phase!=='repair_required
 export class AuthenticationError extends Error {constructor(){super('Sign in again to reconnect to this collection');}}
 export class ConnectionLostError extends Error {constructor(){super('The Core connection is unavailable. Reconnect before continuing.');}}
 export class UncertainOperationError extends Error {constructor(){super('The connection changed before this operation was confirmed. Check Activity and the affected item before trying again; the operation was not sent again automatically.');}}
-export type AccessIdentity={id:string;role:'owner'|'desktop'|'web';can_write:boolean;can_manage_access:boolean};
+export type AccessIdentity={id:string;role:'owner'|'desktop'|'web'|'web_owner';can_write:boolean;can_manage_access:boolean};
 export const browserCoreUrl=()=>import.meta.env.DEV?'http://127.0.0.1:14800':window.location.origin;
 export const coreUrl=()=>session?.url||browserCoreUrl();
 export function sessionChanging(){return changing;}

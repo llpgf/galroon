@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value,json};
 use crate::{ApiError,App,relation_correction_store::{self as store,Edit},relation_corrections::Key};
 type R<T>=Result<T,ApiError>;
-fn authorize(a:&App,h:&HeaderMap)->R<()>{if !matches!(crate::access::authenticate(a,h)?.role.as_str(),"owner"|"desktop"){return Err(ApiError("Local owner access required".into()));}Ok(())}
+fn authorize(a:&App,h:&HeaderMap)->R<()>{if !matches!(crate::access::authenticate(a,h)?.role.as_str(),"owner"|"desktop"|"web_owner"){return Err(ApiError("Local owner access required".into()));}Ok(())}
 #[derive(Default,Deserialize)]#[serde(deny_unknown_fields)]pub struct Page{#[serde(default)]spoilers:bool,before:Option<i64>}
 fn revealed(value:bool)->R<()>{if !value{return Err(ApiError("Relationship editing includes hidden credits. Enable spoilers to review them.".into()));}Ok(())}
 fn raw(c:&Connection,id:&str)->R<Value>{
@@ -169,7 +169,7 @@ pub async fn candidate(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Que
   for auth in [h["authorization"].to_str().unwrap().to_owned(),format!("Bearer {token}")]{let response=app.clone().oneshot(Request::builder().uri("/api/vns/v1/relationship-corrections?spoilers=true").header("host","127.0.0.1").header("authorization",auth).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),200);}
   assert!(get(State(a.clone()),h.clone(),Path("v1".into()),Query(Page::default())).await.is_err());
   let cand=candidate(State(a.clone()),h.clone(),Path("s2".into()),Query(CandidateQuery::default())).await.ok().unwrap().0;assert_eq!(cand["aliases"][0]["aid"],9);
-  crate::access::setup(&a.db,"Generated-fixture-password-729!",false).unwrap();let login=crate::access::web_login(State(a.clone()),Json(json!({"password":"Generated-fixture-password-729!","name":"fixture"}))).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
+  crate::access::setup(&a.db,"Generated-fixture-password-729!",false).unwrap();let login=crate::access::paired_web(State(a.clone())).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
   for(method,path)in [("GET","/api/custom-tags/any/membership?ids=%5B%5D&revision=1&impact_revision=1"),("GET","/api/custom-tags?include_deleted=true&summary=true"),("GET","/api/vns/v1/relationship-corrections?spoilers=true"),("GET","/api/vns/v1/relationship-corrections/history?spoilers=true"),("GET","/api/relationship-candidates/s2"),("POST","/api/vns/v1/relationship-corrections/preview"),("POST","/api/vns/v1/relationship-corrections")]{let response=app.clone().oneshot(Request::builder().method(method).uri(path).header("host","127.0.0.1").header("cookie",cookie).header("content-type","application/json").body(Body::from("{}")).unwrap()).await.unwrap();assert_eq!(response.status(),403);}
   let p=preview(State(a.clone()),h.clone(),Path("v1".into()),Json(Preview{edit:edit(),spoilers:true,history_revision:None})).await.ok().unwrap().0;
   let bad=Commit{history_revision:None,edit:edit(),spoilers:true,preview_digest:"wrong".into()};assert!(commit(State(a.clone()),h.clone(),Path("v1".into()),Json(bad)).await.is_err());

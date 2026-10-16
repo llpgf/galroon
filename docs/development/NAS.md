@@ -81,13 +81,14 @@ Dockerfile 未設定固定 `USER`，因此**一律透過 compose 執行**；若�
 
 ```bash
 scripts/nas/owner.sh setup                          # 終端隱藏輸入；密碼經 stdin
+scripts/nas/owner.sh change-password                # 變更密碼並撤銷所有 session
 scripts/nas/owner.sh pair --name 'N1 desktop' --role desktop
 scripts/nas/owner.sh devices
 scripts/nas/owner.sh revoke <device-id>
 scripts/nas/tunnel.sh                              # 獨立終端持續執行，Ctrl-C 關閉
 ```
 
-`setup` 使用 `ssh -T` 與 `docker exec -i`，不把密碼放入 argv、環境或檔案；也可由可信的密碼工具直接 pipe 一行到 `owner.sh setup`。勿啟用 shell trace。其他 owner 命令的 stdout 保留原始 JSON。包裝器固定 `--data-dir /data`，不支援另指資料庫；N1a 目前僅接受 `desktop` 配對，不支援 `web`、`network` 或 `restore`。
+`setup` 與 `change-password` 使用 `ssh -T` 與 `docker exec -i`，不把密碼放入 argv、環境或檔案；也可由可信的密碼工具直接 pipe 一行到 `owner.sh setup` 或 `owner.sh change-password`。勿啟用 shell trace。其他 owner 命令的 stdout 保留原始 JSON。包裝器固定 `--data-dir /data`，不支援另指資料庫；支援 `pair --role desktop|web`、`pairing-codes` 與 `network show/set`；不提供瀏覽器還原。
 
 通道只綁 Mac 的 `127.0.0.1:14800`，轉送到 NAS 的 `127.0.0.1:14800`；若本機埠被佔用會失敗。通道開啟後可執行：
 
@@ -96,7 +97,18 @@ curl --fail http://127.0.0.1:14800/api/health
 curl --fail http://127.0.0.1:14800/ -o /dev/null
 ```
 
-第二項檢查 image 內的正式 Web UI；一般瀏覽器登入取得的是唯讀 `web` 角色，無法新增來源或掃描。N1 的 owner 開發 UI 使用：
+第二項檢查 image 內的正式 Web UI。在 Mac 開啟 `http://127.0.0.1:14800`，以擁有者密碼登入即可新增來源、掃描與編輯收藏，路徑請輸入 NAS 上的路徑。密碼登入取得 `web_owner`，有效期 30 天，具有桌面配對相同的權限，但不能管理密碼、配對碼、裝置或網路設定。瀏覽器配對碼登入仍是唯讀 `web`，有效期 12 小時；既有 `web` session 不會自動升級，須重新以密碼登入。變更密碼會撤銷全部 session。
+
+也可直接使用 LAN HTTPS：
+
+```bash
+scripts/nas/owner.sh network set --address 192.168.50.154 --port 14830 --hostname nas.local --enable
+scripts/nas/owner.sh network show
+```
+
+套用設定後重新啟動 Core，再在 Mac 開啟 `https://192.168.50.154:14830`（或已設定的主機名稱）。先透過可信 SSH 執行 `network show`，記下 `certificate_sha256`，並與瀏覽器顯示的整張憑證 SHA-256 比對，勿誤用 SPKI 指紋。確認相符後，匯出該憑證並匯入 Mac「鑰匙圈存取」，開啟憑證的「信任」設定，將 SSL 設為信任；這個動作只需一次，憑證更換後須重新比對。重新開啟網址，以擁有者密碼登入。登入與寫入都需要相同 HTTPS Origin；LAN cookie 帶 Secure，owner bearer 仍禁止經 LAN 使用。
+
+需要本機 owner 管理權限的開發 UI 使用：
 
 ```bash
 mkdir -p target/nas-session

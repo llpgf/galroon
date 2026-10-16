@@ -1,4 +1,4 @@
-//! Single local owner, revocable desktop credentials, and read-only browser cookies.
+//! Single local owner, revocable desktop credentials, and browser cookies.
 use crate::{App,ApiError,db::{self,Db}};
 use argon2::{Argon2,PasswordHash,PasswordHasher,PasswordVerifier,password_hash::SaltString};
 use axum::{extract::{State,Path,Request},http::{HeaderMap,StatusCode,header},middleware::Next,response::{Response,IntoResponse},Json};
@@ -13,6 +13,7 @@ fn sql<T>(r:rusqlite::Result<T>)->R<T>{r.map_err(|e|e.to_string())}
 fn cookie_name(a:&App)->String{format!("galroon_sid_{}",&hash(&a.state_dir.to_string_lossy())[..16])}
 pub(crate) const CREDENTIAL_INVALID:&str="Credential is no longer valid. Pair again.";
 const WEB_LIFETIME:i64=12*60*60;
+const OWNER_WEB_LIFETIME:i64=30*24*60*60;
 const DEVICE_LIFETIME:i64=90*24*60*60;
 #[derive(Clone,Debug)]pub struct Identity{pub id:String,pub role:String}
 pub fn migrate(c:&Connection,version:i64)->rusqlite::Result<()>{
@@ -59,7 +60,7 @@ fn issue(c:&Connection,name:&str,role:&str,lifetime:i64)->R<(String,Value)>{let 
 fn login_from(db:&Db,password:&str,device_name:&str,source:IpAddr)->R<(String,Value)>{
  let device_name=name(device_name)?;let encoded={let c=db.lock().map_err(|e|e.to_string())?;budget_from(&c,"login",source)?;if password.len()>1024{return Err("Unable to sign in".into());}sql(c.query_row("SELECT value FROM settings WHERE key='owner_password'",[],|r|r.get::<_,String>(0)).optional())?.ok_or("Set up the owner in the local Windows app first")?};
  let valid=PasswordHash::new(&encoded).ok().is_some_and(|p|Argon2::default().verify_password(password.as_bytes(),&p).is_ok());if !valid{return Err("Unable to sign in".into());}
- let c=db.lock().map_err(|e|e.to_string())?;let current:String=sql(c.query_row("SELECT value FROM settings WHERE key='owner_password'",[],|r|r.get(0)))?;if current!=encoded{return Err("Owner settings changed. Sign in again.".into());}issue(&c,&device_name,"web",WEB_LIFETIME)
+ let c=db.lock().map_err(|e|e.to_string())?;let current:String=sql(c.query_row("SELECT value FROM settings WHERE key='owner_password'",[],|r|r.get(0)))?;if current!=encoded{return Err("Owner settings changed. Sign in again.".into());}issue(&c,&device_name,"web_owner",OWNER_WEB_LIFETIME)
 }
 fn create_pair(db:&Db,device_name:&str,role:&str)->R<Value>{if !matches!(role,"desktop"|"web"){return Err("Role must be desktop or web".into());}let id=db::id();let device_name=name(device_name)?;let c=db.lock().map_err(|e|e.to_string())?;if !configured(&c)?{return Err("Set up the owner before pairing a device".into());}let code=uuid::Uuid::new_v4().simple().to_string()[..12].to_uppercase();let expires=db::now()+300;sql(c.execute("DELETE FROM pairing_codes WHERE expires<=?1",[db::now()]))?;let count:i64=sql(c.query_row("SELECT count(*) FROM pairing_codes",[],|r|r.get(0)))?;if count>=5{return Err("Five pairing codes are already active. Wait for one to expire.".into());}sql(c.execute("INSERT INTO pairing_codes(hash,name,expires,role,id) VALUES(?1,?2,?3,?4,?5)",params![hash(&code),device_name,expires,role,id]))?;Ok(json!({"id":id,"role":role,"code":format!("{}-{}-{}",&code[..4],&code[4..8],&code[8..]),"expires":expires,"name":device_name}))}
 fn redeem_from(db:&Db,code:&str,role:&str,source:IpAddr)->R<(String,Value)>{let mut c=db.lock().map_err(|e|e.to_string())?;budget_from(&c,"pair",source)?;let code=code.replace('-',"").to_uppercase();if code.len()!=12||!code.bytes().all(|b|b.is_ascii_hexdigit()){return Err("Pairing code is invalid or expired".into());}let tx=sql(c.transaction())?;let verifier=hash(&code);let device_name=sql(tx.query_row("SELECT name FROM pairing_codes WHERE hash=?1 AND expires>?2 AND role=?3",params![verifier,db::now(),role],|r|r.get::<_,String>(0)).optional())?.ok_or("Pairing code is invalid or expired")?;let(token,result)=issue(&tx,&device_name,role,if role=="web"{WEB_LIFETIME}else{DEVICE_LIFETIME})?;sql(tx.execute("DELETE FROM pairing_codes WHERE hash=?1",[verifier]))?;sql(tx.commit())?;Ok((token,result))}
@@ -69,7 +70,7 @@ pub fn authenticate(a:&App,h:&HeaderMap)->R<Identity>{
  let bearer=h.get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()).and_then(|v|v.strip_prefix("Bearer "));
  if bearer.is_some_and(|value|value.len()==a.token.len()&&hash(value)==hash(&a.token)){return Ok(Identity{id:"local-owner".into(),role:"owner".into()});}
  let (token,role)=if let Some(b)=bearer{(b,"desktop")}else{let wanted=cookie_name(a);let cookies=h.get(header::COOKIE).and_then(|v|v.to_str().ok()).unwrap_or("");let token=cookies.split(';').filter_map(|part|part.trim().split_once('=')).find_map(|(key,value)|(key==wanted).then_some(value)).ok_or("Authentication required")?;(token,"web")};
- if token.len()!=72{return Err("Authentication required".into());}let c=a.db.lock().map_err(|e|e.to_string())?;let identity=sql(c.query_row("SELECT id,role FROM sessions WHERE token_hash=?1 AND role=?2 AND revoked=0 AND expires>?3",params![hash(token),role,db::now()],|r|Ok(Identity{id:r.get(0)?,role:r.get(1)?})).optional())?.ok_or(CREDENTIAL_INVALID)?;
+ if token.len()!=72{return Err("Authentication required".into());}let c=a.db.lock().map_err(|e|e.to_string())?;let identity=sql(c.query_row("SELECT id,role FROM sessions WHERE token_hash=?1 AND role IN (?2,?3) AND revoked=0 AND expires>?4",params![hash(token),role,if role=="web"{"web_owner"}else{role},db::now()],|r|Ok(Identity{id:r.get(0)?,role:r.get(1)?})).optional())?.ok_or(CREDENTIAL_INVALID)?;
  sql(c.execute("UPDATE sessions SET last_used=?2 WHERE id=?1 AND last_used<?2-60",params![identity.id,db::now()]))?;Ok(identity)
 }
 fn local(a:&App,h:&HeaderMap)->Result<(),ApiError>{if authenticate(a,h)?.role!="owner"{return Err(ApiError("Local owner access required".into()));}Ok(())}
@@ -91,14 +92,14 @@ pub(crate) async fn transport_host(State((a,transport)):State<(App,Transport)>,m
   Transport::Lan=>host.is_some_and(|host|a.network.as_ref().is_some_and(|n|n.enabled()&&n.allows_host(host)))
  };
  if !allowed{return (StatusCode::FORBIDDEN,Json(json!({"error":if transport==Transport::Loopback{"Core currently accepts loopback hosts only"}else{"LAN Host not allowed"}}))).into_response();}
- // Outside CORS: credentials and LAN login restrictions also cover OPTIONS and static files.
- if transport==Transport::Lan&&(request.uri().path()=="/api/access/login"||is_owner_bearer(&a,request.headers())){return (StatusCode::FORBIDDEN,Json(json!({"error":"Local owner and password login are not allowed over LAN"}))).into_response();}
+ // Outside CORS: the LAN owner-bearer restriction also covers OPTIONS and static files.
+ if transport==Transport::Lan&&is_owner_bearer(&a,request.headers()){return (StatusCode::FORBIDDEN,Json(json!({"error":"Local owner access is not allowed over LAN"}))).into_response();}
  next.run(request).await
 }
 fn is_owner_bearer(a:&App,h:&HeaderMap)->bool{h.get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()).and_then(|v|v.strip_prefix("Bearer ")).is_some_and(|v|v.len()==a.token.len()&&hash(v)==hash(&a.token))}
 pub async fn guard(State(a):State<App>,mut request:Request,next:Next)->Response{
  let Some(&transport)=request.extensions().get::<Transport>()else{return (StatusCode::FORBIDDEN,Json(json!({"error":"Core currently accepts loopback hosts only"}))).into_response();};
- if transport==Transport::Lan&&(request.uri().path()=="/api/access/login"||is_owner_bearer(&a,request.headers())){return StatusCode::FORBIDDEN.into_response();}
+ if transport==Transport::Lan&&is_owner_bearer(&a,request.headers()){return StatusCode::FORBIDDEN.into_response();}
  let source=if transport==Transport::Loopback{Some(Ipv4Addr::LOCALHOST.into())}else{request.extensions().get::<axum::extract::ConnectInfo<crate::lan_tls::PeerAddr>>().map(|peer|peer.0.0.ip())};
  if let Some(source)=source{request.extensions_mut().insert(SourceIp(source));}
  let path=request.uri().path();if !path.starts_with("/api/")||matches!(path,"/api/health"|"/api/access/status"){return next.run(request).await;}
@@ -110,7 +111,7 @@ pub async fn guard(State(a):State<App>,mut request:Request,next:Next)->Response{
   Err(error)=>return ApiError(error).into_response(),
   Ok(who)=>{web=who.role=="web";if web&&!route.is_empty()&&crate::web_projection::access(&route)==crate::web_projection::WebAccess::Deny&&matches!(*request.method(),axum::http::Method::GET|axum::http::Method::HEAD){return crate::web_projection::denied();}
    if who.role=="web"&&request.method()!=axum::http::Method::GET&&request.method()!=axum::http::Method::HEAD&&path!="/api/access/logout"{return (StatusCode::FORBIDDEN,Json(json!({"error":"This browser session is read-only"}))).into_response();}
-   if who.role=="web"&&path=="/api/access/logout"&&!origin_allowed(request.headers(),transport){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}}
+   if matches!(who.role.as_str(),"web"|"web_owner")&&!matches!(*request.method(),axum::http::Method::GET|axum::http::Method::HEAD)&&!origin_allowed(request.headers(),transport){return (StatusCode::FORBIDDEN,Json(json!({"error":"Origin not allowed"}))).into_response();}}
  }
  let library=match crate::context::library(&a.db.lock().unwrap()){Ok(v)=>v,Err(e)=>return ApiError(e.to_string()).into_response()};
  for (key,expected) in [("x-galroon-library",library.id.as_str()),("x-galroon-device",a.device.id.as_str())] {
@@ -128,7 +129,7 @@ pub async fn status(State(a):State<App>,axum::Extension(transport):axum::Extensi
 pub async fn me(State(a):State<App>,h:HeaderMap)->Result<Json<Value>,ApiError>{let who=authenticate(&a,&h)?;Ok(Json(json!({"id":who.id,"role":who.role,"can_write":who.role!="web","can_manage_access":who.role=="owner"})))}
 pub async fn configure(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Json<Value>,ApiError>{local(&a,&h)?;let password=crate::text(&v,"password")?;tokio::task::spawn_blocking(move||setup(&a.db,&password,false)).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!({"configured":true})))}
 pub async fn change_password(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Json<Value>,ApiError>{local(&a,&h)?;let password=crate::text(&v,"password")?;tokio::task::spawn_blocking(move||setup(&a.db,&password,true)).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!({"changed":true,"sessions_revoked":true})))}
-pub(crate) async fn web_login_from(State(a):State<App>,axum::Extension(SourceIp(source)):axum::Extension<SourceIp>,axum::Extension(transport):axum::Extension<Transport>,Json(v):Json<Value>)->Result<Response,ApiError>{let cookie_name=cookie_name(&a);let permit=a.login_gate.clone().try_acquire_owned().map_err(|_|ApiError("A sign-in is already being checked. Try again shortly.".into()))?;let password=crate::text(&v,"password")?;let device_name=v["name"].as_str().unwrap_or("Web browser").to_owned();let(token,value)=tokio::task::spawn_blocking(move||{let _permit=permit;login_from(&a.db,&password,&device_name,source)}).await.map_err(|e|ApiError(e.to_string()))??;let cookie=session_cookie(&cookie_name,&token,WEB_LIFETIME,transport);Ok(([(header::SET_COOKIE,cookie),(header::CACHE_CONTROL,"no-store".into())],Json(value)).into_response())}
+pub(crate) async fn web_login_from(State(a):State<App>,axum::Extension(SourceIp(source)):axum::Extension<SourceIp>,axum::Extension(transport):axum::Extension<Transport>,Json(v):Json<Value>)->Result<Response,ApiError>{let cookie_name=cookie_name(&a);let permit=a.login_gate.clone().try_acquire_owned().map_err(|_|ApiError("A sign-in is already being checked. Try again shortly.".into()))?;let password=crate::text(&v,"password")?;let device_name=v["name"].as_str().unwrap_or("Web browser").to_owned();let(token,value)=tokio::task::spawn_blocking(move||{let _permit=permit;login_from(&a.db,&password,&device_name,source)}).await.map_err(|e|ApiError(e.to_string()))??;let cookie=session_cookie(&cookie_name,&token,OWNER_WEB_LIFETIME,transport);Ok(([(header::SET_COOKIE,cookie),(header::CACHE_CONTROL,"no-store".into())],Json(value)).into_response())}
 pub async fn pairing(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Json<Value>,ApiError>{
  local(&a,&h)?;let role=match v.get("role"){None=>"desktop",Some(v)=>v.as_str().ok_or(ApiError("Role must be desktop or web".into()))?};
  let _gate=a.mutation_lock.lock().map_err(|e|ApiError(e.to_string()))?;
@@ -150,6 +151,8 @@ pub async fn logout(State(a):State<App>,axum::Extension(transport):axum::Extensi
 
 fn session_cookie(name:&str,token:&str,lifetime:i64,transport:Transport)->String{format!("{name}={token}; Path=/api; HttpOnly; SameSite=Strict; Max-Age={lifetime}{}",if transport==Transport::Lan{"; Secure"}else{""})}
 #[cfg(test)]pub async fn web_login(a:State<App>,v:Json<Value>)->Result<Response,ApiError>{web_login_from(a,axum::Extension(SourceIp(Ipv4Addr::LOCALHOST.into())),axum::Extension(Transport::Loopback),v).await}
+
+#[cfg(test)]pub async fn paired_web(a:State<App>)->Result<Response,ApiError>{let code=create_pair(&a.db,"Paired browser fixture","web")?;pair_web(a,axum::Extension(SourceIp(Ipv4Addr::LOCALHOST.into())),axum::Extension(Transport::Loopback),Json(json!({"code":code["code"]}))).await}
 
 #[cfg(test)]pub async fn pair(a:State<App>,v:Json<Value>)->Result<Response,ApiError>{pair_from(a,axum::Extension(SourceIp(Ipv4Addr::LOCALHOST.into())),v).await}
 
@@ -207,8 +210,8 @@ fn session_cookie(name:&str,token:&str,lifetime:i64,transport:Transport)->String
   setup(&app.db,"Replacement test owner password",true).unwrap();assert!(authenticate(&app,&headers).is_err());assert!(redeem(&app.db,pending["code"].as_str().unwrap()).is_err());
  }
  #[test]fn attempts_and_expiry_are_enforced_and_sessions_survive_restart(){
-  let t=tempfile::tempdir().unwrap();let state=t.path().join("state");let app=crate::initialize(state.clone()).unwrap();setup(&app.db,PASSWORD,false).unwrap();let(token,_)=login(&app.db,PASSWORD,"Browser fixture").unwrap();let cookie=format!("{}={token}",cookie_name(&app));let mut h=HeaderMap::new();h.insert(header::COOKIE,cookie.parse().unwrap());assert_eq!(authenticate(&app,&h).unwrap().role,"web");let old_owner=app.token.clone();drop(app);
-  let app=crate::initialize(state).unwrap();assert_ne!(app.token,old_owner);assert_eq!(authenticate(&app,&h).unwrap().role,"web");app.db.lock().unwrap().execute("UPDATE sessions SET expires=0",[]).unwrap();assert!(authenticate(&app,&h).is_err());
+  let t=tempfile::tempdir().unwrap();let state=t.path().join("state");let app=crate::initialize(state.clone()).unwrap();setup(&app.db,PASSWORD,false).unwrap();let(token,_)=login(&app.db,PASSWORD,"Browser fixture").unwrap();let cookie=format!("{}={token}",cookie_name(&app));let mut h=HeaderMap::new();h.insert(header::COOKIE,cookie.parse().unwrap());assert_eq!(authenticate(&app,&h).unwrap().role,"web_owner");let old_owner=app.token.clone();drop(app);
+  let app=crate::initialize(state).unwrap();assert_ne!(app.token,old_owner);assert_eq!(authenticate(&app,&h).unwrap().role,"web_owner");app.db.lock().unwrap().execute("UPDATE sessions SET expires=0",[]).unwrap();assert!(authenticate(&app,&h).is_err());
   let c=app.db.lock().unwrap();for _ in 0..10{budget(&c,"test").unwrap();}assert!(budget(&c,"test").is_err());c.execute("UPDATE access_attempts SET started=0 WHERE kind LIKE 'test:%'",[]).unwrap();budget(&c,"test").unwrap();
  }
  #[tokio::test]async fn http_browser_cookie_cannot_mutate_and_device_revocation_is_immediate(){
@@ -216,7 +219,7 @@ fn session_cookie(name:&str,token:&str,lifetime:i64,transport:Transport)->String
   assert_eq!(c.get(format!("{base}/api/works")).send().await.unwrap().status(),StatusCode::UNAUTHORIZED);
   assert_eq!(c.post(format!("{base}/api/access/login")).header("Origin","https://untrusted.invalid").json(&json!({"password":PASSWORD})).send().await.unwrap().status(),StatusCode::FORBIDDEN);
   assert_eq!(c.get(format!("{base}/api/health")).header("Host","untrusted.invalid").send().await.unwrap().status(),StatusCode::FORBIDDEN);
-  let login=c.post(format!("{base}/api/access/login")).header("Origin",&base).json(&json!({"password":PASSWORD,"name":"Read-only fixture"})).send().await.unwrap();assert!(login.status().is_success());let set_cookie=login.headers()[header::SET_COOKIE].to_str().unwrap().to_owned();assert!(set_cookie.contains("HttpOnly")&&set_cookie.contains("SameSite=Strict"));let cookie=set_cookie.split(';').next().unwrap();let body:Value=login.json().await.unwrap();assert!(body.get("token").is_none());
+  let code=create_pair(&app.db,"Read-only fixture","web").unwrap();let login=c.post(format!("{base}/api/access/pair-web")).header("Origin",&base).json(&json!({"code":code["code"]})).send().await.unwrap();assert!(login.status().is_success());let set_cookie=login.headers()[header::SET_COOKIE].to_str().unwrap().to_owned();assert!(set_cookie.contains("HttpOnly")&&set_cookie.contains("SameSite=Strict"));let cookie=set_cookie.split(';').next().unwrap();let body:Value=login.json().await.unwrap();assert!(body.get("token").is_none());
   let read=c.get(format!("{base}/api/works")).header("Cookie",cookie).send().await.unwrap();assert!(read.status().is_success());assert_eq!(read.headers()[header::CACHE_CONTROL],"no-store");assert!(read.headers()[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("frame-ancestors 'none'"));
   app.db.lock().unwrap().execute_batch("INSERT INTO roots(id,path,label) VALUES('history-root','generated','Fixture'); INSERT INTO resources(id,root_id,relative_path,title,kind) VALUES('history-resource','history-root','a','Fixture','archive');").unwrap();
   assert!(!c.get(format!("{base}/api/issues")).header("Cookie",cookie).send().await.unwrap().status().is_success());
@@ -249,3 +252,5 @@ fn session_cookie(name:&str,token:&str,lifetime:i64,transport:Transport)->String
 #[cfg(test)]#[path="access_lan_tests.rs"]mod lan_tests;
 
 #[cfg(test)]#[path="access_pairing_tests.rs"]mod pairing_tests;
+
+#[cfg(test)]#[path="access_owner_web_tests.rs"]mod owner_web_tests;

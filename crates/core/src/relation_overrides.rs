@@ -8,7 +8,7 @@ type R<T>=Result<T,ApiError>;
 use axum::{extract::{State,Path,Query},http::HeaderMap,Json};
 fn authorize(a:&crate::App,h:&HeaderMap)->R<()>{
  let identity=crate::access::authenticate(a,h)?;
- if !matches!(identity.role.as_str(),"owner"|"desktop"){return Err(ApiError("Local owner access required".into()));}Ok(())
+ if !matches!(identity.role.as_str(),"owner"|"desktop"|"web_owner"){return Err(ApiError("Local owner access required".into()));}Ok(())
 }
 #[derive(Deserialize)]pub struct HistoryPage{before:Option<i64>}
 pub async fn get(State(a):State<crate::App>,h:HeaderMap,Path(id):Path<String>)->crate::Result<Value>{
@@ -107,7 +107,7 @@ pub fn project_profile(c:&Connection,value:&mut Value,kind:&str,id:&str)->R<()>{
   assert!(edit(State(a.clone()),h.clone(),Path("v1".into()),Json(Edit{revision:0,request_id:"stale-http".into(),hidden:Hidden::default()})).await.is_err());
   let _ = edit(State(a.clone()),h.clone(),Path("v1".into()),Json(Edit{revision:52,request_id:"new-http".into(),hidden:Hidden::default()})).await.ok().unwrap();
   let second=history(State(a.clone()),h.clone(),Path("v1".into()),Query(HistoryPage{before:Some(3)})).await.ok().unwrap().0;assert_eq!(second["items"].as_array().unwrap().iter().map(|v|v["revision"].as_i64().unwrap()).collect::<Vec<_>>(),vec![2,1]);assert!(second["next"].is_null());
-  crate::access::setup(&a.db,"Generated-fixture-password-729!",false).unwrap();let login=crate::access::web_login(State(a.clone()),Json(json!({"password":"Generated-fixture-password-729!","name":"fixture"}))).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
+  crate::access::setup(&a.db,"Generated-fixture-password-729!",false).unwrap();let login=crate::access::paired_web(State(a.clone())).await.ok().unwrap();let cookie=login.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap();
   for(method,path)in [("GET","relationship-decisions"),("GET","relationship-history"),("POST","relationship-decisions")]{let response=app.clone().oneshot(Request::builder().method(method).uri(format!("/api/vns/v1/{path}")).header("host","127.0.0.1").header("cookie",cookie).header("content-type","application/json").body(Body::from("{}")).unwrap()).await.unwrap();assert_eq!(response.status(),403);let bytes=to_bytes(response.into_body(),4096).await.unwrap();assert!(!String::from_utf8_lossy(&bytes).contains("s1"));}
   assert_eq!(get(State(a.clone()),h,Path("v1".into())).await.ok().unwrap().0["revision"],53);
   assert!(get(State(a),HeaderMap::new(),Path("v1".into())).await.is_err());
