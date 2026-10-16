@@ -44,25 +44,40 @@ pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()> {
     for row in rows {c.execute("INSERT INTO bangumi_remote VALUES(?1,?2,?3)",params![row.subject_id,row.status,serde_json::to_string(&row.subject)?])?;}Ok(())
 }
 // Bangumi and VNDB punctuate the same title differently (「—」/「－」, 「～」 spacing, a trailing 「。」),
-// so compare folded titles. Exact normalized hits are listed first; the user still confirms every match.
-struct Local {id:String,title:String,exact:Vec<String>,folded:Vec<String>}
+// spell readings inline (「不可視の薬（インビジブル）と」) and drop subtitles. Candidates come in tiers:
+// exact, folded, compact (no spaces or readings), then a title prefix on the very same release date.
+// The user still confirms every match; a prefix never accepts a following digit, so sequels stay apart.
+struct Local {id:String,title:String,released:String,exact:Vec<String>,folded:Vec<String>,compact:Vec<String>}
+fn compact(title:&str)->String {
+    static READING:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+    let reading=READING.get_or_init(||regex::Regex::new(r"[（(][\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+[)）]").unwrap());
+    crate::collection_query::fold(&reading.replace_all(title," ")).replace(' ',"")
+}
 fn locals(c:&Connection)->Result<Vec<Local>> {
     use crate::collection_query::{fold,normalized};
-    let mut q=c.prepare("SELECT id,title,original_title,aliases FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id) ORDER BY title,id")?;
+    let mut q=c.prepare("SELECT id,title,original_title,aliases,released FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id) ORDER BY title,id")?;
     let mut out=Vec::new();
-    for item in q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
-        let(id,title,original,aliases)=item?;let mut titles=serde_json::from_str::<Vec<String>>(&aliases)?;titles.push(title.clone());titles.push(original);
-        let keep=|names:Vec<String>|names.into_iter().filter(|n|!n.is_empty()).collect();
-        out.push(Local{id,title,exact:keep(titles.iter().map(|t|normalized(t)).collect()),folded:keep(titles.iter().map(|t|fold(t)).collect())});
+    for item in q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))? {
+        let(id,title,original,aliases,released)=item?;let mut titles=serde_json::from_str::<Vec<String>>(&aliases)?;titles.push(title.clone());titles.push(original);
+        let keys=|key:fn(&str)->String|titles.iter().map(|t|key(t)).filter(|k|!k.is_empty()).collect();
+        out.push(Local{id,title,released,exact:keys(normalized),folded:keys(fold),compact:keys(compact)});
     }Ok(out)
+}
+fn dated_prefix(local:&[String],remote:&[String])->bool {
+    local.iter().any(|a|remote.iter().any(|b|{
+        let(short,long)=if a.chars().count()<=b.chars().count(){(a,b)}else{(b,a)};
+        short.chars().count()>=4&&short!=long&&long.strip_prefix(short.as_str()).is_some_and(|tail|!tail.starts_with(|c:char|c.is_numeric()))
+    }))
 }
 fn candidates(locals:&[Local],subject:&Subject)->Vec<Candidate> {
     use crate::collection_query::{fold,normalized};
-    let exact=[normalized(subject.title()),normalized(&subject.name)];let folded=[fold(subject.title()),fold(&subject.name)];
-    let candidate=|l:&Local|Candidate{id:l.id.clone(),title:l.title.clone()};
-    let mut out:Vec<Candidate>=locals.iter().filter(|l|l.exact.iter().any(|n|exact.contains(n))).map(candidate).collect();
-    out.extend(locals.iter().filter(|l|!l.exact.iter().any(|n|exact.contains(n))&&l.folded.iter().any(|n|folded.contains(n))).map(candidate));
-    out.truncate(10);out
+    let names=[subject.title(),subject.name.as_str()];
+    let exact=names.map(normalized);let folded=names.map(fold);let compact=names.map(compact).into_iter().filter(|k|!k.is_empty()).collect::<Vec<_>>();
+    let date=subject.date.as_deref().filter(|d|d.len()==10).unwrap_or("");
+    let tier=|l:&Local|if l.exact.iter().any(|n|exact.contains(n)){Some(0)}else if l.folded.iter().any(|n|folded.contains(n)){Some(1)}
+        else if l.compact.iter().any(|n|compact.contains(n)){Some(2)}else if !date.is_empty()&&l.released==date&&dated_prefix(&l.compact,&compact){Some(3)}else{None};
+    let mut found:Vec<(u8,&Local)>=locals.iter().filter_map(|l|tier(l).map(|t|(t,l))).collect();found.sort_by_key(|(t,_)|*t);
+    found.into_iter().take(10).map(|(_,l)|Candidate{id:l.id.clone(),title:l.title.clone()}).collect()
 }
 pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>> {
     let mut out=Vec::new();
