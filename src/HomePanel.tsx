@@ -1,4 +1,4 @@
-import {useState,type DragEvent,type KeyboardEvent} from 'react';
+import {useState,type DragEvent,type KeyboardEvent,type PointerEvent} from 'react';
 import {useTranslation} from 'react-i18next';
 import {ChevronRight as More,GripVertical,Heart} from 'lucide-react';
 import type {Work} from './api';
@@ -26,6 +26,8 @@ function useWorks(filters:Filters,status:string,sort:string,titleMode:TitleMode,
  return useCollectionPage(request,generation);
 }
 
+/** Glass lens: the pointer position drives a sharp, magnified circle over the blurred hero backdrop (CSS reads --mx/--my). */
+const followLens=(event:PointerEvent<HTMLElement>)=>{if(event.pointerType!=='mouse')return;const box=event.currentTarget.getBoundingClientRect();event.currentTarget.style.setProperty('--mx',`${event.clientX-box.left}px`);event.currentTarget.style.setProperty('--my',`${event.clientY-box.top}px`);};
 const byline=(work:Work)=>[work.developer,work.released?.slice(0,4)].filter(Boolean).join(' · ');
 const randomOther=(current:number,size:number)=>{if(size<2)return current;let next=current;while(next===current)next=Math.floor(Math.random()*size);return next;};
 function savedView():StatusView{try{return localStorage.getItem(VIEW_KEY)==='board'?'board':'tabs';}catch{return 'tabs';}}
@@ -59,8 +61,10 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
   <div className="home-top"><h1>{t('homeGreeting')}</h1></div>
 
   <div className="home-bento">
-   {featured&&<section className="home-tile home-hero" aria-labelledby="home-hero-title">
+   {featured&&<section className="home-tile home-hero" aria-labelledby="home-hero-title" onPointerMove={followLens}>
     <div className="home-hero-backdrop" aria-hidden="true">{featured.cover&&!safe&&<CachedImage key={featured.id} source={featured.cover}/>}</div>
+    {featured.cover&&!safe&&<div className="home-hero-lens" aria-hidden="true"><div><CachedImage key={featured.id} source={featured.cover}/></div></div>}
+    <div className="home-hero-glow" aria-hidden="true"/>
     <button className="home-hero-art" key={'art-'+featured.id} tabIndex={-1} aria-hidden="true" onClick={()=>onSelect(featured)}><Cover work={featured} safe={safe}/></button>
     <div className="home-hero-copy" key={featured.id}>
      <h2 id="home-hero-title" className="home-eyebrow">{t('homeRandomRecent')}</h2>
