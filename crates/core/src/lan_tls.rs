@@ -25,13 +25,18 @@ impl LanTls{
    },
    _=>return Err("Incomplete LAN TLS identity: restore both lan-key.pem and lan-cert.pem; existing files will not be overwritten".into())
   };
-  let cert_der=CertificateDer::from_pem_slice(&cert).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
-  ParsedCertificate::try_from(&cert_der).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
-  let key=PrivateKeyDer::from_pem_slice(&key).map_err(|e|format!("Invalid lan-key.pem: {e}"))?;
-  let config=rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider())).with_protocol_versions(&[&rustls::version::TLS13,&rustls::version::TLS12]).map_err(|e|e.to_string())?.with_no_client_auth().with_single_cert(vec![cert_der.clone()],key).map_err(|e|format!("Invalid LAN TLS identity: {e}"))?;
-  Ok(Self{cert_der,config:Arc::new(config)})
+  let(cert_der,config)=parse_identity(&key,&cert)?;Ok(Self{cert_der,config:Arc::new(config)})
  }
 }
+fn parse_identity(key_pem:&[u8],cert_pem:&[u8])->R<(CertificateDer<'static>,rustls::ServerConfig)>{
+  let cert_der=CertificateDer::from_pem_slice(cert_pem).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
+  ParsedCertificate::try_from(&cert_der).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
+  let key=PrivateKeyDer::from_pem_slice(key_pem).map_err(|e|format!("Invalid lan-key.pem: {e}"))?;
+  let config=rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider())).with_protocol_versions(&[&rustls::version::TLS13,&rustls::version::TLS12]).map_err(|e|e.to_string())?.with_no_client_auth().with_single_cert(vec![cert_der.clone()],key).map_err(|e|format!("Invalid LAN TLS identity: {e}"))?;
+  Ok((cert_der,config))
+}
+pub fn validate_identity(key_pem:&[u8],cert_pem:&[u8])->R<[u8;32]>{let(cert,_)=parse_identity(key_pem,cert_pem)?;Ok(spki_fingerprint(&cert))}
+
 pub fn existing_fingerprints(device_dir:&Path)->R<Option<(String,String)>>{
  let path=device_dir.join("lan-cert.pem");crate::plans::validate_chain(&path)?;let Some(bytes)=read_existing(&path)?else{return Ok(None)};
  let cert=CertificateDer::from_pem_slice(&bytes).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;ParsedCertificate::try_from(&cert).map_err(|e|format!("Invalid lan-cert.pem: {e}"))?;
@@ -77,7 +82,7 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_,TlsLi
  use super::*;
  #[test]fn identity_is_persistent_private_and_never_repaired_silently(){
   let t=tempfile::tempdir().unwrap();let settings=crate::network::NetworkSettings::for_test("192.168.50.154".parse().unwrap(),14830);
-  let first=LanTls::load_or_generate(t.path(),&settings).unwrap();let key=fs::read(t.path().join("lan-key.pem")).unwrap();let cert=fs::read(t.path().join("lan-cert.pem")).unwrap();let fingerprint=spki_fingerprint(&first.cert_der);
+  let first=LanTls::load_or_generate(t.path(),&settings).unwrap();let key=fs::read(t.path().join("lan-key.pem")).unwrap();let cert=fs::read(t.path().join("lan-cert.pem")).unwrap();let fingerprint=spki_fingerprint(&first.cert_der);assert_eq!(validate_identity(&key,&cert).unwrap(),fingerprint);
   let parsed_key=rcgen::KeyPair::from_pem(std::str::from_utf8(&key).unwrap()).unwrap();assert_eq!(fingerprint,<[u8;32]>::from(Sha256::digest(parsed_key.public_key_der())));
   assert_eq!(format_spki_fingerprint(&fingerprint).len(),52);assert!(format_spki_fingerprint(&fingerprint).bytes().all(|b|b.is_ascii_uppercase()||(b'2'..=b'7').contains(&b)));
   assert_eq!(format_spki_fingerprint(&[0;32]),"A".repeat(52));assert_eq!(format_spki_fingerprint(&[255;32]),format!("{}Q","7".repeat(51)));
@@ -89,7 +94,7 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_,TlsLi
  }
  #[test]fn mismatched_or_unreadable_identity_is_not_overwritten(){
   let a=tempfile::tempdir().unwrap();let b=tempfile::tempdir().unwrap();let settings=crate::network::NetworkSettings::for_test("192.168.1.1".parse().unwrap(),14830);
-  LanTls::load_or_generate(a.path(),&settings).unwrap();LanTls::load_or_generate(b.path(),&settings).unwrap();let wrong_key=fs::read(b.path().join("lan-key.pem")).unwrap();fs::write(a.path().join("lan-key.pem"),&wrong_key).unwrap();assert!(LanTls::load_or_generate(a.path(),&settings).is_err());assert_eq!(fs::read(a.path().join("lan-key.pem")).unwrap(),wrong_key);
+  LanTls::load_or_generate(a.path(),&settings).unwrap();LanTls::load_or_generate(b.path(),&settings).unwrap();let wrong_key=fs::read(b.path().join("lan-key.pem")).unwrap();fs::write(a.path().join("lan-key.pem"),&wrong_key).unwrap();assert!(validate_identity(&wrong_key,&fs::read(a.path().join("lan-cert.pem")).unwrap()).is_err());assert!(LanTls::load_or_generate(a.path(),&settings).is_err());assert_eq!(fs::read(a.path().join("lan-key.pem")).unwrap(),wrong_key);
   fs::remove_file(a.path().join("lan-key.pem")).unwrap();fs::create_dir(a.path().join("lan-key.pem")).unwrap();assert!(LanTls::load_or_generate(a.path(),&settings).is_err());assert!(a.path().join("lan-key.pem").is_dir());
  }
  #[tokio::test]async fn tls12_and_tls13_verify_the_generated_certificate_without_sockets(){

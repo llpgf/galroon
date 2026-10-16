@@ -141,7 +141,7 @@ pub(crate) fn entities(profile:&Value)->BTreeSet<(&'static str,String)>{
   let library=Library::open(&a.state_dir).unwrap();assert_eq!(library.stats().unwrap().images,2);assert_eq!(library.stats().unwrap().profiles,2);
   let job2=enqueue(&a).unwrap();run_job(a.clone(),job2.clone()).await;assert_eq!(a.db.lock().unwrap().query_row("SELECT bytes FROM jobs WHERE id=?1",[&job2],|r|r.get::<_,i64>(0)).unwrap(),0);
   let mut expired=profile.clone();expired["fetched_at"]=json!(0);library.save_profile(key,&expired).unwrap();cache.clear().unwrap();drop(library);drop(cache);
-  let backup=crate::backup::export(&a.db,t.path()).unwrap();let manifest=crate::backup::inspect(&backup).unwrap();assert_eq!(manifest.version,3);assert_eq!(manifest.artwork.as_ref().unwrap().images,2);
+  let backup=crate::backup::export(&a.db,t.path()).unwrap();let manifest=crate::backup::inspect(&backup).unwrap();assert_eq!(manifest.version,4);assert_eq!(manifest.artwork.as_ref().unwrap().images,2);
   let path=crate::backup::restore_new(&backup,&t.path().join("restored"),Some(&manifest.sha256)).unwrap();let restored=crate::initialize(path.clone()).unwrap();
   assert!(!path.join("artwork-cache.sqlite").exists());assert_eq!(crate::exploration::load(&restored,"work","v1",1,false).await.unwrap(),expired);
   assert_eq!(crate::exploration::cached(&restored,key).unwrap(),Some(expired));

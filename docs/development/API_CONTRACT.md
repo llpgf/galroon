@@ -258,7 +258,7 @@ Schema 48 adds `collection_downloads`, transactionally populated by work insert 
 
 Client images are fetched only from the selected authenticated Core, cached in memory up to 64 MiB / 600 entries, and invalidated on session changes. Clearing the local cache revokes its object URLs and prevents older in-flight requests from repopulating it; it never calls a Core deletion API. UI metadata is transient client state. Neither is a backup source.
 
-Backups include this database automatically when present, using manifest version 3. `artwork` contains `{file,bytes,sha256,images,profiles}`; `bytes` at the manifest root remains catalog bytes. The root `sha256` is SHA-256 of the UTF-8 string `<catalog-file-sha256>:<artwork-file-sha256>`, binding preview/restore to both files. Both SQLite files are online snapshots; restore verifies hashes and artwork integrity/counts before removing the incomplete marker. Version 1/2 catalog-only backups remain readable and new catalog-only exports retain version 2. Game files and login credentials remain excluded.
+Backups include this database automatically when present, using manifest version 4. `artwork` contains `{file,bytes,sha256,images,profiles}`; `bytes` at the manifest root remains catalog bytes. The root `sha256` is SHA-256 of the UTF-8 string `<catalog-file-sha256>:<artwork-file-sha256>`, binding preview/restore to both files. Both SQLite files are online snapshots; restore verifies hashes and artwork integrity/counts before removing the incomplete marker. Versions 1–3 remain readable (v3 requires artwork); v4 permits catalog-only exports. Game files remain excluded. Portable exports strip login credentials; full exports retain them as described below.
 
 ## Bangumi two-way sync (schema 49)
 
@@ -267,3 +267,12 @@ See [Bangumi sync](../features/BANGUMI.md) for routes, first-sync review, status
 ## VNDB two-way status and rating sync (schema 50)
 
 See [VNDB sync](../features/VNDB_SYNC.md) for account, preview/apply, link, hide and personal-rating routes. Status and rating have independent baselines and conflict choices; `works.personal_rating` is nullable 10–100 (display 1.0–10.0). Work responses additionally expose `vndb_sync_id` and `vndb_sync_hidden`. VNDB writes patch only the selected field, preserving unrelated labels and notes. The account API is denied to read-only web sessions.
+
+
+## Backup modes and history — 2026-10-16
+
+`POST /api/backups` accepts `{destination, mode?:"portable"|"full"}`. Missing `mode` defaults to `portable`; invalid values return 400. Web sessions remain forbidden. Full backups require an authenticated owner; desktop sessions receive 403 with `"Owner access required for full backups"`. This route always records `origin:"manual"`.
+
+`GET /api/backups` returns the newest 50 completed exports as `{id,path,created,manifest,origin,mode}`. `origin` is `"manual"|"scheduled"` and `mode` is `"portable"|"full"`; pre-schema-51 history defaults to manual/portable.
+
+New exports write manifest v4 with `mode`, `origin`, `identity`, `core_version`, and `includes_credentials` (true for full). Full includes verified `identity/` files (`device.json`, optional `network.json`, and both LAN PEM files or neither), device UUID and optional SPKI fingerprint. Every export writes sorted `SHA256SUMS` entries for its catalog, optional artwork, identity files and manifest. Checksums are informational for external tools; inspection validates the manifest and file contents independently. Full backups contain the owner password hash, sessions and LAN private key and must be stored privately. See [BACKUP_HISTORY.md](../features/BACKUP_HISTORY.md).
