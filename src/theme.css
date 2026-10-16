@@ -263,9 +263,12 @@ main{margin-left:var(--sidebar-w);min-width:0;flex:1;position:relative}
 .home-tile>header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .home-tile h2.home-eyebrow{font-size:12px;font-weight:600;color:var(--muted)}
 .home-tile .text-button{font-size:13px}
-.home-dots{display:flex;gap:6px;margin-left:auto}
-.home-dots span{width:6px;height:6px;border-radius:99px;background:#ffffff66;transition:width .4s var(--ease),background .3s}
-.home-dots span.on{width:18px;background:#fff}
+.home-dots{display:flex;margin-left:auto}
+.home-dots button{min-height:0;padding:9px 3px;background:none;border-radius:99px}
+.home-dots button:hover{background:none;filter:none}
+.home-dots span{display:block;width:6px;height:6px;border-radius:99px;background:#ffffff66;transition:width .4s var(--ease),background .3s}
+.home-dots button:hover span{background:#ffffffb3}
+.home-dots span.on,.home-dots button:hover span.on{width:18px;background:#fff}
 
 /* Random recent addition: blurred artwork behind, cover on the right. */
 .home-hero{overflow:hidden;isolation:isolate;min-height:320px;padding:28px;background:#123a52;color:#fff;box-shadow:0 30px 60px -30px var(--shadow-color);display:flex;flex-direction:column;justify-content:flex-end;gap:16px}
