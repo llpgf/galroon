@@ -12,7 +12,8 @@ export function initials(name:string){const words=name.trim().split(/\s+/u).filt
 export function safeExternalUrl(url:string){try{const parsed=new URL(url);return ['https:','http:'].includes(parsed.protocol)?parsed.href:null;}catch{return null;}}
 export function visibleTraits(character:Character,spoilers:boolean,safe:boolean){return (character.traits||[]).filter(trait=>!trait.lie&&(spoilers||trait.spoiler===0)&&(!safe||!trait.sexual));}
 export function appendWorks(previous:Related[],incoming:Related[]){const unique=new Map(previous.map(work=>[work.id,work]));for(const work of incoming)unique.set(work.id,work);return [...unique.values()];}
-export function imageAllowed(image:Artwork|undefined,hidden:boolean){return !hidden&&!!image?.url&&!(Number(image.sexual)>0)&&!(Number(image.violence)>0);}
+/** VNDB rates imagery 0 safe, 1 suggestive, 2 explicit (vote averages). Like covers, safe and suggestive art shows unless covers are hidden; explicit art never does. */
+export function imageAllowed(image:Artwork|undefined,hidden:boolean){return !hidden&&!!image?.url&&!(Number(image.sexual)>=1.5)&&!(Number(image.violence)>=1.5);}
 export function visibleCharacter(c:Character,vndbId:string,spoilers:boolean){return c.vns?.some(v=>v.id===vndbId&&(spoilers||v.spoiler===0))===true;}
 export function voiceFor(data:Exploration,cid:string):Voice[]{const seen=new Set<string>();return (data.vn?.va||[]).filter(v=>{const key=`${v.staff.id}:${v.staff.aid??''}:${v.note??''}`;if(v.character.id!==cid||seen.has(key))return false;seen.add(key);return true;});}
 export function plainDescription(text:string,spoilers=false){return text.replace(/\[spoiler\][\s\S]*?\[\/spoiler\]/gi,m=>spoilers?m.replace(/\[\/?spoiler\]/gi,''):'[Spoiler hidden]').replace(/\[url=([^\]]+)\]([\s\S]*?)\[\/url\]/gi,'$2').replace(/\[url\]([\s\S]*?)\[\/url\]/gi,'$1').replace(/\[\/?(?:b|i|u|s|quote|raw|code|center|right|left|list|item|spoiler)(?:=[^\]]*)?\]/gi,'');}
