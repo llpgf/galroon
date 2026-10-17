@@ -2,8 +2,9 @@
 mod credentials;
 mod remote;
 pub(crate) mod store;
+pub mod vndb;
 #[cfg(test)] mod tests;
-pub use store::migrate;
+pub fn migrate(c:&rusqlite::Connection)->rusqlite::Result<()>{store::migrate(c)?;vndb::migrate(c)}
 use axum::{extract::State,http::HeaderMap,Json};
 use rusqlite::{params,OptionalExtension};
 use serde::Deserialize;
@@ -186,7 +187,7 @@ async fn sync_client(a:&App,client:&remote::Client)->Result<()> {
 fn dirty(c:&rusqlite::Connection)->rusqlite::Result<bool>{c.query_row("SELECT EXISTS(SELECT 1 FROM bangumi_links b JOIN works w ON w.id=b.work_id WHERE b.hidden=0 AND b.base_status IS NOT NULL AND EXISTS(SELECT 1 FROM bangumi_remote r WHERE r.subject_id=b.subject_id AND r.status=b.base_status) AND w.merged_into IS NULL AND w.status!='none' AND w.status!=CASE b.base_status WHEN 0 THEN 'none' WHEN 1 THEN 'backlog' WHEN 2 THEN 'completed' WHEN 3 THEN 'playing' WHEN 4 THEN 'on_hold' WHEN 5 THEN 'dropped' END)",[],|r|r.get::<_,bool>(0))}
 pub fn start(a:App)->Worker{
     let task=tokio::spawn(async move{
-        let mut next=0;
+        let mut next=0;let mut vndb_retry=0;
         loop{
             if let Ok(_gate)=a.bangumi_gate.try_lock(){
                 let account=store::account(&a.db.lock().unwrap()).ok().flatten();
@@ -198,6 +199,8 @@ pub fn start(a:App)->Worker{
                     }
                 }
             }
+            // Imported cards look up their VNDB identity in the background, one request at a time.
+            if crate::db::now()>=vndb_retry{loop{match vndb::step(&a).await{Ok(true)=>{},Ok(false)=>break,Err(_)=>{vndb_retry=crate::db::now()+600;break;}}}}
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });Worker{task}

@@ -58,7 +58,7 @@ pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()> {
 // The sole candidate of the best tier is pre-selected in the review, never applied without the user; folding drops
 // 「＋」, so 「アマカノ２」 and 「アマカノ２＋」 share a compact key and only the exact tier tells them apart.
 struct Local {id:String,title:String,released:String,exact:Vec<String>,folded:Vec<String>,compact:Vec<String>}
-fn compact(title:&str)->String {
+pub(crate) fn compact(title:&str)->String {
     static READING:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
     let reading=READING.get_or_init(||regex::Regex::new(r"[（(][\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+[)）]|\s[-－][\p{Hiragana}\p{Katakana}ー・]+[-－](\s|$)").unwrap());
     crate::collection_query::fold(&reading.replace_all(title," ")).replace(' ',"")

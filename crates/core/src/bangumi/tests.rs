@@ -218,3 +218,36 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     let results=apply_choices(&a,&mut account,&client,&[first,stale]).await.unwrap();assert_eq!((results[0]["ok"].clone(),results[1]["ok"].clone()),(json!(true),json!(false)));
     task.abort();
 }
+fn vn(id:&str,title:&str,alttitle:&str,released:&str)->Value{json!({"id":id,"title":title,"alttitle":alttitle,"titles":[{"title":alttitle}],"aliases":[],"released":released})}
+#[test]fn vndb_links_only_one_work_with_the_same_title_and_release_day(){
+    let mut s=subject(1);s.name="アンスリウム-i entrust to you-".into();s.date=Some("2026-11-27".into());
+    let free=|_:&str|false;
+    assert_eq!(vndb::decide(&s,&[vn("v1","Anthurium","アンスリウム -i entrust to you-","2026-11-27"),vn("v2","Other","別作品","2026-11-27")],&free),vndb::Decision::Link("v1".into()));
+    // Same title on another day (a remaster or a date VNDB has corrected) waits for the user, as does a same-day subtitle.
+    let mut chain=subject(2);chain.name="夏ノ鎖".into();chain.date=Some("2016-04-28".into());
+    match vndb::decide(&chain,&[vn("v18806","Natsu no Kusari","夏ノ鎖","2016-03-25")],&free){vndb::Decision::Review(c)=>assert_eq!((c[0]["id"].as_str(),c[0]["reason"].as_str()),(Some("v18806"),Some("title"))),other=>panic!("{other:?}")}
+    let mut after=subject(3);after.name="ワンナイトアフター".into();after.date=Some("2026-11-27".into());
+    match vndb::decide(&after,&[vn("v67143","One Night After","ワンナイトアフター -ONE NIGHT AFTER-","2026-11-27")],&free){vndb::Decision::Review(c)=>assert_eq!(c[0]["reason"],"date"),other=>panic!("{other:?}")}
+    // Two same-day hits, a work another card already holds, or nothing related never link.
+    assert!(matches!(vndb::decide(&s,&[vn("v1","A","アンスリウム-i entrust to you-","2026-11-27"),vn("v2","B","アンスリウム-i entrust to you-","2026-11-27")],&free),vndb::Decision::Review(_)));
+    match vndb::decide(&s,&[vn("v1","A","アンスリウム-i entrust to you-","2026-11-27")],&|id|id=="v1"){vndb::Decision::Review(c)=>assert_eq!(c[0]["taken"],true),other=>panic!("{other:?}")}
+    let mut elden=subject(4);elden.name="ELDEN RING".into();elden.date=Some("2022-02-25".into());
+    assert_eq!(vndb::decide(&elden,&[vn("v5","Unrelated","無関係","2020-01-01")],&free),vndb::Decision::None);
+}
+#[test]fn imported_cards_record_vndb_outcomes_once_and_manual_pairing_refuses_duplicates(){
+    let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
+    let mut s=subject(1);s.name="年上彼女".into();s.date=Some("2024-11-29".into());
+    store::replace_remote(&c,&[Collection{subject_id:1,subject_type:4,status:2,subject:s.clone()},collection(2,2)]).unwrap();
+    let card=store::import(&c,1).unwrap();let other=store::import(&c,2).unwrap();
+    c.execute("INSERT INTO works(id,title,original_title,vndb_id) VALUES('local','Local','Local','v9')",[]).unwrap();
+    vndb::record(&c,&card,&s,&[vn("v52441","Toshiue Kanojo","年上彼女","2024-11-29")]).unwrap();
+    let state=|id:&str|c.query_row("SELECT w.vndb_id,v.state FROM works w JOIN bangumi_vndb v ON v.work_id=w.id WHERE w.id=?1",[id],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,String>(1)?))).unwrap();
+    assert_eq!(state(&card),(Some("v52441".into()),"linked".into()));
+    // A decided card is not searched again, and a later answer cannot overwrite it.
+    vndb::record(&c,&card,&s,&[vn("v1","Other","年上彼女","2024-11-29")]).unwrap();assert_eq!(state(&card).0.as_deref(),Some("v52441"));
+    let revision=|id:&str|c.query_row("SELECT revision FROM works WHERE id=?1",[id],|r|r.get::<_,i64>(0)).unwrap();
+    assert!(vndb::pair(&c,&other,revision(&other),"v9").unwrap_err().0.contains("Group works"));
+    assert!(vndb::pair(&c,&other,revision(&other)-1,"v10").is_err());
+    assert!(vndb::pair(&c,&other,revision(&other),"v10").is_ok());assert_eq!(state(&other),(Some("v10".into()),"linked".into()));
+    assert!(vndb::pair(&c,&other,revision(&other),"v11").unwrap_err().0.contains("already paired"));
+}

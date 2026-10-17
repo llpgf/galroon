@@ -1,5 +1,6 @@
 import {VndbWork} from './VndbWork';
 import {BangumiWork} from './BangumiWork';
+import {VndbPairing} from './VndbPairing';
 import {useState,type ComponentProps} from 'react';
 import {useTranslation} from 'react-i18next';
 import {Heart,MoreHorizontal,PencilLine,Combine,RefreshCw} from 'lucide-react';
@@ -25,7 +26,8 @@ export function CollectionWorkDetail({roots,busy,act,refresh,onEdit,onGroup,onRe
  const [conflicts,setConflicts]=useState<{revision:number;items:Conflict[]}|null>(null);
  const resolve=(item:Conflict,useProvider:boolean)=>void act(async()=>{let revision=conflicts!.revision;if(useProvider)revision=(await api<{revision:number}>(`/works/${work.id}/metadata`,{revision,reset:[item.field]})).revision;const items=conflicts!.items.filter(c=>c.field!==item.field);setConflicts(items.length?{revision,items}:null);await refresh();});
  const update=(patch:object)=>void act(()=>api(`/works/${work.id}`,{revision:work.revision,...patch}));
- return <WorkExperience {...experience} actions={canWrite?<fieldset className="inline detail-actions">
+ // A new VNDB pairing changes what the exploration sections load.
+ return <WorkExperience key={work.vndb_id||''} {...experience} actions={canWrite?<fieldset className="inline detail-actions">
   <select className="status-select" disabled={busy} aria-label={t('status')} value={work.status} onChange={e=>update({status:e.target.value})}>{['none','backlog','playing','completed','on_hold','dropped'].map(s=><option value={s} key={s}>{t(s)}</option>)}</select>
   <button className="icon-toggle" disabled={busy} aria-pressed={work.favorite} aria-label={t('favorite')} title={t('favorite')} onClick={()=>update({favorite:!work.favorite})}><Heart size={16} fill={work.favorite?'currentColor':'none'}/></button>
   <AddToListButton member={{work_key:'local:'+work.id,title:work.title}}/>
@@ -36,6 +38,7 @@ export function CollectionWorkDetail({roots,busy,act,refresh,onEdit,onGroup,onRe
  </fieldset>:<span className="pill">{t(work.status)}</span>}>
   {!!work.same_work?.length&&<section className="section same-work"><h2>{t('sameWorkCards')}</h2><p>{t('sameWorkHint')}</p><div className="inline">{work.same_work.map(other=><button key={other.id} disabled={busy} onClick={()=>void act(async()=>experience.onWork(await api<Work>(`/works/${other.id}`)))}>{other.original_title||other.title}{other.released?` · ${other.released}`:''}{other.vndb_release?` · ${t('remakeCard')}`:''}</button>)}</div></section>}
   {conflicts&&<section className="section refresh-conflicts" role="region" aria-label={t('refreshConflicts')}><h2>{t('refreshConflicts')}</h2><p>{t('refreshConflictsHint')}</p>{conflicts.items.map(item=><div className="plan-item" key={item.field}><strong>{t('field_'+item.field)}</strong><p>{t('conflictMine')}: {shown(item.mine)}</p><p>{t('conflictProvider')}: {shown(item.provider)}</p><div className="inline"><button disabled={busy} onClick={()=>resolve(item,false)}>{t('keepMine')}</button><button className="primary" disabled={busy} onClick={()=>resolve(item,true)}>{t('useProvider')}</button></div></div>)}</section>}
+  {canWrite&&!work.vndb_id&&work.resources===0&&<VndbPairing key={work.id+':pair:'+work.revision} work={work} onChanged={refresh}/>}
   {canWrite&&<VndbWork key={work.id+':vndb:'+work.revision} work={work} onChanged={refresh} onHidden={experience.onBack}/>}
   {canWrite&&<BangumiWork key={work.id+':'+work.bangumi_id} work={work} onChanged={refresh} onHidden={experience.onBack}/>}
   <EditionsPanel readOnly={!canWrite} work={work} roots={roots} onPreferenceChanged={refresh} onChanged={refresh} onReferences={onReferences} onAcquire={onAcquire} onOrganize={onOrganize}/>
