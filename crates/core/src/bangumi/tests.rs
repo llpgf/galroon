@@ -69,8 +69,8 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     assert_eq!(row(2).kind,"match");assert_eq!(row(2).candidates[0].id,"zan");
     assert_eq!(row(4).kind,"import");
     assert_eq!(row(3).candidates.iter().map(|c|c.id.as_str()).collect::<Vec<_>>(),["exact","loose"]);
-    // Only a sole exact or folded candidate is pre-selected for review.
-    assert_eq!(row(1).suggested.as_deref(),Some("saku"));assert_eq!(row(2).suggested.as_deref(),Some("zan"));assert_eq!(row(3).suggested,None);assert_eq!(row(4).suggested,None);
+    // The sole candidate of the best tier is pre-selected for review: an exact title beats a folded one.
+    assert_eq!(row(1).suggested.as_deref(),Some("saku"));assert_eq!(row(2).suggested.as_deref(),Some("zan"));assert_eq!(row(3).suggested.as_deref(),Some("exact"));assert_eq!(row(4).suggested,None);
     c.execute("INSERT INTO bangumi_ignored VALUES(1)",[]).unwrap();let ignored=store::rows(&c,"full").unwrap().into_iter().find(|r|r.subject_id==1).unwrap();assert_eq!((ignored.kind.as_str(),ignored.suggested),("ignored",None));
     assert!(automatic_choices(store::rows(&c,"full").unwrap()).iter().all(|choice|choice.action!="match"));
 }
@@ -87,7 +87,7 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
         dated(3,"巨乳幽霊さんに癒やされる社畜さんの性活！","2022-09-30"),dated(4,"奥さまの回復術 純愛編","2022-05-28"),dated(5,"年上彼女２","2024-11-29")]).unwrap();
     let rows=store::rows(&c,"full").unwrap();let found=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap().candidates.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
     assert_eq!(found(1),["blue"]);assert_eq!(found(2),["ore"]);assert_eq!(found(3),["ghost"]);
-    assert!(rows.iter().all(|r|r.suggested.is_none()),"compact and same-day matches are never pre-selected");
+    for id in 1..=3 {assert_eq!(rows.iter().find(|r|r.subject_id==id).unwrap().suggested.as_ref(),found(id).first(),"a sole compact match is pre-selected");}
     // A subtitle-only difference needs the same release day, and a trailing number is a sequel.
     assert!(found(4).is_empty());assert!(found(5).is_empty());
 }
@@ -181,4 +181,23 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
 
 #[tokio::test]async fn zero_push_is_rejected_before_any_http_request(){
  let client=remote::Client::at("unused".into(),"http://127.0.0.1:9".into()).unwrap();for exists in [false,true]{assert_eq!(client.set_status(1,0,exists).await.unwrap_err().0,"Bangumi cannot clear a collection status");}
+}
+#[test]fn pre_selects_the_best_tier_so_plus_editions_and_readings_pair_up(){
+    let(_t,a,_)=fixture();let c=a.db.lock().unwrap();
+    c.execute_batch("INSERT INTO works(id,title,original_title,released) VALUES
+        ('ama2','Amakano 2','アマカノ２','2020-04-24'),('ama2p','Amakano 2+','アマカノ２＋','2023-04-28'),
+        ('eve','Evenicle 2','イブニクル2','2019-02-22'),('eve1','Evenicle','イブニクル','2015-12-18'),
+        ('kai','Kaifuku','奥さまの回復術','2022-05-27'),
+        ('twin','Twin','双子の日','2021-01-01'),('twin2','Twin','双子の日','2021-01-01')").unwrap();
+    let dated=|id:i64,name:&str,date:&str|{let mut row=collection(id,2);row.subject.name=name.into();row.subject.date=Some(date.into());row};
+    store::replace_remote(&c,&[dated(1,"アマカノ2","2020-04-24"),dated(2,"アマカノ2+","2023-04-28"),dated(3,"Evenicle -イブニクル- 2","2019-02-22"),
+        dated(4,"奥さまの回復術 純愛編","2022-05-27"),dated(5,"双子の日","2021-01-01")]).unwrap();
+    let rows=store::rows(&c,"full").unwrap();let row=|id:i64|rows.iter().find(|r|r.subject_id==id).unwrap();
+    assert_eq!(row(1).candidates.len(),2,"「＋」 folds away, so both editions stay visible");
+    assert_eq!(row(1).suggested.as_deref(),Some("ama2"));assert_eq!(row(2).suggested.as_deref(),Some("ama2p"));
+    assert_eq!(row(3).candidates.iter().map(|c|c.id.as_str()).collect::<Vec<_>>(),["eve"],"a dashed kana reading is dropped, the sequel number kept");
+    assert_eq!(row(3).suggested.as_deref(),Some("eve"));
+    assert_eq!(row(4).suggested.as_deref(),Some("kai"),"a same-day subtitle is pre-selected when it is the only candidate");
+    assert_eq!((row(5).candidates.len(),row(5).suggested.as_ref()),(2,None),"a tie is left to the user");
+    assert!(automatic_choices(rows.clone()).iter().all(|choice|choice.action!="match"));
 }

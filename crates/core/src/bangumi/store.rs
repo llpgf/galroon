@@ -47,14 +47,15 @@ pub fn replace_remote(c:&Connection,rows:&[Collection])->Result<()> {
     for row in rows {c.execute("INSERT INTO bangumi_remote VALUES(?1,?2,?3)",params![row.subject_id,row.status,serde_json::to_string(&row.subject)?])?;}Ok(())
 }
 // Bangumi and VNDB punctuate the same title differently (「—」/「－」, 「～」 spacing, a trailing 「。」),
-// spell readings inline (「不可視の薬（インビジブル）と」) and drop subtitles. Candidates come in tiers:
-// exact, folded, compact (no spaces or readings), then a title prefix on the very same release date.
+// spell readings inline (「不可視の薬（インビジブル）と」「Evenicle -イブニクル- 2」) and drop subtitles. Candidates
+// come in tiers: exact, folded, compact (no spaces or readings), then a title prefix on the very same release date.
 // The user still confirms every match; a prefix never accepts a following digit, so sequels stay apart.
-// A sole exact or folded candidate is pre-selected in the review, never applied without the user.
+// The sole candidate of the best tier is pre-selected in the review, never applied without the user; folding drops
+// 「＋」, so 「アマカノ２」 and 「アマカノ２＋」 share a compact key and only the exact tier tells them apart.
 struct Local {id:String,title:String,released:String,exact:Vec<String>,folded:Vec<String>,compact:Vec<String>}
 fn compact(title:&str)->String {
     static READING:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
-    let reading=READING.get_or_init(||regex::Regex::new(r"[（(][\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+[)）]").unwrap());
+    let reading=READING.get_or_init(||regex::Regex::new(r"[（(][\p{Hiragana}\p{Katakana}\p{Han}ー・\s]+[)）]|\s[-－][\p{Hiragana}\p{Katakana}ー・]+[-－](\s|$)").unwrap());
     crate::collection_query::fold(&reading.replace_all(title," ")).replace(' ',"")
 }
 fn locals(c:&Connection)->Result<Vec<Local>> {
@@ -81,7 +82,7 @@ fn candidates(locals:&[Local],subject:&Subject)->(Vec<Candidate>,Option<String>)
     let tier=|l:&Local|if l.exact.iter().any(|n|exact.contains(n)){Some(0)}else if l.folded.iter().any(|n|folded.contains(n)){Some(1)}
         else if l.compact.iter().any(|n|compact.contains(n)){Some(2)}else if !date.is_empty()&&l.released==date&&dated_prefix(&l.compact,&compact){Some(3)}else{None};
     let mut found:Vec<(u8,&Local)>=locals.iter().filter_map(|l|tier(l).map(|t|(t,l))).collect();found.sort_by_key(|(t,_)|*t);
-    let suggested=match found.as_slice(){[(tier,l)] if *tier<=1=>Some(l.id.clone()),_=>None};
+    let suggested=match found.as_slice(){[(_,l)]=>Some(l.id.clone()),[(best,l),(next,_),..] if best<next=>Some(l.id.clone()),_=>None};
     (found.into_iter().take(10).map(|(_,l)|Candidate{id:l.id.clone(),title:l.title.clone()}).collect(),suggested)
 }
 pub fn rows(c:&Connection,mode:&str)->Result<Vec<Row>> {
