@@ -334,6 +334,8 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 .home-status>header>div:first-child span{font-size:13px;color:var(--muted)}
 .home-status-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .home-status-tools .tabs{margin:0}
+.home-status-sort{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.home-status-sort select{width:auto;min-height:30px;padding:2px 8px;font-size:13px}
 .home-bar{display:flex;gap:2px;height:8px;border-radius:99px;overflow:hidden}
 .home-bar span{transition:opacity .3s}
 .home-status .dot{width:9px;height:9px;border-radius:50%;flex:none}

@@ -42,14 +42,15 @@ fn digest<T: Serialize>(value: &T) -> Result<String, ApiError> {
 }
 fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Result<Vec<Entry>, ApiError> {
     // O(collection) compact metadata only: descriptions, notes and full resource/release payloads stay out.
-    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid,personal_rating FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
+    let mut statement=c.prepare("SELECT id,title,original_title,developer,released,tags,status,favorite,aliases,rowid,personal_rating,status_since FROM works w WHERE merged_into IS NULL AND NOT EXISTS(SELECT 1 FROM bangumi_links b WHERE b.work_id=w.id AND b.hidden=1) AND NOT EXISTS(SELECT 1 FROM vndb_sync_links b WHERE b.work_id=w.id AND b.hidden=1) ORDER BY title")?;
     let mut entries=statement.query_map([],|r| {
         let title:String=r.get(1)?;let original:String=r.get(2)?;let studio:String=r.get(3)?;let released:String=r.get(4)?;
         let tags=filter::tag_names(&serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or_default());
         let aliases=serde_json::from_str::<Vec<String>>(&r.get::<_,String>(8)?).unwrap_or_default();
         let search=filter::fold(&[vec![title.clone(),original.clone(),studio.clone()],aliases,tags.clone()].concat().join(" "));
         let year=if released.as_bytes().get(..4).is_some_and(|s|s[0]>=b'1'&&s[0]<=b'9'&&s.iter().all(u8::is_ascii_digit)) { released[..4].to_owned() } else { String::new() };
-        Ok(Entry{id:r.get(0)?,title,original,studio:studio.trim().to_owned(),year,tags,status:r.get(6)?,favorite:r.get::<_,i64>(7)?==1,search,added:r.get(9)?,rating:r.get(10)?,..Default::default()})
+        let released=if year.is_empty() {String::new()} else {released};
+        Ok(Entry{id:r.get(0)?,title,original,studio:studio.trim().to_owned(),year,released,status_since:r.get(11)?,tags,status:r.get(6)?,favorite:r.get::<_,i64>(7)?==1,search,added:r.get(9)?,rating:r.get(10)?,..Default::default()})
     })?.map(|row|{check(cancelled)?;row.map_err(ApiError::from)}).collect::<Result<Vec<_>,ApiError>>()?;
     let index=entries.iter().enumerate().map(|(i,e)|(e.id.clone(),i)).collect::<BTreeMap<_,_>>();
     let mut statement=c.prepare("SELECT w.work_id,e.languages FROM work_releases w JOIN releases e ON e.id=w.release_id")?;
@@ -84,7 +85,12 @@ fn sorted<'a>(entries: &'a [Entry], q: &Query) -> Result<Vec<&'a Entry>, ApiErro
     let order=collator(&q.locale,true,true)?;let folded_query=filter::fold(&q.query);
     let mut visible=entries.iter().filter(|e|filter::matches(e,q,&folded_query)).collect::<Vec<_>>();
     visible.sort_by(|a,b| {
-        let primary=match q.sort.as_str() {"added"=>b.added.cmp(&a.added),"newest"=>b.year.parse::<u16>().unwrap_or(0).cmp(&a.year.parse().unwrap_or(0)),"oldest"=>a.year.parse::<u16>().unwrap_or(9999).cmp(&b.year.parse().unwrap_or(9999)),_=>std::cmp::Ordering::Equal};
+        let primary=match q.sort.as_str() {"added"=>b.added.cmp(&a.added),"newest"=>b.year.parse::<u16>().unwrap_or(0).cmp(&a.year.parse().unwrap_or(0)),"oldest"=>a.year.parse::<u16>().unwrap_or(9999).cmp(&b.year.parse().unwrap_or(9999)),
+            // Newest first; works without a date go last. Partial dates sort as strings ("2004" after "2004-04-28").
+            "released"=>a.released.is_empty().cmp(&b.released.is_empty()).then_with(||b.released.cmp(&a.released)),
+            // Most recent first status first; works with no recorded date follow in the order they joined the collection.
+            "status_changed"=>a.status_since.is_none().cmp(&b.status_since.is_none()).then_with(||b.status_since.cmp(&a.status_since)).then_with(||b.added.cmp(&a.added)),
+            _=>std::cmp::Ordering::Equal};
         primary.then_with(||order.compare(a.title(&q.title_mode),b.title(&q.title_mode))).then_with(||a.id.cmp(&b.id))
     });Ok(visible)
 }
@@ -269,6 +275,27 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         assert_eq!(ids(read(&c,&roots,&q,None)),["three","two","one"]);q.title_mode="original".into();assert_eq!(ids(read(&c,&roots,&q,None)),["one","two","three"]);
         q.sort="oldest".into();assert_eq!(ids(read(&c,&roots,&q,None)),["two","three","one"]);q.sort="newest".into();assert_eq!(ids(read(&c,&roots,&q,None)),["three","two","one"]);
         q.locale="not a locale".into();assert!(page(&c,&roots,&q,None).is_err());
+    }
+    #[test] fn first_status_date_is_recorded_once_and_drives_status_and_release_sorts() {
+        let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+        // 'legacy' stands for a work that had a status before schema 54: no recorded date.
+        c.execute_batch("INSERT INTO works(id,title,original_title,released) VALUES('legacy','Legacy','','2001-05-01'),('first','First','','2010'),('second','Second','','2010-03-04'),('later','Later','',''),('plain','Plain','','TBA');
+         UPDATE works SET status='playing' WHERE id='legacy'; UPDATE works SET status_since=NULL WHERE id='legacy';
+         UPDATE works SET status='backlog' WHERE id IN ('first','second');").unwrap();
+        let since=|id:&str|c.query_row("SELECT status_since FROM works WHERE id=?1",[id],|r|r.get::<_,Option<i64>>(0)).unwrap();
+        assert!(since("first").is_some());assert_eq!(since("plain"),None);
+        c.execute_batch("UPDATE works SET status_since=100 WHERE id='first'; UPDATE works SET status_since=200 WHERE id='second';").unwrap();
+        // Later changes, clearing and re-setting keep the first date; a legacy work is never back-dated.
+        c.execute_batch("UPDATE works SET status='completed' WHERE id='first'; UPDATE works SET status='none' WHERE id='second'; UPDATE works SET status='dropped' WHERE id='second'; UPDATE works SET status='completed' WHERE id='legacy';").unwrap();
+        assert_eq!((since("first"),since("second"),since("legacy")),(Some(100),Some(200),None));
+        c.execute("INSERT INTO works(id,title,original_title,status) VALUES('imported','Imported','','on_hold')",[]).unwrap();assert!(since("imported").unwrap()>200);
+        let roots=Roots::new();let ids=|q:&Query|read(&c,&roots,q,None)["items"].as_array().unwrap().iter().map(|w|w["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let mut q=Query::default();q.sort="status_changed".into();
+        // Dated works newest first, then undated ones in reverse collection order (rowid).
+        assert_eq!(ids(&q),["imported","second","first","plain","later","legacy"]);
+        assert_eq!(read(&c,&roots,&q,None)["items"][2]["status_since"],100);
+        q.sort="released".into();assert_eq!(ids(&q),["second","first","legacy","imported","later","plain"]);
+        q.sort="bogus".into();assert!(page(&c,&roots,&q,None).is_err());
     }
     #[test] fn cache_keeps_only_identities_and_cancelled_reads_never_publish_partial_views() {
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();

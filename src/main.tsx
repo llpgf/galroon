@@ -14,7 +14,7 @@ import {APP_VERSION} from './version';
 import {CachedImage} from './CachedImage';
 import {ClientCachePanel} from './ClientCachePanel';
 import {reportClientError} from './clientDiagnostics';
-import type {DiscoveryQuery} from './discovery';
+import type {DiscoveryQuery,DiscoveryWork} from './discovery';
 import {SettingsLayout} from './SettingsLayout';
 import {CollectionSearch} from './CollectionSearch';
 import {rememberSearch} from './search';
@@ -30,6 +30,7 @@ import {useUpdates} from './useUpdates';
 import {PlanReview} from './PlanReview';
 import {LibraryBrowser} from './LibraryBrowser';
 import {HomePanel} from './HomePanel';
+import {ListExplorer} from './ListExplorer';
 import {titleFor,emptyFilters,type Filters} from './library';
 import {WebLogin} from './WebLogin';
 import {AcquirePanel} from './AcquirePanel';
@@ -91,6 +92,8 @@ function App(){
  const [historyResource,setHistoryResource]=useState<Pick<Resource,'id'|'title'|'path'>|null>(null);
  const [regroupResource,setRegroupResource]=useState<Resource|null>(null);
  const [referenceResource,setReferenceResource]=useState<Resource|null>(null);
+ // A release-calendar entry outside the collection, shown as a VNDB reference page over Home.
+ const [homeReference,setHomeReference]=useState<DiscoveryWork|null>(null);const homeY=useRef(0);
  const [remapping,setRemapping]=useState<Root|null>(null);
  const [editingMetadata,setEditingMetadata]=useState<Work|null>(null);
  const detailTarget=useRef<string|null>(null);detailTarget.current=detail?.id||null;
@@ -110,7 +113,7 @@ function App(){
  useEffect(()=>{const onScroll=()=>setScrolled(window.scrollY>4);onScroll();window.addEventListener('scroll',onScroll,{passive:true});return()=>window.removeEventListener('scroll',onScroll);},[]);
  const selectWork=(w:Work)=>{setInitialSearch(null);rememberSearch(query,collectionStorageKey('search-history')); if(!detail)collectionY.current=window.scrollY;setDetail(w);requestAnimationFrame(()=>window.scrollTo(0,0));};
  const backCollection=()=>{setDetail(null);requestAnimationFrame(()=>window.scrollTo(0,collectionY.current));};
- const navigate=(v:View)=>{setView(v);setDetail(null);setFilter('all');setQuery('');requestAnimationFrame(()=>window.scrollTo(0,0));};
+ const navigate=(v:View)=>{setView(v);setDetail(null);setHomeReference(null);setFilter('all');setQuery('');requestAnimationFrame(()=>window.scrollTo(0,0));};
  // Opens the collection on a status and, optionally, a fresh set of facet filters (statistics rows, home shortcuts).
  const openCollection=(status?:string,filters?:Partial<Filters>)=>{navigate('library');if(status)setFilter(status);if(filters)setCollectionSeed({filters:{...emptyFilters,...filters},at:Date.now()});};
 
@@ -127,7 +130,8 @@ function App(){
  <div className="content">{identity?.role==='web'&&<p className="read-only-note">{t('readOnlySession')}</p>}
 
  {view==='stats'&&!detail&&<StatsPanel generation={collectionGeneration} titleMode={titleMode} onCollection={openCollection}/>}
- {view==='home'&&!detail&&<HomePanel generation={collectionGeneration} safe={safe} titleMode={titleMode} onSelect={selectWork} onCollection={openCollection}/>}
+ {view==='home'&&!detail&&<div hidden={!!homeReference}><HomePanel generation={collectionGeneration} safe={safe} titleMode={titleMode} onSelect={selectWork} onCollection={openCollection} onReference={work=>{homeY.current=window.scrollY;setHomeReference(work);requestAnimationFrame(()=>window.scrollTo(0,0));}}/></div>}
+ {view==='home'&&!detail&&homeReference&&<ListExplorer key={homeReference.id} workKey={'vndb:'+homeReference.id} title={homeReference.title} reference={homeReference} safe={safe} canWrite={canWrite} renderLocalWork={renderLocalWork} onBack={()=>{setHomeReference(null);requestAnimationFrame(()=>window.scrollTo(0,homeY.current));}}/>}
  {view==='home'&&detail&&renderLocalWork(detail,backCollection,selectWork,initialSearch,'home')}
  {view==='lists'&&<ListsWorkspace renderLocalWork={renderLocalWork} safe={safe} canWrite={canWrite}/>}
  {view==='library'&&<div hidden={!!detail}><LibraryBrowser generation={collectionGeneration} seed={collectionSeed} query={query} setQuery={setQuery} status={filter} setStatus={setFilter} safe={safe} canWrite={canWrite} onAdd={()=>{matchEpoch.current++;setCandidates([]);setMatchInfo(null);setManual(true);setMatchQuery('');setMatcher(null);}} onSource={()=>navigate('sources')} onSelect={selectWork} onStudio={(work,studio)=>{collectionY.current=window.scrollY;setInitialSearch({kind:'studio',value:studio,label:studio});setDetail(work);requestAnimationFrame(()=>window.scrollTo(0,0));}} titleMode={titleMode} setTitleMode={setTitleMode}/></div>}

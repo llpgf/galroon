@@ -6,13 +6,16 @@ import {CachedImage} from './CachedImage';
 import {ReleaseCalendar} from './ReleaseCalendar';
 import {useCollectionPage,type CollectionQuery} from './useCollectionPage';
 import {emptyFilters,titleFor,coverTone,type Filters} from './library';
+import type {DiscoveryWork} from './discovery';
 
 type TitleMode='display'|'original';
 type StatusView='tabs'|'board';
+/** `status_changed`: when the work first got a play status (Core's status_since); `released`: release date. Both newest first. */
+export type StatusSort='status_changed'|'released';
 const STATUSES=['playing','completed','backlog','on_hold','dropped'] as const;
 type Status=typeof STATUSES[number];
 const HERO_POOL=6,TAB_COVERS=8,BOARD_ROWS=3,FAVORITES=8;
-const VIEW_KEY='galroon.homeStatusView',ORDER_KEY='galroon.homeStatusOrder';
+const VIEW_KEY='galroon.homeStatusView',ORDER_KEY='galroon.homeStatusOrder',SORT_KEY='galroon.homeStatusSort';
 
 /** Artwork or the tinted title placeholder, shared by every cover on the home page. */
 function Cover({work,safe,className=''}:{work:Work;safe:boolean;className?:string}){
@@ -34,7 +37,15 @@ function randomBatch(ids:string[],current:string[]){
  const shuffle=(list:string[])=>{const out=[...list];for(let i=out.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[out[i],out[j]]=[out[j],out[i]];}return out;};
  return [...shuffle(ids.filter(id=>!current.includes(id))),...shuffle(ids.filter(id=>current.includes(id)))].slice(0,HERO_POOL);
 }
-function savedView():StatusView{try{return localStorage.getItem(VIEW_KEY)==='board'?'board':'tabs';}catch{return 'tabs';}}
+/** The board is the default; tabs only when someone picked them. */
+export function savedView():StatusView{try{return localStorage.getItem(VIEW_KEY)==='tabs'?'tabs':'board';}catch{return 'board';}}
+export function savedSort():StatusSort{try{return localStorage.getItem(SORT_KEY)==='released'?'released':'status_changed';}catch{return 'status_changed';}}
+/** The date shown under a title, matching the active sort: the first-status day, or the release date as VNDB gives it. */
+export function sortDate(work:Work,sort:StatusSort,locale:string){
+ if(sort==='released')return work.released||'';
+ if(!work.status_since)return '';
+ return new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(work.status_since*1000));
+}
 /** A saved order is used only when it is exactly the five statuses, so a stale or edited value can't drop one. */
 function savedOrder():Status[]{try{const saved=JSON.parse(localStorage.getItem(ORDER_KEY)||'null');if(Array.isArray(saved)&&saved.length===STATUSES.length&&STATUSES.every(s=>saved.includes(s)))return saved;}catch{/* fall back to the default order */}return [...STATUSES];}
 
@@ -43,7 +54,7 @@ function savedOrder():Status[]{try{const saved=JSON.parse(localStorage.getItem(O
  * as tabs or a board whose columns can be reordered, recent additions and favourites.
  * Collection data comes from the same paged collection API the collection page uses; nothing here changes the collection.
  */
-export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void}){
+export function HomePanel({generation,safe,titleMode,onSelect,onCollection,onReference}:{generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void;onReference:(work:DiscoveryWork)=>void}){
  const {t}=useTranslation();
  const recent=useWorks(emptyFilters,'all','added',titleMode,generation);
  const favorites=useWorks({...emptyFilters,favorites:true},'all','added',titleMode,generation);
@@ -60,6 +71,8 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
 
  const [view,setView]=useState<StatusView>(savedView);
  const changeView=(next:StatusView)=>{setView(next);try{localStorage.setItem(VIEW_KEY,next);}catch{/* the choice just isn't remembered */}};
+ const [sort,setSort]=useState<StatusSort>(savedSort);
+ const changeSort=(next:StatusSort)=>{setSort(next);try{localStorage.setItem(SORT_KEY,next);}catch{/* the choice just isn't remembered */}};
  const [status,setStatus]=useState<Status>('playing');
  const [order,setOrder]=useState<Status[]>(savedOrder);
  const [dragging,setDragging]=useState<Status|null>(null),[over,setOver]=useState<Status|null>(null);
@@ -87,21 +100,22 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
     </div>
    </section>}
 
-   <ReleaseCalendar safe={safe} titleMode={titleMode} onSelect={onSelect}/>
+   <ReleaseCalendar safe={safe} titleMode={titleMode} onSelect={onSelect} onReference={onReference}/>
 
    <section className="home-tile home-status" aria-labelledby="home-status-title">
     <header>
      <div><h2 id="home-status-title">{t('homeMyPlay')}</h2><span>{t('homeTotal',{count:total})}</span><button className="text-button" onClick={()=>onCollection('none')}>{t('homeNoStatus',{count:counts.none||0})}</button></div>
      <div className="home-status-tools">
       <div className="tabs" role="radiogroup" aria-label={t('homeViewMode')}>{(['tabs','board'] as const).map(value=><button key={value} role="radio" aria-checked={view===value} aria-pressed={view===value} onClick={()=>changeView(value)}>{t(value==='tabs'?'homeViewTabs':'homeViewBoard')}</button>)}</div>
+      <label className="home-status-sort" title={t('homeSortHint')}><span>{t('homeSort')}</span><select aria-label={t('homeSort')} value={sort} onChange={e=>changeSort(e.target.value as StatusSort)}><option value="status_changed">{t('homeSortStatusChanged')}</option><option value="released">{t('homeSortReleased')}</option></select></label>
       <button className="text-button" onClick={()=>onCollection()}>{t('homeViewInCollection')}<More size={15}/></button>
      </div>
     </header>
     {total>0&&<div className="home-bar" aria-hidden="true">{order.filter(key=>counts[key]).map(key=><span key={key} className={'seg-'+key} style={{flex:counts[key],opacity:view==='tabs'&&key!==status?.45:1}}/>)}</div>}
-    {view==='tabs'?<StatusTabs order={order} status={status} setStatus={setStatus} counts={counts} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>
+    {view==='tabs'?<StatusTabs sort={sort} order={order} status={status} setStatus={setStatus} counts={counts} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>
      :<>
       <p className="home-board-hint">{t('homeBoardHint')}</p>
-      <div className="home-board">{order.map((key,index)=><StatusColumn key={key} status={key} index={index} count={counts[key]||0} drag={drag} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>)}</div>
+      <div className="home-board">{order.map((key,index)=><StatusColumn key={key} sort={sort} status={key} index={index} count={counts[key]||0} drag={drag} generation={generation} safe={safe} titleMode={titleMode} onSelect={onSelect} onCollection={onCollection}/>)}</div>
      </>}
    </section>
   </div>
@@ -115,12 +129,12 @@ export function HomePanel({generation,safe,titleMode,onSelect,onCollection}:{gen
  </div>;
 }
 
-type StatusProps={generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void};
+type StatusProps={sort:StatusSort;generation:number;safe:boolean;titleMode:TitleMode;onSelect:(w:Work)=>void;onCollection:(status?:string)=>void};
 type Drag={dragging:Status|null;over:Status|null;setDragging:(s:Status|null)=>void;setOver:(s:Status|null)=>void;swap:(a:Status,b:Status)=>void;order:Status[]};
 
-function StatusTabs({order,status,setStatus,counts,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{order:Status[];status:Status;setStatus:(s:Status)=>void;counts:Record<string,number>}){
+function StatusTabs({sort,order,status,setStatus,counts,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{order:Status[];status:Status;setStatus:(s:Status)=>void;counts:Record<string,number>}){
  const {t}=useTranslation();
- const page=useWorks(emptyFilters,status,'added',titleMode,generation);
+ const page=useWorks(emptyFilters,status,sort,titleMode,generation);
  const works=page.data?.items.slice(0,TAB_COVERS)||[];
  return <>
   <div className="home-status-tabs" role="tablist" aria-label={t('focusStatus')}>{order.map(key=><button key={key} role="tab" id={'home-tab-'+key} aria-selected={status===key} aria-controls="home-tab-panel" className={'home-status-tab tab-'+key} onClick={()=>setStatus(key)}><span><span className={'dot seg-'+key}/>{t(key)}</span><strong>{counts[key]||0}</strong></button>)}</div>
@@ -134,9 +148,10 @@ function StatusTabs({order,status,setStatus,counts,generation,safe,titleMode,onS
 }
 
 /** A board column. The whole column is a drag source and drop target; its grip moves it with ← and →. */
-function StatusColumn({status,index,count,drag,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{status:Status;index:number;count:number;drag:Drag}){
+function StatusColumn({sort,status,index,count,drag,generation,safe,titleMode,onSelect,onCollection}:StatusProps&{status:Status;index:number;count:number;drag:Drag}){
  const {t}=useTranslation();
- const page=useWorks(emptyFilters,status,'added',titleMode,generation);
+ const page=useWorks(emptyFilters,status,sort,titleMode,generation);
+ const {i18n}=useTranslation();
  const works=page.data?.items.slice(0,BOARD_ROWS)||[];
  const target=drag.over===status&&drag.dragging!==null&&drag.dragging!==status;
  const start=(e:DragEvent)=>{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',status);drag.setDragging(status);};
@@ -149,7 +164,7 @@ function StatusColumn({status,index,count,drag,generation,safe,titleMode,onSelec
    <button className="home-column-head" onClick={()=>onCollection(status)}><span><span className={'dot seg-'+status}/>{t(status)}</span><strong>{count}</strong></button>
   </div>
   <span className={'home-column-rule seg-'+status} aria-hidden="true"/>
-  {works.map(work=><button key={work.id} className="home-row" draggable={false} onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span><strong>{titleFor(work,titleMode)}</strong><span>{work.developer}</span></span></button>)}
+  {works.map(work=><button key={work.id} className="home-row" draggable={false} onClick={()=>onSelect(work)}><Cover work={work} safe={safe}/><span><strong>{titleFor(work,titleMode)}</strong><span>{[work.developer,sortDate(work,sort,i18n.language)].filter(Boolean).join(' · ')}</span></span></button>)}
   {page.data&&!works.length&&<p className="home-status-empty">{t('homeStatusEmpty')}</p>}
   {count>works.length&&<button className="text-button home-column-more" onClick={()=>onCollection(status)}>{t('homeStatusMore',{count:count-works.length})}<More size={15}/></button>}
  </section>;

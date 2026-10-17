@@ -131,6 +131,6 @@ pub fn merge(c:&Connection,source:&str,target:&str)->Result<()> {
     let source_link:Option<i64>=c.query_row("SELECT subject_id FROM bangumi_links WHERE work_id=?1",[source],|r|r.get(0)).optional()?;
     if source_link.is_none(){return Ok(());}
     if c.query_row("SELECT EXISTS(SELECT 1 FROM bangumi_links WHERE work_id=?1)",[target],|r|r.get::<_,bool>(0))? {return Err(Error("Both works have Bangumi links. Unlink one before merging.".into()));}
-    c.execute("UPDATE works SET status=(SELECT status FROM works WHERE id=?1) WHERE id=?2",params![source,target])?;
+    c.execute("UPDATE works SET status=(SELECT status FROM works WHERE id=?1),status_since=coalesce((SELECT status_since FROM works WHERE id=?1),status_since) WHERE id=?2",params![source,target])?;
     c.execute("UPDATE bangumi_links SET work_id=?2,hidden=0 WHERE work_id=?1",params![source,target])?;Ok(())
 }

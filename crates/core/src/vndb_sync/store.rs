@@ -51,5 +51,5 @@ pub fn merge(c:&Connection,source:&str,target:&str)->Result<()>{
  let link:Option<i64>=c.query_row("SELECT subject_id FROM vndb_sync_links WHERE work_id=?1",[source],|r|r.get(0)).optional()?;let Some(id)=link else{return Ok(());};
  if c.query_row("SELECT EXISTS(SELECT 1 FROM vndb_sync_links WHERE work_id=?1)",[target],|r|r.get::<_,bool>(0))?{return Err(Error("Both works have VNDB sync links. Unlink one before merging.".into()));}
  let target_vn:Option<String>=c.query_row("SELECT vndb_id FROM works WHERE id=?1",[target],|r|r.get(0))?;if target_vn.is_some_and(|v|!v.is_empty()&&v!=format!("v{id}")){return Err(Error("Cannot merge sync links for different VNDB works".into()));}
- c.execute("UPDATE works SET status=(SELECT status FROM works WHERE id=?1),personal_rating=(SELECT personal_rating FROM works WHERE id=?1) WHERE id=?2",params![source,target])?;c.execute("UPDATE vndb_sync_links SET work_id=?2,hidden=0 WHERE work_id=?1",params![source,target])?;Ok(())
+ c.execute("UPDATE works SET status=(SELECT status FROM works WHERE id=?1),personal_rating=(SELECT personal_rating FROM works WHERE id=?1),status_since=coalesce((SELECT status_since FROM works WHERE id=?1),status_since) WHERE id=?2",params![source,target])?;c.execute("UPDATE vndb_sync_links SET work_id=?2,hidden=0 WHERE work_id=?1",params![source,target])?;Ok(())
 }
