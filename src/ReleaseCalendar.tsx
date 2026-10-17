@@ -3,8 +3,14 @@ import {useTranslation} from 'react-i18next';
 import {ChevronLeft,ChevronRight} from 'lucide-react';
 import {api,type Work} from './api';
 import {CachedImage} from './CachedImage';
+import type {DiscoveryWork} from './discovery';
 
-type Release={release_id:string;vn_id:string;released:string;title:string;original_title:string;producers:string[];image:{url:string}|null;work_id?:string;status?:string};
+export type Release={release_id:string;vn_id:string;released:string;title:string;original_title:string;producers:string[];image:{url:string}|null;work_id?:string;status?:string};
+/** The reference page's first paint for a release outside the collection; it then loads the full VNDB entry. */
+export function releaseReference(release:Release):DiscoveryWork{
+ const title=release.title||release.original_title;
+ return {id:release.vn_id,title,alttitle:release.original_title&&release.original_title!==title?release.original_title:undefined,released:release.released,image:release.image?{url:release.image.url}:undefined};
+}
 type Calendar={month:string;current_month:string;window:number;fetched_at:number;expires_at:number;releases:Release[]};
 
 /** Months as `year * 12 + month - 1`, the same arithmetic Core uses for its window. */
@@ -16,7 +22,7 @@ function localMonth(){const now=new Date();return label(now.getFullYear()*12+now
  * Release calendar on the home page: VNDB releases for this month and six months either side.
  * Core caches each month for a week in a separate file; nothing here is added to the collection.
  */
-export function ReleaseCalendar({safe,titleMode,onSelect}:{safe:boolean;titleMode:'display'|'original';onSelect:(w:Work)=>void}){
+export function ReleaseCalendar({safe,titleMode,onSelect,onReference}:{safe:boolean;titleMode:'display'|'original';onSelect:(w:Work)=>void;onReference:(work:DiscoveryWork)=>void}){
  const {t,i18n}=useTranslation();
  const [month,setMonth]=useState(localMonth);
  const [data,setData]=useState<Calendar|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(true);
@@ -62,7 +68,7 @@ export function ReleaseCalendar({safe,titleMode,onSelect}:{safe:boolean;titleMod
      <span className="home-calendar-text"><strong>{title}</strong><span>{release.producers.join('、')}</span></span>
      {release.work_id&&<span className={'home-calendar-badge status-'+release.status}>{t(release.status==='backlog'?'homeCalendarWanted':'homeCalendarOwned')}</span>}
     </>;
-    return <li key={release.vn_id}>{release.work_id?<button className="home-calendar-row" onClick={()=>void open(release.work_id!)}>{body}</button>:<div className="home-calendar-row">{body}</div>}</li>;
+    return <li key={release.vn_id}>{release.work_id?<button className="home-calendar-row" onClick={()=>void open(release.work_id!)}>{body}</button>:<button className="home-calendar-row" onClick={()=>onReference(releaseReference(release))}>{body}</button>}</li>;
    })}</ol>}
   <p className="home-calendar-note">{t('homeCalendarNote')}</p>
  </section>;

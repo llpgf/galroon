@@ -11,7 +11,9 @@ import type {Work} from './api';
 import type {Person,Character,Company} from './exploration';
 import type {DiscoveryWork,DiscoveryQuery} from './discovery';
 type Frame={kind:'local';work:Work}|{kind:'reference';work:DiscoveryWork}|{kind:'search';query:DiscoveryQuery}|{kind:'person';entity:Person}|{kind:'character';entity:Character}|{kind:'company';entity:Company};
-type ExplorerProps={workKey:string;title:string;safe:boolean;canWrite:boolean;onBack:()=>void;renderLocalWork:LocalWorkRenderer};
+type ExplorerProps={workKey:string;title:string;
+ /** First paint for a VNDB work outside the collection (cover, date) before its entry loads. */
+ reference?:DiscoveryWork;safe:boolean;canWrite:boolean;onBack:()=>void;renderLocalWork:LocalWorkRenderer};
 export function ListExplorer(props:ExplorerProps){
  const {t}=useTranslation();const isLocal=props.workKey.startsWith('local:'),isProvider=/^vndb:v[1-9][0-9]{0,11}$/.test(props.workKey);
  const lookup=useOwnedWorks(isLocal?[props.workKey.slice(6)]:isProvider?[props.workKey.slice(5)]:[],true,isLocal);
@@ -22,10 +24,10 @@ export function ListExplorer(props:ExplorerProps){
  if(!current)return <section><button onClick={props.onBack}>{t('back')}</button><h1>{props.title}</h1><OwnedWorksNotice state={lookup}/></section>;
  return <>{lookup.error&&<OwnedWorksNotice state={lookup}/>}<ResolvedListExplorer key={props.workKey+':'+(current.works[0]?.id||'reference')} {...props} works={current.works}/></>;
 }
-function ResolvedListExplorer({workKey,title,works,safe,canWrite,onBack,renderLocalWork}:ExplorerProps&{works:Work[]}){
+function ResolvedListExplorer({workKey,title,reference,works,safe,canWrite,onBack,renderLocalWork}:ExplorerProps&{works:Work[]}){
  const {t}=useTranslation();const [spoilers,setSpoilers]=useState(false);const container=useRef<HTMLDivElement>(null);
  const local=works.find(w=>workKey==='local:'+w.id||workKey==='vndb:'+w.vndb_id);
- const [frames,setFrames]=useState<{view:Frame;y:number;origin:HTMLElement|null}[]>(()=>local?[{view:{kind:'local',work:local},y:0,origin:null}]:/^vndb:v[1-9][0-9]{0,11}$/.test(workKey)?[{view:{kind:'reference',work:{id:workKey.slice(5),title}},y:0,origin:null}]:[]);
+ const [frames,setFrames]=useState<{view:Frame;y:number;origin:HTMLElement|null}[]>(()=>local?[{view:{kind:'local',work:local},y:0,origin:null}]:/^vndb:v[1-9][0-9]{0,11}$/.test(workKey)?[{view:{kind:'reference',work:{...reference,id:workKey.slice(5),title}},y:0,origin:null}]:[]);
  const refreshed=useOwnedWorks(frames.flatMap(frame=>frame.view.kind==='local'?[frame.view.work.id]:[]),true,true);
  function open(view:Frame){const y=window.scrollY,origin=navigationOrigin(container.current);setFrames(old=>[...old.map((f,i)=>i===old.length-1?{...f,y}:f),{view,y:0,origin}]);requestAnimationFrame(()=>window.scrollTo(0,0));}
  function back(){if(frames.length<=1){onBack();return;}const y=frames[frames.length-2].y,origin=frames.at(-1)?.origin||null;setFrames(old=>old.slice(0,-1));requestAnimationFrame(()=>{window.scrollTo(0,y);restoreNavigationFocus(origin,container.current);});}

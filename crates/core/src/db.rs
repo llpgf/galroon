@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use std::{path::Path, sync::{Arc, Mutex}};
 pub type Db = Arc<Mutex<Connection>>;
-pub const SCHEMA_VERSION:i64=53;
+pub const SCHEMA_VERSION:i64=54;
 pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     if path.parent().is_some_and(|p|p.join("restore-incomplete").exists()) {return Err("This restore is incomplete. Restore the backup again to a new collection.".into());}
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
@@ -48,6 +48,13 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     // identified by the VNDB work plus that release. One card per (vndb_id, vndb_release).
     let has_release:bool=tx.prepare("PRAGMA table_info(works)")?.query_map([],|r|r.get::<_,String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|n|n=="vndb_release");
     if !has_release {tx.execute("ALTER TABLE works ADD COLUMN vndb_release TEXT",[])?;}
+    // Schema 54: when a work first got a play status (unix seconds). Works that already had one keep NULL.
+    let has_status_since:bool=tx.prepare("PRAGMA table_info(works)")?.query_map([],|r|r.get::<_,String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|n|n=="status_since");
+    if !has_status_since {tx.execute("ALTER TABLE works ADD COLUMN status_since INTEGER",[])?;}
+    // Every writer (edits, Bangumi/VNDB pulls, imports) goes through these, so none can forget the date.
+    // Only the step from no status to a status counts: later changes, or clearing and re-setting, keep the first date.
+    tx.execute_batch("CREATE TRIGGER IF NOT EXISTS work_status_since_update AFTER UPDATE OF status ON works WHEN OLD.status='none' AND NEW.status<>'none' AND NEW.status_since IS NULL BEGIN UPDATE works SET status_since=CAST(strftime('%s','now') AS INTEGER) WHERE id=NEW.id; END;
+    CREATE TRIGGER IF NOT EXISTS work_status_since_insert AFTER INSERT ON works WHEN NEW.status<>'none' AND NEW.status_since IS NULL BEGIN UPDATE works SET status_since=CAST(strftime('%s','now') AS INTEGER) WHERE id=NEW.id; END;")?;
     tx.execute_batch("DROP INDEX IF EXISTS work_vndb; CREATE UNIQUE INDEX IF NOT EXISTS work_vndb_release ON works(vndb_id,coalesce(vndb_release,'')) WHERE vndb_id IS NOT NULL AND vndb_id != '';")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS grouping_history(id TEXT PRIMARY KEY,kind TEXT NOT NULL,source TEXT NOT NULL,target TEXT NOT NULL,resources TEXT NOT NULL,created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS root_history(id TEXT PRIMARY KEY,root_id TEXT NOT NULL,old_path TEXT NOT NULL,new_path TEXT NOT NULL,created INTEGER NOT NULL);")?;
@@ -131,7 +138,7 @@ pub mod anyhow_result { pub type Result<T> = std::result::Result<T, Box<dyn std:
  #[test]fn schema_44_pairing_codes_become_desktop_with_public_ids(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("collection.sqlite");let db=open(&path).unwrap();
   {let c=db.lock().unwrap();c.execute_batch("DROP TABLE pairing_codes; CREATE TABLE pairing_codes(hash TEXT PRIMARY KEY,name TEXT NOT NULL,expires INTEGER NOT NULL); INSERT INTO pairing_codes VALUES('first-secret-hash','Old desktop',9999999999),('second-secret-hash','Other desktop',9999999999); PRAGMA user_version=44; UPDATE settings SET value='44' WHERE key='schema_version';").unwrap();}drop(db);
-  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,53);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
+  let db=open(&path).unwrap();let ids={let c=db.lock().unwrap();assert_eq!(SCHEMA_VERSION,54);assert_eq!(c.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA_VERSION);assert_eq!(c.query_row("SELECT value FROM settings WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),SCHEMA_VERSION.to_string());
    let mut s=c.prepare("SELECT id,role,hash FROM pairing_codes ORDER BY name").unwrap();let rows=s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();assert_eq!(rows.len(),2);for(id,role,hash)in &rows{assert!(!id.is_empty());assert_ne!(id,hash);assert_eq!(role,"desktop");}assert_ne!(rows[0].0,rows[1].0);rows};drop(db);
   let db=open(&path).unwrap();assert_eq!(db.lock().unwrap().query_row("SELECT id FROM pairing_codes WHERE name='Old desktop'",[],|r|r.get::<_,String>(0)).unwrap(),ids[0].0);
   let snapshots=std::fs::read_dir(t.path().join("migration-backups")).unwrap().collect::<std::io::Result<Vec<_>>>().unwrap();assert_eq!(snapshots.len(),1);let saved=Connection::open(snapshots[0].path()).unwrap();assert_eq!(saved.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),44);assert_eq!(saved.query_row("SELECT count(*) FROM pairing_codes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
@@ -141,6 +148,13 @@ pub mod anyhow_result { pub type Result<T> = std::result::Result<T, Box<dyn std:
 #[cfg(test)]mod play_status_migration_tests{
  use super::*;
  fn revisions(c:&Connection)->(i64,i64,i64){(crate::catalog_changes::seq(c).unwrap(),c.query_row("SELECT revision FROM smart_catalog_state",[],|r|r.get(0)).unwrap(),c.query_row("SELECT collection_revision FROM smart_catalog_state",[],|r|r.get(0)).unwrap())}
+ #[test]fn schema_53_works_keep_no_first_status_date_until_they_get_one(){
+  let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=open(&path).unwrap();
+  db.lock().unwrap().execute_batch("DROP TRIGGER work_status_since_update; DROP TRIGGER work_status_since_insert; DROP TRIGGER catalog_changed_works_UPDATE; INSERT INTO works(id,title,original_title,status) VALUES('old','Old','Old','playing'),('fresh','Fresh','Fresh','none'); ALTER TABLE works DROP COLUMN status_since; PRAGMA user_version=53;").unwrap();drop(db);
+  let db=open(&path).unwrap();let c=db.lock().unwrap();let since=|id:&str|c.query_row("SELECT status_since FROM works WHERE id=?1",[id],|r|r.get::<_,Option<i64>>(0)).unwrap();
+  assert_eq!((since("old"),since("fresh")),(None,None));
+  c.execute_batch("UPDATE works SET status='completed' WHERE id='old'; UPDATE works SET status='backlog' WHERE id='fresh';").unwrap();assert_eq!(since("old"),None);assert!(since("fresh").is_some());
+ }
  #[test]fn schema_52_migrates_only_unsynced_backlog_and_changes_the_default(){
   let t=tempfile::tempdir().unwrap();let path=t.path().join("library.sqlite");let db=open(&path).unwrap();let before={let c=db.lock().unwrap();
    c.execute_batch("INSERT INTO works(id,title,original_title,status,overrides) VALUES('plain','Plain','Plain','backlog','{\"status\":\"backlog\",\"notes\":\"keep\"}'),('bgm','Bangumi','Bangumi','backlog','{\"status\":\"backlog\"}'),('vn','VNDB','VNDB','backlog','{}'),('unbased','Unbased','Unbased','backlog','{}'),('playing','Playing','Playing','playing','{}'),('merged','Merged','Merged','backlog','{}'); UPDATE works SET merged_into='playing' WHERE id='merged'; INSERT INTO bangumi_links(work_id,subject_id,base_status) VALUES('bgm',1,1),('unbased',2,NULL); INSERT INTO vndb_sync_links(work_id,subject_id,base_status) VALUES('vn',1,5); INSERT INTO bangumi_remote VALUES(2,1,'{}');").unwrap();

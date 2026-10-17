@@ -18,8 +18,8 @@ beforeEach(async()=>{
 });
 afterEach(()=>vi.unstubAllGlobals());
 it('keeps five home columns and adds the no-status count link',()=>{
- const html=renderToStaticMarkup(<HomePanel generation={0} safe titleMode="display" onSelect={noop} onCollection={noop}/>);
- expect(html).toContain('無狀態 1 部');expect(html.match(/role="tab"/g)).toHaveLength(5);expect(html).not.toContain('home-tab-none');expect(html).toContain('想玩');
+ const html=renderToStaticMarkup(<HomePanel generation={0} safe titleMode="display" onSelect={noop} onCollection={noop} onReference={noop}/>);
+ expect(html).toContain('無狀態 1 部');expect(html.match(/class="home-column column-/g)).toHaveLength(5);expect(html).not.toContain('column-none');expect(html).not.toContain('home-tab-none');expect(html).toContain('想玩');
 });
 it('offers no status as a collection segment and badges only the explicit status',()=>{
  const html=renderToStaticMarkup(<LibraryBrowser generation={0} query="" setQuery={noop} status="none" setStatus={noop} safe canWrite onAdd={noop} onSource={noop} onSelect={noop} onStudio={noop} titleMode="display" setTitleMode={noop}/>);
