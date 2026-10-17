@@ -144,6 +144,8 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/bangumi/settings",post(bangumi::settings))
     .route("/api/bangumi/link",post(bangumi::link))
     .route("/api/bangumi/hide",post(bangumi::hide))
+    .route("/api/bangumi/vndb",post(bangumi::vndb::set))
+    .route("/api/bangumi/vndb/{work_id}",get(bangumi::vndb::get))
     .route("/api/context",get(context::get).post(context::update))
     .route("/api/release-calendar",get(release_calendar::get)).route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))
