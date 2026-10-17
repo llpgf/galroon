@@ -1,12 +1,12 @@
 import {useEffect,useState} from 'react';
 import {useTranslation} from 'react-i18next';
 import {api,readApi} from './api';
-import {bangumiStatus,bangumiChoice,defaultBangumiAction,type BangumiRow,type BangumiState} from './bangumi';
+import {bangumiStatus,bangumiLocalStatus,bangumiChoice,defaultBangumiAction,type BangumiRow,type BangumiState} from './bangumi';
 
 export function BangumiRows({rows,choices,onChoice,onRestore,busy}:{rows:BangumiRow[];choices:Record<string,string>;onChoice:(row:BangumiRow,value:string)=>void;onRestore:(row:BangumiRow)=>void;busy:boolean}){
  const {t}=useTranslation();
  return <div className="bgm-rows">{rows.map(row=><article className="bgm-row" key={row.subject_id}>
-  <div><a href={`https://bgm.tv/subject/${row.subject_id}`} target="_blank" rel="noreferrer">{row.title}</a><p>{t('bgmKind_'+row.kind+(row.kind==='match'&&row.suggested?'_suggested':''))}</p><small>{t('bgmLocal')}: {t(bangumiStatus(row.local))} · Bangumi: {t(bangumiStatus(row.remote))}</small></div>
+  <div><a href={`https://bgm.tv/subject/${row.subject_id}`} target="_blank" rel="noreferrer">{row.title}</a><p>{t('bgmKind_'+row.kind+(row.kind==='match'&&row.suggested?'_suggested':''))}</p><small>{t('bgmLocal')}: {t(bangumiLocalStatus(row.local))} · Bangumi: {t(bangumiStatus(row.remote))}</small></div>
   {row.kind==='hidden'?<button disabled={busy} onClick={()=>onRestore(row)}>{t('bgmRestore')}</button>:row.kind==='same'?<span className="pill">{t('bgmKind_same')}</span>:<select disabled={busy} aria-label={t('bgmChooseFor',{title:row.title})} value={choices[row.fingerprint]??defaultBangumiAction(row)} onChange={e=>onChoice(row,e.target.value)}>
    <option value="">{t(row.kind==='cleared'?'bgmIgnoreCleared':'bgmLeave')}</option>
    {row.work_id?<>{row.local!==0&&<option value="local">{t(row.remote===null?'bgmCreateRemote':'bgmUseLocal')}</option>}{row.remote!==null&&<option value="remote">{t(row.kind==='cleared'?'bgmUseRemoteCleared':'bgmUseRemote')}</option>}</>:<><option value="import">{t('bgmImportCard')}</option>{row.candidates.map(candidate=><option key={candidate.id} value={'match:'+candidate.id}>{t('bgmMatch',{title:candidate.title})}</option>)}<option value="skip">{t('bgmIgnore')}</option></>}
