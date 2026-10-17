@@ -201,3 +201,20 @@ async fn server(mock:Mock)->(remote::Client,tokio::task::JoinHandle<()>){
     assert_eq!((row(5).candidates.len(),row(5).suggested.as_ref()),(2,None),"a tie is left to the user");
     assert!(automatic_choices(rows.clone()).iter().all(|choice|choice.action!="match"));
 }
+#[tokio::test]async fn one_batch_links_editions_that_were_candidates_for_each_other(){
+    let(_t,a,mut account)=fixture();
+    {let c=a.db.lock().unwrap();c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('nat','Amanatsu','アマナツ'),('natp','Amanatsu+','アマナツ＋')").unwrap();}
+    let named=|id:i64,name:&str|{let mut row=collection(id,2);row.subject.name=name.into();row};
+    let mock=Mock::new(vec![named(1,"アマナツ"),named(2,"アマナツ+")]);let(client,task)=server(mock.clone()).await;fetch(&a,&mut account,&client).await.unwrap();
+    let picked=|id:i64|{let mut c=choice(&a,id,"match");c.work_id=store::rows(&a.db.lock().unwrap(),"full").unwrap().into_iter().find(|r|r.subject_id==id).unwrap().suggested;c};
+    let (first,second)=(picked(1),picked(2));assert_eq!((first.work_id.as_deref(),second.work_id.as_deref()),(Some("nat"),Some("natp")));
+    let results=apply_choices(&a,&mut account,&client,&[first,second]).await.unwrap();
+    assert!(results.iter().all(|r|r["ok"]==true),"{results:?}");assert!(account.error.is_empty());
+    let linked=|id:&str|a.db.lock().unwrap().query_row("SELECT subject_id FROM bangumi_links WHERE work_id=?1",[id],|r|r.get::<_,i64>(0)).unwrap();
+    assert_eq!((linked("nat"),linked("natp")),(1,2));
+    // The candidate check still rejects a work that an earlier choice in the batch already took.
+    {let c=a.db.lock().unwrap();c.execute_batch("DELETE FROM bangumi_links").unwrap();}
+    let (first,mut stale)=(picked(1),picked(2));stale.work_id=Some("nat".into());
+    let results=apply_choices(&a,&mut account,&client,&[first,stale]).await.unwrap();assert_eq!((results[0]["ok"].clone(),results[1]["ok"].clone()),(json!(true),json!(false)));
+    task.abort();
+}

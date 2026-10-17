@@ -27,7 +27,12 @@ pub struct Candidate {pub id:String,pub title:String}
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Row {pub subject_id:i64,pub title:String,pub work_id:Option<String>,pub local:Option<i64>,pub remote:Option<i64>,pub base:Option<i64>,pub revision:Option<i64>,pub kind:String,pub candidates:Vec<Candidate>,#[serde(default)] pub suggested:Option<String>,pub fingerprint:String}
 impl Row {
-    fn seal(&mut self)->Result<()> {self.fingerprint.clear();self.fingerprint=hex::encode(Sha256::digest(serde_json::to_vec(self)?));Ok(())}
+    // Candidates and the pre-selection are derived from the other unlinked works, so linking one subject in a batch
+    // must not invalidate the next row ("アマナツ" then "アマナツ＋"). A match re-checks that its work is still a candidate.
+    fn seal(&mut self)->Result<()> {
+        let mut stable=self.clone();stable.fingerprint.clear();stable.candidates.clear();stable.suggested=None;
+        self.fingerprint=hex::encode(Sha256::digest(serde_json::to_vec(&stable)?));Ok(())
+    }
 }
 pub fn classify(local:i64,remote:Option<i64>,base:Option<i64>)->&'static str {
     match (remote,base) {
