@@ -667,7 +667,7 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 .character-role.role-main,.character-role.role-primary{background:var(--accent-soft);color:var(--accent)}
 .character-voices{align-self:end;display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:14px;background:var(--fill-2)}
 .cv-label{font-size:11px;font-weight:700;color:var(--pink)}
-.character-link .explore-art img{object-fit:contain;object-position:center bottom}
+.character-link .explore-art img{object-fit:cover;object-position:center top}
 .character-card:hover .explore-art{transform:scale(1.03)}
 .character-name strong{display:block;font-weight:700;font-size:20px;line-height:1.2;letter-spacing:-.01em}
 .character-link:hover .character-name strong{color:var(--accent)}
@@ -780,7 +780,7 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 .profile-character-link:hover{background:transparent}
 .profile-character-link:hover strong{color:var(--accent)}
 .profile-character-link .explore-art{width:64px;height:96px;flex-shrink:0;border-radius:10px}
-.profile-character-link .explore-art img{object-fit:contain;object-position:center bottom}
+.profile-character-link .explore-art img{object-fit:cover;object-position:center top}
 .profile-character-link span{min-width:0}
 .profile-character-link strong{font-size:13.5px;font-weight:600;display:block}
 .profile-character-link small{font-size:12px;display:block;color:var(--muted);margin-top:3px}
