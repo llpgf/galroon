@@ -1,1 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#202820"/><path d="M63 61h65c27 0 47 16 47 43v84h-63c-19 0-35 6-49 16V61Z" fill="#c2d3a2"/><path d="M87 85h38c16 0 27 9 27 25v52h-34c-12 0-22 2-31 5V85Z" fill="#202820"/><path d="M182 76v130h-64" fill="none" stroke="#7e9867" stroke-width="12"/><circle cx="194" cy="48" r="11" fill="#c2d3a2"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="16%" y1="8%" x2="86%" y2="94%">
+      <stop offset="0%" stop-color="#64c8ff"/>
+      <stop offset="48%" stop-color="#0a84ff"/>
+      <stop offset="100%" stop-color="#0050c8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="28%" cy="18%" r="65%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="tint" cx="85%" cy="88%" r="55%">
+      <stop offset="0%" stop-color="#5e5ce6" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#5e5ce6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.46"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="25%" y1="15%" x2="75%" y2="95%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e3f1ff"/>
+    </linearGradient>
+    <filter id="shadow" filterUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#002466" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <rect width="256" height="256" rx="58" fill="url(#glow)"/>
+  <rect width="256" height="256" rx="58" fill="url(#tint)"/>
+  <rect x="2" y="2" width="252" height="252" rx="56" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <g filter="url(#shadow)">
+    <path d="M156 84.5A60 60 0 1 0 182 134H132" fill="none" stroke="url(#mark)" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M194 38Q194 57 218 62Q194 67 194 86Q194 67 170 62Q194 57 194 38Z" fill="#ffffff"/>
+  </g>
+</svg>
