@@ -6,6 +6,7 @@ import {invoke,isTauri} from '@tauri-apps/api/core';
 export type Session={url:string;token:string;remote?:boolean;proxy_url?:string;proxy_key?:string;library_id?:string;device_id?:string;api_min?:number;api_max?:number};
 export const isDesktop=isTauri();
 let session:Session|undefined;
+export function isLocalDesktop(){return isDesktop&&!session?.remote;}
 let epoch=0,changing=false,stopRequested=false,everConnected=false;
 function bumpEpoch(){epoch++;clearClientArtwork();}
 export type ConnectionPhase='idle'|'connecting'|'connected'|'offline'|'reconnecting'|'restoring'|'stopping'|'stopped'|'collection_changed'|'incompatible'|'repair_required';
@@ -77,6 +78,8 @@ export function collectionStorageKey(name:string){return `galroon.${session?.lib
 export function setSession(s:Session){clearRetry();session=s;bumpEpoch();stopRequested=false;retryDelay=500;if(isDesktop){everConnected=true;phase('connected');}}
 export function readApi<T=unknown>(path:string,signal:AbortSignal):Promise<T>{return request<T>(path,undefined,signal);}
 export function api<T=unknown>(path:string,body?:unknown):Promise<T>{return request<T>(path,body);}
+export function deleteApi<T=unknown>(path:string):Promise<T>{return request<T>(path,undefined,undefined,'DELETE');}
+export async function coreHealth(signal?:AbortSignal):Promise<boolean>{try{const response=await fetch(`${coreUrl()}/api/health`,{signal,credentials:'omit'});return response.ok;}catch{return false;}}
 async function ipcResponse(current:Session,path:string,method:string,body:unknown,signal?:AbortSignal):Promise<Response>{
  if(current.proxy_url)return fetch(`${current.proxy_url}${path}`,{method,signal,credentials:'omit',headers:{'Authorization':`Bearer ${current.proxy_key}`,'Content-Type':'application/json','X-Galroon-Library':current.library_id!,'X-Galroon-Device':current.device_id!},body:body===undefined?undefined:JSON.stringify(body)});
  if(signal?.aborted)throw new DOMException('Request cancelled','AbortError');
@@ -117,16 +120,16 @@ export async function artworkBlob(url:string,signal:AbortSignal):Promise<Blob>{
 export function previewGrouping<T=unknown>(id:string,selection:unknown,signal:AbortSignal):Promise<T>{return request<T>(`/resources/${encodeURIComponent(id)}/regroup/preview/page`,selection,signal);}
 export function previewRules<T=unknown>(definition:unknown,signal:AbortSignal):Promise<T>{return request<T>('/smart-lists/preview',definition,signal);}
 export function computeRules<T=unknown>(id:string,body:{revision:number;request_id:string},signal:AbortSignal):Promise<T>{return request<T>(`/smart-lists/${encodeURIComponent(id)}/compute`,body,signal);}
-async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):Promise<T>{
- const readOnly=body===undefined||path==='/smart-lists/preview'||/^\/resources\/[^/]+\/regroup\/preview(?:\/page)?$/.test(path);
+async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal,method:'GET'|'POST'|'DELETE'=body===undefined?'GET':'POST'):Promise<T>{
+ const readOnly=method==='GET'||path==='/smart-lists/preview'||/^\/resources\/[^/]+\/regroup\/preview(?:\/page)?$/.test(path);
  if(callerSignal?.aborted)throw new DOMException('Request cancelled','AbortError');
  if(stopRequested&&connection.phase==='repair_required')throw new RepairRequiredError();
  if(changing)throw new SessionChangedError();if(isDesktop&&connection.phase!=='connected')throw new ConnectionLostError();
  if(!session)throw new Error('Core is not connected');const started=epoch,current=session;
  const stale=()=>{if(changing||started!==epoch)throw readOnly?new SessionChangedError():new UncertainOperationError();};
- let response:Response,data:any;const controller=body===undefined?new AbortController():undefined;const timeout=controller?setTimeout(()=>controller.abort(),path.includes('/exploration')||path.startsWith('/people/')||path.startsWith('/characters/')||path.startsWith('/companies/')||path.startsWith('/discover?')?60000:15000):undefined;
+ let response:Response,data:any;const controller=method==='GET'?new AbortController():undefined;const timeout=controller?setTimeout(()=>controller.abort(),path.includes('/exploration')||path.startsWith('/people/')||path.startsWith('/characters/')||path.startsWith('/companies/')||path.startsWith('/discover?')?60000:15000):undefined;
  const abort=()=>controller?.abort();callerSignal?.addEventListener('abort',abort,{once:true});
- try{response=current.remote?await ipcResponse(current,`/api${path}`,body===undefined?'GET':'POST',body,controller?.signal||callerSignal):await fetch(`${current.url}/api${path}`,{signal:controller?.signal||callerSignal,method:body===undefined?'GET':'POST',credentials:current.token?'omit':'include',headers:{'Content-Type':'application/json',...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})},body:body===undefined?undefined:JSON.stringify(body)});data=await response.json();}
+ try{response=current.remote?await ipcResponse(current,`/api${path}`,method,body,controller?.signal||callerSignal):await fetch(`${current.url}/api${path}`,{signal:controller?.signal||callerSignal,method,credentials:current.token?'omit':'include',headers:{'Content-Type':'application/json',...(current.token?{'Authorization':`Bearer ${current.token}`}:{}),...(current.library_id?{'X-Galroon-Library':current.library_id}:{}),...(current.device_id?{'X-Galroon-Device':current.device_id}:{})},body:body===undefined?undefined:JSON.stringify(body)});data=await response.json();}
  catch(error){if(callerSignal?.aborted)throw error;stale();if(String(error)==='credential_invalid')throw repairRequired();if(String(error).startsWith('409 collection_changed')){collectionChanged();throw new CollectionChangedError();}if(isDesktop){lostConnection();throw readOnly?new ConnectionLostError():new UncertainOperationError();}throw error;}finally{if(timeout!==undefined)clearTimeout(timeout);callerSignal?.removeEventListener('abort',abort);}
  stale();
  if(data?.code==='collection_changed'){collectionChanged();throw new CollectionChangedError();}
@@ -137,7 +140,7 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal):P
  if(response.status===401){if(data?.code==='credential_invalid')throw repairRequired();if(isDesktop){lostConnection();throw new ConnectionLostError();}throw new AuthenticationError();}
  if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status,data.code);return data as T;
 }
-export async function folder():Promise<string|null>{if(!isTauri())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
+export async function folder():Promise<string|null>{if(!isLocalDesktop())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};
 export interface Work{status_since?:number|null;personal_rating?:number|null;vndb_sync_id?:number|null;vndb_sync_hidden?:boolean;bangumi_id?:number|null;bangumi_hidden?:boolean;added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number;
  /** Set on a remake card: the VNDB release it was identified by. */vndb_release?:string|null;
