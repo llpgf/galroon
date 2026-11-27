@@ -88,6 +88,38 @@ it.each(['filters','sort','status'] as const)('collection resets when %s changes
  state=render(usePage);expect(state.pageIndex).toBe(0);expect(state.data).toBeNull();
 });
 
+describe('collection page size and infinite scroll',()=>{
+ it('passes non-default limit and omits limit for 60',async()=>{
+  let limit=150;const usePage=()=>useCollectionPage(query,0,limit,false);
+  mock.readApi.mockResolvedValueOnce(page(['a'],'c2',300));render(usePage);await settle(usePage);
+  expect(mock.readApi.mock.lastCall?.[0]).toContain('limit=150');
+  limit=60;mock.readApi.mockResolvedValueOnce(page(['b'],null,10));render(usePage);await settle(usePage);
+  expect(mock.readApi.mock.lastCall?.[0]).not.toContain('limit=');
+ });
+ it('appends pages in infinite mode, refreshes loaded window atomically, and resets on query change',async()=>{
+  let generation=0,request=query;const usePage=()=>useCollectionPage(request,generation,100,true);
+  mock.readApi.mockResolvedValueOnce(page(['w1','w2'],'c2',4));render(usePage);let state=await settle(usePage);
+  expect(state.data?.items.map(w=>w.id)).toEqual(['w1','w2']);expect(mock.readApi.mock.lastCall?.[0]).toContain('limit=100');
+  mock.readApi.mockResolvedValueOnce(page(['w3','w4'],null,4));state.loadMore();render(usePage);state=await settle(usePage);
+  expect(state.data?.items.map(w=>w.id)).toEqual(['w1','w2','w3','w4']);expect(state.data?.next).toBeNull();
+  // Background refresh re-reads both loaded pages atomically.
+  mock.readApi.mockResolvedValueOnce(page(['w1','w2'],'c2-new',4)).mockResolvedValueOnce(page(['w3','w5'],null,4));
+  generation++;render(usePage);state=await settle(usePage);
+  expect(state.data?.items.map(w=>w.id)).toEqual(['w1','w2','w3','w5']);
+  // Changing sort resets the accumulated stream.
+  request={...query,sort:'newest'};mock.readApi.mockResolvedValueOnce(page(['latest'],null,1));
+  state=render(usePage);expect(state.data).toBeNull();state=await settle(usePage);
+  expect(state.data?.items.map(w=>w.id)).toEqual(['latest']);
+ });
+ it('restarts infinite stream from page one when a loadMore cursor is stale',async()=>{
+  const usePage=()=>useCollectionPage(query,0,100,true);
+  mock.readApi.mockResolvedValueOnce(page(['w1'],'c2',2));render(usePage);let state=await settle(usePage);
+  mock.readApi.mockRejectedValueOnce(new Error('Collection or filters changed. Reload before continuing.')).mockResolvedValueOnce(page(['fresh'],null,1));
+  state.loadMore();render(usePage);state=await settle(usePage);
+  expect(state.restarted).toBe(true);expect(state.data?.items.map(w=>w.id)).toEqual(['fresh']);
+ });
+});
+
 describe('issues loaded window',()=>{
  const issuePage=(ids:number[],next:number|null)=>({items:ids.map(id=>({id,title:'Issue '+id})),next});
  it('refreshes every loaded page atomically with fresh cursors, adding and removing issues',async()=>{

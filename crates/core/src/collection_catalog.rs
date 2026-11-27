@@ -8,12 +8,15 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc,Mutex,OnceLock,atomic::{AtomicBool,Ordering}};
 
+const DEFAULT_PAGE_SIZE: usize = 60;
+const MAX_PAGE_SIZE: usize = 200;
+fn default_page_size() -> usize { DEFAULT_PAGE_SIZE }
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Request { query: Option<String>, before: Option<String> }
+pub struct Request { query: Option<String>, before: Option<String>, limit: Option<usize> }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Cursor { library: String, revision: i64, query: String, roots: String, offset: usize }
+struct Cursor { library: String, revision: i64, query: String, roots: String, offset: usize, #[serde(default = "default_page_size")] limit: usize }
 type Roots = BTreeMap<String, bool>;
 struct View { ids:Vec<String>, metadata:Value, bytes:usize, created:std::time::Instant }
 // Only compact result identities and facets are retained, never complete Work bodies.
@@ -48,8 +51,7 @@ fn read_entries(c: &Connection, roots: &Roots,cancelled:&dyn Fn()->bool) -> Resu
         let tags=filter::tag_names(&serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or_default());
         let aliases=serde_json::from_str::<Vec<String>>(&r.get::<_,String>(8)?).unwrap_or_default();
         let search=filter::fold(&[vec![title.clone(),original.clone(),studio.clone()],aliases,tags.clone()].concat().join(" "));
-        let year=if released.as_bytes().get(..4).is_some_and(|s|s[0]>=b'1'&&s[0]<=b'9'&&s.iter().all(u8::is_ascii_digit)) { released[..4].to_owned() } else { String::new() };
-        let released=if year.is_empty() {String::new()} else {released};
+        let (year,released)=parse_released(&released);
         Ok(Entry{id:r.get(0)?,title,original,studio:studio.trim().to_owned(),year,released,status_since:r.get(11)?,tags,status:r.get(6)?,favorite:r.get::<_,i64>(7)?==1,search,added:r.get(9)?,rating:r.get(10)?,..Default::default()})
     })?.map(|row|{check(cancelled)?;row.map_err(ApiError::from)}).collect::<Result<Vec<_>,ApiError>>()?;
     let index=entries.iter().enumerate().map(|(i,e)|(e.id.clone(),i)).collect::<BTreeMap<_,_>>();
@@ -81,16 +83,34 @@ fn collator(locale: &str, numeric: bool, primary: bool) -> Result<icu_collator::
     if primary {options.strength=Some(icu_collator::options::Strength::Primary);}
     icu_collator::Collator::try_new(prefs,options).map_err(|e|ApiError(e.to_string()))
 }
+fn parse_released(raw: &str) -> (String, String) {
+    let s=raw.trim();
+    let Some(year_str)=s.get(..4).filter(|y|y.as_bytes()[0]>=b'1'&&y.as_bytes()[0]<=b'9'&&y.bytes().all(|b|b.is_ascii_digit())) else {
+        return (String::new(),String::new());
+    };
+    let year=year_str.to_owned();
+    let mut parts=s[4..].strip_prefix(['-','/','.']).into_iter().flat_map(|r|r.split(['-','/','.']));
+    let Some(month)=parts.next().filter(|p|(1..=2).contains(&p.len())&&p.bytes().all(|b|b.is_ascii_digit())).and_then(|p|p.parse::<u8>().ok()).filter(|m|(1..=12).contains(m)) else {
+        return (year.clone(),year);
+    };
+    let day=parts.next().filter(|p|(1..=2).contains(&p.len())&&p.bytes().all(|b|b.is_ascii_digit())).and_then(|p|p.parse::<u8>().ok()).filter(|d|(1..=31).contains(d));
+    let released=match day { Some(d)=>format!("{year}-{month:02}-{d:02}"), None=>format!("{year}-{month:02}") };
+    (year,released)
+}
 fn sorted<'a>(entries: &'a [Entry], q: &Query) -> Result<Vec<&'a Entry>, ApiError> {
     let order=collator(&q.locale,true,true)?;let folded_query=filter::fold(&q.query);
     let mut visible=entries.iter().filter(|e|filter::matches(e,q,&folded_query)).collect::<Vec<_>>();
     visible.sort_by(|a,b| {
-        let primary=match q.sort.as_str() {"added"=>b.added.cmp(&a.added),"newest"=>b.year.parse::<u16>().unwrap_or(0).cmp(&a.year.parse().unwrap_or(0)),"oldest"=>a.year.parse::<u16>().unwrap_or(9999).cmp(&b.year.parse().unwrap_or(9999)),
+        let primary=match q.sort.as_str() {
+            "added"=>b.added.cmp(&a.added),
             // Newest first; works without a date go last. Partial dates sort as strings ("2004" after "2004-04-28").
-            "released"=>a.released.is_empty().cmp(&b.released.is_empty()).then_with(||b.released.cmp(&a.released)),
+            "newest"|"released"=>a.released.is_empty().cmp(&b.released.is_empty()).then_with(||b.released.cmp(&a.released)),
+            // Oldest first; works without a date still go last.
+            "oldest"=>a.released.is_empty().cmp(&b.released.is_empty()).then_with(||a.released.cmp(&b.released)),
             // Most recent first status first; works with no recorded date follow in the order they joined the collection.
             "status_changed"=>a.status_since.is_none().cmp(&b.status_since.is_none()).then_with(||b.status_since.cmp(&a.status_since)).then_with(||b.added.cmp(&a.added)),
-            _=>std::cmp::Ordering::Equal};
+            _=>std::cmp::Ordering::Equal
+        };
         primary.then_with(||order.compare(a.title(&q.title_mode),b.title(&q.title_mode))).then_with(||a.id.cmp(&b.id))
     });Ok(visible)
 }
@@ -99,16 +119,18 @@ fn view_token(c:&Connection, roots:&Roots, q:&Query)->Result<String,ApiError> {
     digest(&(crate::context::library(c)?.id,revision,q,roots))
 }
 pub fn page(c: &Connection, roots: &Roots, q: &Query, before: Option<&str>) -> Result<Value, ApiError> {
-    page_cached(c,roots,q,before,None,&||false)
+    page_cached(c,roots,q,before,None,None,&||false)
 }
-fn render(c:&Connection,view:&View,offset:usize,next:Option<String>,cancelled:&dyn Fn()->bool)->Result<Value,ApiError> {
+fn render(c:&Connection,view:&View,offset:usize,page_size:usize,next:Option<String>,cancelled:&dyn Fn()->bool)->Result<Value,ApiError> {
     if offset>0&&offset>=view.ids.len() {return Err(ApiError("Invalid collection cursor".into()));}
-    let mut items=Vec::new();for id in view.ids.iter().skip(offset).take(60) {check(cancelled)?;items.push(crate::work_catalog::one(c,id)?.ok_or_else(||ApiError("Collection changed. Reload before continuing.".into()))?);}
+    let mut items=Vec::new();for id in view.ids.iter().skip(offset).take(page_size) {check(cancelled)?;items.push(crate::work_catalog::one(c,id)?.ok_or_else(||ApiError("Collection changed. Reload before continuing.".into()))?);}
     let mut value=view.metadata.clone();value["items"]=json!(items);value["next"]=json!(next);value["offset"]=json!(offset);Ok(value)
 }
-fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:Option<&str>,cancelled:&dyn Fn()->bool)->Result<Value,ApiError> {
+fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,limit:Option<usize>,instance:Option<&str>,cancelled:&dyn Fn()->bool)->Result<Value,ApiError> {
     check(cancelled)?;
     q.validate().map_err(ApiError)?;
+    let page_size=limit.unwrap_or(DEFAULT_PAGE_SIZE);
+    if page_size==0||page_size>MAX_PAGE_SIZE { return Err(ApiError("Invalid collection page size".into())); }
     let labels=collator(&q.locale,false,false)?;
     let library=crate::context::library(c)?.id;
     let revision:i64=c.query_row("SELECT revision FROM smart_catalog_state WHERE singleton=1",[],|r|r.get(0))?;
@@ -118,12 +140,12 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     let offset=if let Some(raw)=before {
         if raw.len()>512 { return Err(ApiError("Invalid collection cursor".into())); }
         let cursor:Cursor=serde_json::from_str(raw).map_err(|_|ApiError("Invalid collection cursor".into()))?;
-        if cursor.library!=library||cursor.revision!=collection_revision||cursor.query!=query_hash||cursor.roots!=root_hash { return Err(ApiError("Collection or filters changed. Reload before continuing.".into())); }
-        if cursor.offset==0||cursor.offset%60!=0 { return Err(ApiError("Invalid collection cursor".into())); }cursor.offset
+        if cursor.library!=library||cursor.revision!=collection_revision||cursor.query!=query_hash||cursor.roots!=root_hash||cursor.limit!=page_size { return Err(ApiError("Collection or filters changed. Reload before continuing.".into())); }
+        if cursor.offset==0||cursor.offset%page_size!=0 { return Err(ApiError("Invalid collection cursor".into())); }cursor.offset
     } else {0};
     let token=view_token(c,roots,q)?;let cache_key=instance.map(|id|format!("{id}:{token}"));
-    let continuation=|count:usize|->Result<Option<String>,ApiError>{if count.saturating_sub(offset)>60 {Ok(Some(serde_json::to_string(&Cursor{library:library.clone(),revision:collection_revision,query:query_hash.clone(),roots:root_hash.clone(),offset:offset+60}).map_err(|e|ApiError(e.to_string()))?))}else{Ok(None)}};
-    if let Some(view)=cache_key.as_deref().and_then(cached) {return render(c,&view,offset,continuation(view.ids.len())?,cancelled);}
+    let continuation=|count:usize|->Result<Option<String>,ApiError>{if count.saturating_sub(offset)>page_size {Ok(Some(serde_json::to_string(&Cursor{library:library.clone(),revision:collection_revision,query:query_hash.clone(),roots:root_hash.clone(),offset:offset+page_size,limit:page_size}).map_err(|e|ApiError(e.to_string()))?))}else{Ok(None)}};
+    if let Some(view)=cache_key.as_deref().and_then(cached) {return render(c,&view,offset,page_size,continuation(view.ids.len())?,cancelled);}
     let mut trace=BuildTrace::start(cancelled);
     let entries=read_entries(c,roots,cancelled)?;
     let total=entries.len();
@@ -154,7 +176,7 @@ fn page_cached(c:&Connection,roots:&Roots,q:&Query,before:Option<&str>,instance:
     let metadata=json!({"total":total,"filtered":filtered,"revision":revision,"library_id":library,"view_token":token,"options":options,"tag_counts":tag_counts,"studio_counts":studio_counts,"year_counts":year_counts,"language_counts":language_counts,"availability_counts":availability_counts,"rating_counts":rating_counts,"favorite_count":favorites,"status_counts":statuses,"custom_tags":custom_tags});
     let bytes=ids.iter().map(|id|id.capacity()+std::mem::size_of::<String>()).sum::<usize>()+metadata.to_string().len()*2;
     let view=Arc::new(View{ids,metadata,bytes,created:std::time::Instant::now()});
-    let result=render(c,&view,offset,continuation(filtered)?,cancelled)?;if let Some(key)=cache_key {retain(key,view);}trace.complete=true;Ok(result)
+    let result=render(c,&view,offset,page_size,continuation(filtered)?,cancelled)?;if let Some(key)=cache_key {retain(key,view);}trace.complete=true;Ok(result)
 }
 fn observed<T>(app:&App, action:impl FnOnce(&Connection,&Roots)->Result<T,ApiError>)->Result<T,ApiError> {
     let mut read=Connection::open_with_flags(app.state_dir.join("library.sqlite"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -183,7 +205,7 @@ pub async fn get(State(app): State<App>, headers: HeaderMap, HttpQuery(request):
     let query=if let Some(raw)=request.query { if raw.len()>32768 {return Err(ApiError("Collection query is too long".into()));}serde_json::from_str::<Query>(&raw).map_err(|_|ApiError("Invalid collection query".into()))? }else{Query::default()};
     query.validate().map_err(ApiError)?;
     // Filesystem checks and collation run off the async executor. Never hold the catalog lock during I/O.
-    let instance=app.instance_id.clone();run_observed(app,move|c,roots,cancelled|page_cached(c,roots,&query,request.before.as_deref(),Some(&instance),cancelled)).await
+    let instance=app.instance_id.clone();run_observed(app,move|c,roots,cancelled|page_cached(c,roots,&query,request.before.as_deref(),request.limit,Some(&instance),cancelled)).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -295,19 +317,57 @@ pub async fn selection(State(app):State<App>,headers:HeaderMap,Json(request):Jso
         assert_eq!(ids(&q),["imported","second","first","plain","later","legacy"]);
         assert_eq!(read(&c,&roots,&q,None)["items"][2]["status_since"],100);
         q.sort="released".into();assert_eq!(ids(&q),["second","first","legacy","imported","later","plain"]);
+        q.sort="newest".into();assert_eq!(ids(&q),["second","first","legacy","imported","later","plain"]);
+        q.sort="oldest".into();assert_eq!(ids(&q),["legacy","first","second","imported","later","plain"]);
         q.sort="bogus".into();assert!(page(&c,&roots,&q,None).is_err());
+    }
+    #[test] fn newest_and_oldest_sort_by_full_release_date_with_normalization() {
+        let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+        // Titles intentionally run opposite to release dates within 2024 so year-only sorting would scramble them.
+        c.execute_batch("INSERT INTO works(id,title,original_title,released) VALUES
+            ('jan','Zeta','','2024-01-26'),
+            ('may','Delta','',' 2024-5-1 '),
+            ('oct','Charlie','','2024/10/02'),
+            ('nov_early','Bravo','','2024-11-05'),
+            ('nov_late','Alpha','','2024-11-28'),
+            ('year_only','Omega','','2024'),
+            ('month_only','Sigma','','2024-11'),
+            ('tba','Aa Undated','','TBA'),
+            ('empty','Ab Empty','','');").unwrap();
+        let roots=Roots::new();
+        let ids=|sort:&str|{let mut q=Query::default();q.sort=sort.into();read(&c,&roots,&q,None)["items"].as_array().unwrap().iter().map(|w|w["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>()};
+        assert_eq!(ids("newest"),["nov_late","nov_early","month_only","oct","may","jan","year_only","tba","empty"]);
+        assert_eq!(ids("released"),["nov_late","nov_early","month_only","oct","may","jan","year_only","tba","empty"]);
+        assert_eq!(ids("oldest"),["year_only","jan","may","oct","month_only","nov_early","nov_late","tba","empty"]);
     }
     #[test] fn cache_keeps_only_identities_and_cancelled_reads_never_publish_partial_views() {
         let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
         for i in 0..125 {c.execute("INSERT INTO works(id,title,original_title,description) VALUES(?1,'Generated','','Large description must not be cached')",[format!("w{i}")]).unwrap();}
         let roots=Roots::new();let q=Query::default();let instance=crate::db::id();
-        let first=page_cached(&c,&roots,&q,None,Some(&instance),&||false).unwrap_or_else(|e|panic!("{}",e.0));
+        let first=page_cached(&c,&roots,&q,None,None,Some(&instance),&||false).unwrap_or_else(|e|panic!("{}",e.0));
         let key=format!("{instance}:{}",first["view_token"].as_str().unwrap());let view=cached(&key).unwrap();assert_eq!(view.ids.len(),125);assert!(view.metadata.get("items").is_none());assert!(!view.metadata.to_string().contains("Large description"));
-        let second=page_cached(&c,&roots,&q,first["next"].as_str(),Some(&instance),&||false).unwrap_or_else(|e|panic!("{}",e.0));assert_eq!(second["offset"],60);assert_eq!(second["items"].as_array().unwrap().len(),60);
-        assert!(page_cached(&c,&roots,&q,first["next"].as_str(),Some(&instance),&||true).is_err());
+        let second=page_cached(&c,&roots,&q,first["next"].as_str(),None,Some(&instance),&||false).unwrap_or_else(|e|panic!("{}",e.0));assert_eq!(second["offset"],60);assert_eq!(second["items"].as_array().unwrap().len(),60);
+        assert!(page_cached(&c,&roots,&q,first["next"].as_str(),None,Some(&instance),&||true).is_err());
         let fresh=crate::db::id();let checks=std::cell::Cell::new(0);
-        assert!(page_cached(&c,&roots,&q,None,Some(&fresh),&||{checks.set(checks.get()+1);checks.get()>10}).is_err());assert!(cached(&format!("{fresh}:{}",first["view_token"].as_str().unwrap())).is_none());
-        c.execute("UPDATE works SET title='Changed' WHERE id='w0'",[]).unwrap();assert!(page_cached(&c,&roots,&q,first["next"].as_str(),Some(&instance),&||false).is_err());
+        assert!(page_cached(&c,&roots,&q,None,None,Some(&fresh),&||{checks.set(checks.get()+1);checks.get()>10}).is_err());assert!(cached(&format!("{fresh}:{}",first["view_token"].as_str().unwrap())).is_none());
+        c.execute("UPDATE works SET title='Changed' WHERE id='w0'",[]).unwrap();assert!(page_cached(&c,&roots,&q,first["next"].as_str(),None,Some(&instance),&||false).is_err());
+    }
+    #[test] fn configurable_page_size_supports_up_to_200_and_binds_cursor_limit() {
+        let temp=tempfile::tempdir().unwrap();let db=crate::db::open(&temp.path().join("library.sqlite")).unwrap();let c=db.lock().unwrap();
+        for i in 0..210 {c.execute("INSERT INTO works(id,title,original_title) VALUES(?1,?2,'')",params![format!("w{i:03}"),format!("Title {i:03}")]).unwrap();}
+        let roots=Roots::new();let q=Query::default();
+        let p1=page_cached(&c,&roots,&q,None,Some(100),None,&||false).unwrap_or_else(|e|panic!("{}",e.0));
+        assert_eq!(p1["items"].as_array().unwrap().len(),100);
+        let p2=page_cached(&c,&roots,&q,p1["next"].as_str(),Some(100),None,&||false).unwrap_or_else(|e|panic!("{}",e.0));
+        assert_eq!(p2["offset"],100);assert_eq!(p2["items"].as_array().unwrap().len(),100);
+        let p3=page_cached(&c,&roots,&q,p2["next"].as_str(),Some(100),None,&||false).unwrap_or_else(|e|panic!("{}",e.0));
+        assert_eq!(p3["offset"],200);assert_eq!(p3["items"].as_array().unwrap().len(),10);assert!(p3["next"].is_null());
+        // Cursor from limit=100 must not be reused with limit=150.
+        assert!(page_cached(&c,&roots,&q,p1["next"].as_str(),Some(150),None,&||false).is_err());
+        let p200=page_cached(&c,&roots,&q,None,Some(200),None,&||false).unwrap_or_else(|e|panic!("{}",e.0));
+        assert_eq!(p200["items"].as_array().unwrap().len(),200);
+        assert!(page_cached(&c,&roots,&q,None,Some(0),None,&||false).is_err());
+        assert!(page_cached(&c,&roots,&q,None,Some(201),None,&||false).is_err());
     }
     #[tokio::test] async fn http_readonly_pages_and_owner_selection_enforce_scope_without_catalog_writes() {
         let temp=tempfile::tempdir().unwrap();let app=crate::initialize(temp.path().join("state")).unwrap();crate::access::setup(&app.db,"Generated collection test password",false).unwrap();
