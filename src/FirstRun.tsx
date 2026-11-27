@@ -2,6 +2,7 @@ import {useEffect,useState} from 'react';
 import {useTranslation} from 'react-i18next';
 import {Archive,FolderPlus,RefreshCw,ArrowLeft,AlertTriangle,Check} from 'lucide-react';
 import {api,ApiRequestError,bytes,coreHealth} from './api';
+import {BrandMark} from './BrandMark';
 export type RestoreCandidate={
  path:string;
  name:string;
@@ -146,7 +147,7 @@ export function FirstRun({
  const needsOfflineCheck=inspect!==null&&(inspect.mode==='full'||inspect.requires_original_offline);
  const canRestore=inspect!==null&&!busy&&(!needsOfflineCheck||originalOffline);
  return <div className="connect first-run">
-  <div className="wordmark">galroon<span className="seal" aria-hidden="true"/></div>
+  <div className="wordmark"><BrandMark/>galroon</div>
   {fresh===null&&<p role="status">{t('loading')}</p>}
 
   {fresh!==null&&step==='choose'&&<>

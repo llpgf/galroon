@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {Languages,RefreshCw,Trash2} from 'lucide-react';
 import {useTranslation} from 'react-i18next';
 import {api,deleteApi,readApi} from './api';
@@ -15,8 +15,10 @@ export function TranslatedDescription({kind,id,sourceText,spoilers,canWrite,coll
  const [state,setState]=useState<TranslationResponse|null>(null);
  const [showOriginal,setShowOriginal]=useState(false);
  const [expanded,setExpanded]=useState(false);
+ const [overflows,setOverflows]=useState(false);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
+ const textRef=useRef<HTMLParagraphElement>(null);
  const raw=(sourceText||'').trim();
 
  useEffect(()=>{
@@ -50,15 +52,31 @@ export function TranslatedDescription({kind,id,sourceText,spoilers,canWrite,coll
  };
 
  const originalPlain=plainDescription(raw,spoilers);
- if(!originalPlain)return <>{emptyFallback||null}</>;
  const record=state?.translation||null;
  const showingTranslated=!!record&&!showOriginal;
  const displayText=showingTranslated?plainDescription(record.translated_text,spoilers):originalPlain;
 
+ useEffect(()=>{
+  if(!collapsible||expanded){return;}
+  const measure=()=>{
+   const el=textRef.current;
+   if(el)setOverflows(el.scrollHeight>el.clientHeight+2);
+  };
+  measure();
+  if(typeof window!=='undefined'){
+   window.addEventListener('resize',measure);
+   return()=>window.removeEventListener('resize',measure);
+  }
+ },[collapsible,expanded,displayText]);
+
+ if(!originalPlain)return <>{emptyFallback||null}</>;
+ const canToggle=collapsible&&(expanded||overflows||displayText.length>140);
+ const hasTranslationBar=Boolean(record||(canWrite&&state?.configured));
+
  return <>
-  <p className={'description'+(collapsible&&expanded?' expanded':'')}>{displayText}</p>
-  {collapsible&&displayText.length>360&&<button className="text-button description-toggle" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{t(expanded?'showLess':'readMore')}</button>}
-  <div className="inline translation-bar">
+  <p ref={textRef} className={'description'+(collapsible&&expanded?' expanded':'')}>{displayText}</p>
+  {canToggle&&<button className="text-button description-toggle" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{t(expanded?'showLess':'readMore')}</button>}
+  {hasTranslationBar&&<div className="inline translation-bar">
    {record&&<>
     <button className="text-button" onClick={()=>setShowOriginal(!showOriginal)}><Languages size={14}/>{t(showOriginal?'translationShowTranslated':'translationShowOriginal')}</button>
     <small className="muted">{record.provider} · {record.model}</small>
@@ -71,7 +89,7 @@ export function TranslatedDescription({kind,id,sourceText,spoilers,canWrite,coll
     </button>
     {record&&<button className="text-button" disabled={busy} aria-label={t('translationDelete')} title={t('translationDelete')} onClick={()=>void remove()}><Trash2 size={13}/></button>}
    </>}
-  </div>
+  </div>}
   {error&&<p className="error-text" role="alert">{error}</p>}
  </>;
 }

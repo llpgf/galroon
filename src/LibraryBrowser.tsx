@@ -13,26 +13,46 @@ import {BookOpen,Gift,Heart,Plus,ArrowUpRight,Tags,X,Minus,Grid2X2,GalleryVertic
 import type {Work} from './api';
 import {emptyFilters,titleFor,coverTone,tagNames,type Filters} from './library';
 const STATUS_SEGMENTS=['all','none','playing','backlog','completed','on_hold'] as const;
-const PAGE_SIZE=60;
+const SORT_OPTIONS=['added','title','newest','oldest'] as const;
+export type CollectionSort=typeof SORT_OPTIONS[number];
+const PAGE_SIZE_OPTIONS=['60','100','150','200','infinite'] as const;
+export type CollectionPageSize=typeof PAGE_SIZE_OPTIONS[number];
+const SORT_KEY='galroon.collectionSort',PAGE_SIZE_KEY='galroon.collectionPageSize',INFINITE_CHUNK=100;
+export function savedCollectionSort():CollectionSort{try{const saved=localStorage.getItem(SORT_KEY);return (SORT_OPTIONS as readonly string[]).includes(saved||'')?(saved as CollectionSort):'added';}catch{return 'added';}}
+export function savedCollectionPageSize():CollectionPageSize{try{const saved=localStorage.getItem(PAGE_SIZE_KEY);return (PAGE_SIZE_OPTIONS as readonly string[]).includes(saved||'')?(saved as CollectionPageSize):'60';}catch{return '60';}}
 /** A stable tint per work, so artless covers do not reshuffle colours between pages. */
 export function LibraryBrowser({seed=null,generation,query,setQuery,status,setStatus,safe,canWrite,onAdd,onSource,onSelect,onStudio,titleMode,setTitleMode}:{seed?:{filters:Filters;at:number}|null;generation:number;query:string;setQuery:(s:string)=>void;status:string;setStatus:(s:string)=>void;safe:boolean;canWrite:boolean;onAdd:()=>void;onSource:()=>void;onSelect:(w:Work)=>void;onStudio:(w:Work,studio:string)=>void;titleMode:'display'|'original';setTitleMode:(s:'display'|'original')=>void}){
  const [selecting,setSelecting]=useState(false),[selected,setSelected]=useState<string[]>([]);
  const [listScope,setListScope]=useState<ListMember[]|null>(null);
  const [viewMode,setViewMode]=useState<'compact'|'posters'|'details'>(()=>{try{const saved=localStorage.getItem('galroon.collectionView');return saved==='compact'||saved==='details'?saved:'posters';}catch{return 'posters';}});
  const chooseView=(mode:'compact'|'posters'|'details')=>{setViewMode(mode);try{localStorage.setItem('galroon.collectionView',mode);}catch{/* The current view remains usable without storage. */}};
- const {t,i18n}=useTranslation();const [filters,setFilters]=useState<Filters>(emptyFilters),[sort,setSort]=useState('added'),[tagQuery,setTagQuery]=useState(''),[focusOpen,setFocusOpen]=useState(false),[tagsOpen,setTagsOpen]=useState(false),[managingTags,setManagingTags]=useState(false),[creatingTag,setCreatingTag]=useState(false),[tagBusy,setTagBusy]=useState(false),[tagError,setTagError]=useState(''),[scopeBusy,setScopeBusy]=useState(false),[scopeError,setScopeError]=useState('');
+ const {t,i18n}=useTranslation();const [filters,setFilters]=useState<Filters>(emptyFilters),[sort,setSort]=useState<CollectionSort>(savedCollectionSort),[pageSize,setPageSize]=useState<CollectionPageSize>(savedCollectionPageSize),[tagQuery,setTagQuery]=useState(''),[focusOpen,setFocusOpen]=useState(false),[tagsOpen,setTagsOpen]=useState(false),[managingTags,setManagingTags]=useState(false),[creatingTag,setCreatingTag]=useState(false),[tagBusy,setTagBusy]=useState(false),[tagError,setTagError]=useState(''),[scopeBusy,setScopeBusy]=useState(false),[scopeError,setScopeError]=useState('');
+ const chooseSort=(next:CollectionSort)=>{setSort(next);try{localStorage.setItem(SORT_KEY,next);}catch{/* The current sort remains usable without storage. */}};
+ const choosePageSize=(next:CollectionPageSize)=>{setPageSize(next);try{localStorage.setItem(PAGE_SIZE_KEY,next);}catch{/* The current page size remains usable without storage. */}};
  const tagDialog=useRef<HTMLDialogElement>(null);
  useEffect(()=>{if(tagsOpen){tagDialog.current?.showModal();tagDialog.current?.querySelector('input')?.focus();}else tagDialog.current?.close();},[tagsOpen]);
+ const infinite=pageSize==='infinite',limit=infinite?INFINITE_CHUNK:Number(pageSize);
  const request={filters,query,status,sort,titleMode,locale:i18n.language};
- const catalog=useCollectionPage(request,generation),result=catalog.data,metadata=result||catalog.metadata;
+ const catalog=useCollectionPage(request,generation,limit,infinite),result=catalog.data,metadata=result||catalog.metadata;
  // Catalog refreshes keep the grid mounted; intentional view changes and stale cursors reset scroll.
- useEffect(()=>{window.scrollTo(0,0);},[JSON.stringify(request),catalog.pageIndex,catalog.restarted]);
+ useEffect(()=>{window.scrollTo(0,0);},[JSON.stringify(request),pageSize,catalog.pageIndex,catalog.restarted]);
  const customTags=useMemo(()=>(metadata?.custom_tags||[]).map(tag=>({...tag,work_ids:[]})),[metadata]);
  const tagCounts=new Map(Object.entries(metadata?.tag_counts||{}));
  const options=metadata?.options||{studio:[],year:[],language:[],tag:[]};
  const tagOptions=useMemo(()=>[...customTags.map(tag=>({value:'custom:'+tag.id,label:tag.name})),...options.tag],[customTags,options]);
  const total=metadata?.total,filtered=result?.filtered||0;
- const pages=Math.max(1,Math.ceil(filtered/PAGE_SIZE)),current=catalog.pageIndex,slice=result?.items||[];
+ const pages=Math.max(1,Math.ceil(filtered/limit)),current=catalog.pageIndex,slice=result?.items||[];
+ const sentinel=useRef<HTMLDivElement>(null);
+ const loadMoreRef=useRef<()=>void>(()=>{});
+ loadMoreRef.current=()=>catalog.loadMore?.();
+ const canLoadMore=infinite&&Boolean(result?.next)&&!catalog.loading&&!catalog.loadingMore&&!catalog.error;
+ useEffect(()=>{
+  if(!canLoadMore||typeof IntersectionObserver==='undefined')return;
+  const node=sentinel.current;if(!node)return;
+  const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))loadMoreRef.current();},{rootMargin:'400px 0px'});
+  observer.observe(node);
+  return()=>observer.disconnect();
+ },[canLoadMore,slice.length]);
  const clear=()=>{setFilters(emptyFilters);setQuery('');setStatus('all');};
  // A seed from elsewhere (the statistics page) replaces the facet filters once per request.
  useEffect(()=>{if(seed)setFilters(seed.filters);},[seed]);
@@ -65,7 +85,8 @@ export function LibraryBrowser({seed=null,generation,query,setQuery,status,setSt
    </nav>
    <div className="library-results">
     {filtering&&result&&<p className="muted" role="status">{t('filteredWorks',{count:filtered,total:total??0})}</p>}
-    <label><span className="visually-hidden">{t('sortWorks')}</span><select aria-label={t('sortWorks')} value={sort} onChange={e=>setSort(e.target.value)}><option value="added">{t('sortAdded')}</option><option value="title">{t('sortTitle')}</option><option value="newest">{t('sortNewest')}</option><option value="oldest">{t('sortOldest')}</option></select></label>
+    <label><span className="visually-hidden">{t('sortWorks')}</span><select aria-label={t('sortWorks')} value={sort} onChange={e=>chooseSort(e.target.value as CollectionSort)}><option value="added">{t('sortAdded')}</option><option value="title">{t('sortTitle')}</option><option value="newest">{t('sortNewest')}</option><option value="oldest">{t('sortOldest')}</option></select></label>
+    <label><span className="visually-hidden">{t('pageSizeLabel')}</span><select aria-label={t('pageSizeLabel')} value={pageSize} onChange={e=>choosePageSize(e.target.value as CollectionPageSize)}><option value="60">{t('pageSizeCount',{count:60})}</option><option value="100">{t('pageSizeCount',{count:100})}</option><option value="150">{t('pageSizeCount',{count:150})}</option><option value="200">{t('pageSizeCount',{count:200})}</option><option value="infinite">{t('pageSizeInfinite')}</option></select></label>
     <div className="collection-view-switch" role="group" aria-label={t('collectionView')}>{([['compact',Grid2X2],['posters',GalleryVerticalEnd],['details',List]] as const).map(([mode,Icon])=><button key={mode} aria-label={t('view_'+mode)} title={t('view_'+mode)} aria-pressed={viewMode===mode} onClick={()=>chooseView(mode)}><Icon size={16}/></button>)}</div>
     <details className="toolbar-menu" ref={moreMenu}><summary aria-label={t('moreOptions')} title={t('moreOptions')}><MoreHorizontal size={18}/></summary><div className="toolbar-menu-panel">
      <label>{t('titleDisplay')}<select value={titleMode} onChange={e=>setTitleMode(e.target.value as 'display'|'original')}><option value="display">{t('displayTitle')}</option><option value="original">{t('originalTitleChoice')}</option></select></label>
@@ -90,7 +111,8 @@ export function LibraryBrowser({seed=null,generation,query,setQuery,status,setSt
 
   </dialog>
   {catalog.restarted&&<p className="muted" role="status">{t('collectionRestarted')}</p>}{catalog.error&&<div role="alert"><p>{coreText(t,catalog.error)}</p><button onClick={catalog.reload}>{t('retry')}</button></div>}{catalog.loading?<p role="status">{t('loading')}</p>:!result?null:total===0?<div className="empty"><BookOpen size={38} strokeWidth={1}/><h2>{t('emptyTitle')}</h2><p>{t('emptyBody')}</p>{canWrite&&<button className="primary" onClick={onSource}>{t('addSource')}<ArrowUpRight size={17}/></button>}</div>:filtered===0?<div className="empty"><BookOpen size={38}/><h2>{t('noResults')}</h2><p>{t('noFilteredWorks')}</p><button onClick={clear}>{t('clearFilters')}</button></div>:<div className={'book-grid collection-view-'+viewMode}>{slice.map((w,index)=><article className="book" key={w.id} data-work-id={w.id}>{canWrite&&selecting&&<button className="book-select" aria-label={t('listSelectNamed',{title:titleFor(w,titleMode)})} aria-pressed={selected.includes(w.id)} onClick={()=>setSelected(old=>old.includes(w.id)?old.filter(id=>id!==w.id):[...old,w.id])}>{selected.includes(w.id)?'✓':t('listSelect')}</button>}<button className="book-open" aria-label={t('openWorkNamed',{name:titleFor(w,titleMode)})} onClick={()=>onSelect(w)}><div className={`cover cover-${coverTone(w.id)}`}>{w.cover&&!safe?<CachedImage source={w.cover} fallback={<span className="cover-title">{w.original_title||w.title}</span>}/>:<span className="cover-title">{w.original_title||w.title}</span>}{w.favorite&&<Heart className="cover-heart" size={17} fill="currentColor"/>}{w.bonus_only&&<span className="cover-badge">{t('bonusOnly')}</span>}{w.status&&w.status!=='none'&&<span className={'cover-status status-'+w.status}>{t(w.status)}</span>}{viewMode==='posters'&&<span className="cover-peek" aria-hidden="true"><strong>{[w.developer,w.released?.slice(0,4)].filter(Boolean).join(' · ')}</strong>{tagNames(w.tags).slice(0,3).join('、')}</span>}</div></button><div className="book-meta"><h3><button className="metadata-link" onClick={()=>onSelect(w)}>{titleFor(w,titleMode)}</button></h3><p className="book-studios">{w.developer?[...new Set(w.developer.split(/,\s*/).map(name=>name.trim()).filter(Boolean))].map((studio,i)=><span key={studio}>{i>0&&', '}<button className="metadata-link" onClick={()=>onStudio(w,studio)}>{studio}</button></span>):w.original_title}</p><span>{viewMode==='details'?w.released:releaseMonth(w.released)}</span>{viewMode==='details'&&<><p className="book-reading-status">{t(w.status)}</p><p className="book-description">{plainDescription(w.description||'')}</p></>}</div></article>)}</div>}
-  {pages>1&&<nav className="library-pagination" aria-label={t('collectionPages')}><button disabled={catalog.loading||current===0} onClick={catalog.previous}>{t('previousPage')}</button><span>{t('pageOf',{page:current+1,pages})}</span><button disabled={catalog.loading||!result?.next} onClick={catalog.next}>{t('nextPage')}</button></nav>}
+  {!infinite&&pages>1&&<nav className="library-pagination" aria-label={t('collectionPages')}><button disabled={catalog.loading||current===0} onClick={catalog.previous}>{t('previousPage')}</button><span>{t('pageOf',{page:current+1,pages})}</span><button disabled={catalog.loading||!result?.next} onClick={catalog.next}>{t('nextPage')}</button></nav>}
+  {infinite&&result&&filtered>0&&<div ref={sentinel} className="library-pagination">{catalog.loadingMore?<span role="status">{t('loading')}</span>:result.next?<button onClick={()=>catalog.loadMore?.()}>{t('loadMoreWorks',{shown:slice.length,total:filtered})}</button>:<span>{t('shownAllWorks',{count:filtered})}</span>}</div>}
  </>;
 }
 

@@ -141,6 +141,8 @@ async function request<T>(path:string,body?:unknown,callerSignal?:AbortSignal,me
  if(!response.ok)throw new ApiRequestError(data.error||`Request failed (${response.status})`,response.status,data.code);return data as T;
 }
 export async function folder():Promise<string|null>{if(!isLocalDesktop())return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
+export async function localFolder():Promise<string|null>{if(!isDesktop)return null;const {open}=await import('@tauri-apps/plugin-dialog');return await open({directory:true,multiple:false}) as string|null;}
+export async function revealInFolder(path:string):Promise<void>{if(!isDesktop)throw new Error('Desktop app required');await invoke('reveal_in_folder',{path});}
 export const bytes=(n:number)=>{if(n===0)return '0 B';const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return `${(n/1024**i).toFixed(i>0?1:0)} ${['B','KiB','MiB','GiB','TiB'][i]}`;};
 export interface Work{status_since?:number|null;personal_rating?:number|null;vndb_sync_id?:number|null;vndb_sync_hidden?:boolean;bangumi_id?:number|null;bangumi_hidden?:boolean;added_order?:number;preferred_release_id?:string|null;id:string;title:string;original_title:string;vndb_id:string|null;description:string;cover:string;developer:string;released:string;tags:unknown[];aliases:string[];status:string;favorite:boolean;notes:string;revision:number;resources:number;
  /** Set on a remake card: the VNDB release it was identified by. */vndb_release?:string|null;
