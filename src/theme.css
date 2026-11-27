@@ -113,9 +113,11 @@ select{appearance:none;padding-right:34px;cursor:pointer;background-image:url("d
 select[multiple]{background-image:none;padding-right:12px}
 textarea{resize:vertical;min-height:96px;line-height:1.55}
 input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:16px;height:16px;min-height:0;padding:0;margin:0;cursor:pointer}
+input[type=checkbox]:focus-visible,input[type=radio]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;box-shadow:none}
+input[type=checkbox]:disabled,input[type=radio]:disabled{opacity:.5;cursor:not-allowed}
 label{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--text-2);font-weight:500}
 .checkbox-label{flex-direction:row;align-items:center;gap:10px;cursor:pointer}
-.checkbox-label input{flex:0 0 auto}
+.checkbox-label input{flex:0 0 auto;width:16px;height:16px}
 fieldset{border:0;padding:0;margin:0;min-width:0}
 .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .muted{color:var(--muted);font-size:13px}
@@ -1064,7 +1066,7 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
 .exact-editor{width:min(900px,calc(100vw - 32px))}
 .exact-form{display:grid;gap:12px;margin:18px 0;padding:16px;border:.5px solid var(--line);border-radius:var(--radius);background:var(--surface)}
 .exact-form label{gap:5px}
-.exact-form input,.exact-form select{width:100%;min-width:0}
+.exact-form input:not([type=checkbox]):not([type=radio]),.exact-form select{width:100%;min-width:0}
 .exact-candidate{padding:12px;background:var(--surface-2);border-radius:var(--radius-s)}
 .exact-candidate small,.exact-edges small{display:block;overflow-wrap:anywhere}
 .exact-edges{list-style:none;padding:0;margin:12px 0}
@@ -1132,12 +1134,14 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
 .saved-connection small{display:block;overflow-wrap:anywhere;margin-top:4px;color:var(--muted)}
 .connections-panel form{max-width:540px;margin-top:22px}
 .connections-panel label{margin:12px 0}
-.connections-panel input{width:100%}
+.connections-panel input:not([type=checkbox]):not([type=radio]){width:100%}
 .settings-panels .section>h2{display:flex;align-items:center;gap:10px}
 .settings-panels .section h3{margin-top:26px;padding-top:20px;border-top:.5px solid var(--line)}
+.settings-panels .section .backup-schedule h3{margin:0;padding-top:0;border-top:0}
 .settings-panels .section details{margin:14px 0}
 .settings-panels .section label{margin:14px 0 10px}
-.settings-panels .section label input,.settings-panels .section label textarea{width:100%}
+.settings-panels .section .checkbox-label{min-block-size:44px;margin:4px 0}
+.settings-panels .section label input:not([type=checkbox]):not([type=radio]),.settings-panels .section label textarea{width:100%}
 
 /* ───────────────────────── Motion ───────────────────────── */
 @keyframes spin{to{transform:rotate(360deg)}}
