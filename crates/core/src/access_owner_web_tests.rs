@@ -32,7 +32,7 @@ async fn request(a:&App,transport:Transport,method:&str,path:&str,cookie:&str,or
  for transport in [Transport::Loopback,Transport::Lan]{let origin=if transport==Transport::Lan{"https://nas.local"}else{"http://localhost"};
   for method in ["POST","PUT","PATCH","DELETE"]{for origin in [None,Some("https://foreign.local"),Some(if transport==Transport::Lan{"https://nas.local:443"}else{"http://localhost:9999"})]{let response=request(&a,transport,method,"/api/works",&cookie,origin,json!({"title":"Rejected"})).await;assert_eq!(response.status(),403);assert_eq!(body(response).await["error"],"Origin not allowed");}}
   assert_eq!(request(&a,transport,"POST","/api/works",&cookie,Some(origin),json!({"title":"Browser edit"})).await.status(),200);
-  for role in ["web","web_owner"]{let(token,_)=issue(&a.db.lock().unwrap(),"Logout",role,WEB_LIFETIME).unwrap();let cookie=format!("{}={token}",cookie_name(&a));for origin in [None,Some("https://foreign.local")]{assert_eq!(request(&a,transport,"POST","/api/access/logout",&cookie,origin,json!({})).await.status(),403);}assert_eq!(request(&a,transport,"POST","/api/access/logout",&cookie,Some(origin),json!({})).await.status(),200);assert_eq!(request(&a,transport,"GET","/api/access/me",&cookie,None,Value::Null).await.status(),401);}
+  for role in ["web","web_owner"]{let(token,_)=issue(&a.db.lock().unwrap(),"Logout",role,Some(WEB_LIFETIME)).unwrap();let cookie=format!("{}={token}",cookie_name(&a));for origin in [None,Some("https://foreign.local")]{assert_eq!(request(&a,transport,"POST","/api/access/logout",&cookie,origin,json!({})).await.status(),403);}assert_eq!(request(&a,transport,"POST","/api/access/logout",&cookie,Some(origin),json!({})).await.status(),200);assert_eq!(request(&a,transport,"GET","/api/access/me",&cookie,None,Value::Null).await.status(),401);}
  }
  assert_eq!(a.db.lock().unwrap().query_row("SELECT count(*) FROM works",[],|r|r.get::<_,i64>(0)).unwrap(),2);
 }
@@ -43,7 +43,7 @@ async fn request(a:&App,transport:Transport,method:&str,path:&str,cookie:&str,or
  }
 }
 #[tokio::test]async fn old_web_sessions_stay_read_only_after_restart(){
- let(t,a)=fixture();let(token,value)=issue(&a.db.lock().unwrap(),"Old password login","web",WEB_LIFETIME).unwrap();let cookie=format!("{}={token}",cookie_name(&a));drop(a);let a=crate::initialize(t.path().join("state")).unwrap();
+ let(t,a)=fixture();let(token,value)=issue(&a.db.lock().unwrap(),"Old password login","web",Some(WEB_LIFETIME)).unwrap();let cookie=format!("{}={token}",cookie_name(&a));drop(a);let a=crate::initialize(t.path().join("state")).unwrap();
  let me=body(request(&a,Transport::Loopback,"GET","/api/access/me",&cookie,None,Value::Null).await).await;assert_eq!(me["role"],"web");assert_eq!(me["can_write"],false);assert_eq!(me["can_manage_access"],false);assert_eq!(request(&a,Transport::Loopback,"POST","/api/works",&cookie,Some("http://localhost"),json!({"title":"No"})).await.status(),403);
  assert_eq!(a.db.lock().unwrap().query_row("SELECT expires FROM sessions WHERE id=?1",[value["id"].as_str().unwrap()],|r|r.get::<_,i64>(0)).unwrap(),value["expires"].as_i64().unwrap());
 }

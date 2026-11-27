@@ -17,7 +17,7 @@ async fn post(app:&App,transport:Transport,path:&str,value:Value,origin:bool)->R
   let response=post(&app,transport,"/api/access/pair-web",json!({"code":web["code"],"role":"web_owner"}),true).await;assert_eq!(response.status(),200);let cookie=response.headers()[header::SET_COOKIE].to_str().unwrap().to_owned();assert!(cookie.contains("HttpOnly; SameSite=Strict; Max-Age=43200"));assert_eq!(cookie.contains("; Secure"),transport==Transport::Lan);let value=body(response).await;assert_eq!(value["role"],"web");assert!((db::now()+WEB_LIFETIME-5..=db::now()+WEB_LIFETIME).contains(&value["expires"].as_i64().unwrap()));assert!(value.get("token").is_none());assert!(value.get("bearer").is_none());
   let mut h=HeaderMap::new();h.insert(header::COOKIE,cookie.split(';').next().unwrap().parse().unwrap());assert_eq!(authenticate(&app,&h).unwrap().role,"web");
   assert_eq!(post(&app,transport,"/api/access/pair-web",json!({"code":web["code"]}),true).await.status(),400);
-  let response=post(&app,transport,"/api/access/pair",json!({"code":desktop["code"],"role":"web"}),true).await;assert_eq!(response.status(),200);assert!(!response.headers().contains_key(header::SET_COOKIE));let value=body(response).await;assert_eq!(value["role"],"desktop");assert!(value["token"].is_string());
+  let response=post(&app,transport,"/api/access/pair",json!({"code":desktop["code"],"role":"web"}),true).await;assert_eq!(response.status(),200);assert!(!response.headers().contains_key(header::SET_COOKIE));let value=body(response).await;assert_eq!(value["role"],"desktop");assert!(value["expires"].is_null());assert!(value["token"].is_string());
  }
 }
 #[tokio::test]async fn pairing_endpoints_share_origin_rules_and_budget(){
@@ -33,13 +33,27 @@ async fn post(app:&App,transport:Transport,path:&str,value:Value,origin:bool)->R
  for role in [json!("web_owner"),json!("owner"),json!(null),json!(1)]{assert!(pairing(State(app.clone()),owner(&app),Json(json!({"name":"Bad role","role":role}))).await.is_err());}
  let web=pairing(State(app.clone()),owner(&app),Json(json!({"name":"Revoke browser","role":"web"}))).await.map_err(|e|e.0).unwrap().0;
  assert_eq!(revoke_pairing_code(State(app.clone()),owner(&app),Path(web["id"].as_str().unwrap().into())).await.map_err(|e|e.0).unwrap().0,json!({"revoked":true}));let response=post(&app,Transport::Loopback,"/api/access/pair-web",json!({"code":web["code"]}),true).await;assert_eq!(response.status(),400);assert_eq!(body(response).await,json!({"error":"Pairing code is invalid or expired"}));
- let (token,_)=issue(&app.db.lock().unwrap(),"desktop","desktop",DEVICE_LIFETIME).unwrap();let mut h=HeaderMap::new();h.insert(header::AUTHORIZATION,format!("Bearer {token}").parse().unwrap());
+ let (token,_)=issue(&app.db.lock().unwrap(),"desktop","desktop",None).unwrap();let mut h=HeaderMap::new();h.insert(header::AUTHORIZATION,format!("Bearer {token}").parse().unwrap());
  for (method,path) in [("GET","/api/access/pairing-codes"),("POST","/api/access/pairing-codes/id/revoke"),("GET","/api/access/network"),("POST","/api/access/network")]{let response=crate::router(app.clone()).oneshot(Request::builder().method(method).uri(path).header(header::HOST,"localhost").header(header::AUTHORIZATION,h[header::AUTHORIZATION].clone()).header(header::CONTENT_TYPE,"application/json").body(Body::from(r#"{"address":"192.168.1.1"}"#)).unwrap()).await.unwrap();assert_eq!(response.status(),403,"{path}");}
 }
 #[tokio::test]async fn invalid_credentials_have_distinct_401_and_absent_credentials_keep_message(){
  let(_t,app)=fixture();let mut credentials=Vec::new();
- for (role,expired) in [("desktop",false),("desktop",true),("web",false),("web",true),("web_owner",false),("web_owner",true)]{let c=app.db.lock().unwrap();let(token,value)=issue(&c,"fixture",role,if expired{-1}else{100}).unwrap();if !expired{c.execute("UPDATE sessions SET revoked=1 WHERE id=?1",[value["id"].as_str().unwrap()]).unwrap();}credentials.push((role,token));}
+ for (role,expired) in [("desktop",false),("desktop",true),("web",false),("web",true),("web_owner",false),("web_owner",true)]{let c=app.db.lock().unwrap();let(token,value)=issue(&c,"fixture",role,if expired{Some(-1)}else{Some(100)}).unwrap();if !expired{c.execute("UPDATE sessions SET revoked=1 WHERE id=?1",[value["id"].as_str().unwrap()]).unwrap();}credentials.push((role,token));}
  credentials.push(("desktop",secret()));credentials.push(("web",secret()));
  for (role,token) in credentials{let request=Request::builder().uri("/api/access/me").header(header::HOST,"localhost");let request=if matches!(role,"web"|"web_owner"){request.header(header::COOKIE,format!("{}={token}",cookie_name(&app)))}else{request.header(header::AUTHORIZATION,format!("Bearer {token}"))};let response=crate::router(app.clone()).oneshot(request.body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),401);assert_eq!(body(response).await,json!({"error":CREDENTIAL_INVALID,"code":"credential_invalid"}));}
  let response=crate::router(app).oneshot(Request::builder().uri("/api/access/me").header(header::HOST,"localhost").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),401);assert_eq!(body(response).await,json!({"error":"Authentication required"}));
+}
+#[tokio::test]async fn desktop_pairing_never_auto_expires_and_migrates_active_legacy_sessions(){
+ let t=tempfile::tempdir().unwrap();let dir=t.path().join("data");let app=crate::initialize(dir.clone()).unwrap();setup(&app.db,"Pairing test owner password",false).unwrap();
+ let (legacy_active,_)=issue(&app.db.lock().unwrap(),"Legacy active","desktop",Some(3600)).unwrap();
+ let (legacy_expired,_)=issue(&app.db.lock().unwrap(),"Legacy expired","desktop",Some(-10)).unwrap();
+ drop(app);
+ let app=crate::initialize(dir).unwrap();
+ let mut h_active=HeaderMap::new();h_active.insert(header::AUTHORIZATION,format!("Bearer {legacy_active}").parse().unwrap());assert_eq!(authenticate(&app,&h_active).unwrap().role,"desktop");
+ let mut h_expired=HeaderMap::new();h_expired.insert(header::AUTHORIZATION,format!("Bearer {legacy_expired}").parse().unwrap());assert!(authenticate(&app,&h_expired).is_err());
+ let list=devices(State(app.clone()),owner(&app)).await.map_err(|e|e.0).unwrap().0;
+ let active_row=list.as_array().unwrap().iter().find(|d|d["name"]=="Legacy active").unwrap();assert!(active_row["expires"].is_null());
+ let expired_row=list.as_array().unwrap().iter().find(|d|d["name"]=="Legacy expired").unwrap();assert!(expired_row["expires"].is_i64());
+ assert_eq!(revoke(State(app.clone()),owner(&app),Path(active_row["id"].as_str().unwrap().into())).await.map_err(|e|e.0).unwrap().0,json!({"revoked":true}));
+ assert!(authenticate(&app,&h_active).is_err());
 }
