@@ -1260,3 +1260,5 @@ dialog::backdrop{background:var(--scrim);-webkit-backdrop-filter:blur(6px);backd
 @media(max-width:700px){.bgm-row{align-items:stretch;flex-direction:column}.bgm-row select{max-width:100%}}
 .settings-panels .bgm-panel input[type=checkbox]{width:16px;height:16px;flex:none;margin:0}
 .bgm-settings .checkbox-label{flex-basis:100%}
+.translation-panel .checkbox-label{display:flex;align-items:center;gap:10px;grid-column:1/-1;margin:6px 0}
+.settings-panels .translation-panel input[type=checkbox]{width:16px;height:16px;flex:none;margin:0}

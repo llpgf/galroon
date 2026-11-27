@@ -5,14 +5,16 @@ use rusqlite::{params,Connection,OptionalExtension};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{fs,io::Write,path::{Path,PathBuf},sync::{Arc,Mutex},time::{Duration,Instant}};
+use std::{collections::{HashMap,HashSet,VecDeque},fs,io::Write,path::{Path,PathBuf},sync::{atomic::{AtomicBool,Ordering},Arc,Mutex},time::{Duration,Instant}};
 use crate::{db,plans,ApiError,App};
 
 type R<T>=Result<T,String>;
 const DEFAULT_LANG:&str="zh-TW";
 const MAX_SOURCE_CHARS:usize=24_000;
 const MAX_PROMPT_CHARS:usize=4_000;
-const BATCH_PACING_MS:u64=400;
+const BATCH_PACING_MS:u64=200;
+const BATCH_CONCURRENCY:usize=3;
+const MAX_GLOSSARY_NAMES:usize=35;
 
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
@@ -32,27 +34,35 @@ pub struct StoredSettings{
  #[serde(default)]pub model:String,
  #[serde(default="default_lang")]pub target_language:String,
  #[serde(default)]pub system_prompt:String,
+ #[serde(default="default_true")]pub keep_original_names:bool,
  #[serde(default)]pub credential_id:Option<String>,
 }
 fn version_one()->u32{1}
 fn default_provider()->Provider{Provider::Openai}
 fn default_lang()->String{DEFAULT_LANG.into()}
+fn default_true()->bool{true}
+fn default_batch_scope()->String{"works".into()}
 impl Default for StoredSettings{
- fn default()->Self{Self{version:1,provider:Provider::Openai,base_url:String::new(),model:String::new(),target_language:DEFAULT_LANG.into(),system_prompt:String::new(),credential_id:None}}
+ fn default()->Self{Self{version:1,provider:Provider::Openai,base_url:String::new(),model:String::new(),target_language:DEFAULT_LANG.into(),system_prompt:String::new(),keep_original_names:true,credential_id:None}}
 }
 
 #[derive(Default,Clone,Debug,Serialize)]
 pub struct BatchStatus{
- pub running:bool,pub total:usize,pub translated:usize,pub failed:usize,pub skipped:usize,
+ pub running:bool,pub scope:String,pub total:usize,pub translated:usize,pub failed:usize,pub skipped:usize,
  pub current_title:Option<String>,pub last_error:Option<String>,pub started_at:Option<i64>,pub finished_at:Option<i64>,
 }
 #[derive(Default)]
-pub struct BatchRunner{state:Mutex<BatchStatus>,abort:Mutex<Option<tokio::task::AbortHandle>>}
+pub struct BatchRunner{state:Mutex<BatchStatus>,abort:Mutex<Vec<tokio::task::AbortHandle>>,stop_flag:Mutex<Option<Arc<AtomicBool>>>}
 impl BatchRunner{
  pub fn snapshot(&self)->BatchStatus{self.state.lock().unwrap().clone()}
  pub fn cancel(&self)->bool{
-  let handle=self.abort.lock().unwrap().take();
-  if let Some(h)=handle{h.abort();let mut s=self.state.lock().unwrap();s.running=false;s.current_title=None;s.finished_at=Some(db::now());true}else{false}
+  if let Some(flag)=self.stop_flag.lock().unwrap().take(){flag.store(true,Ordering::SeqCst);}
+  let handles=std::mem::take(&mut *self.abort.lock().unwrap());
+  if !handles.is_empty(){
+   for h in handles{h.abort();}
+   let mut s=self.state.lock().unwrap();s.running=false;s.current_title=None;s.finished_at=Some(db::now());
+   true
+  }else{false}
  }
 }
 
@@ -136,6 +146,140 @@ fn default_system_prompt(target_lang:&str)->String{
  )
 }
 
+fn effective_system_prompt(settings:&StoredSettings,glossary:&[(String,String)])->String{
+ let mut prompt=if settings.system_prompt.trim().is_empty(){
+  default_system_prompt(&settings.target_language)
+ }else{
+  settings.system_prompt.trim().to_owned()
+ };
+ if settings.keep_original_names{
+  prompt.push_str("\nCharacter name rule: Keep all character names in their original Japanese form (kanji/kana). Do NOT translate, localize, or invent Chinese kanji for character names.");
+  if !glossary.is_empty(){
+   prompt.push_str("\nOfficial character names to use verbatim:");
+   for (romanized,original) in glossary.iter().take(MAX_GLOSSARY_NAMES){
+    prompt.push_str(&format!("\n- {romanized} -> {original}"));
+   }
+  }
+ }
+ prompt
+}
+
+fn push_name_pair(out:&mut Vec<(String,String)>,seen:&mut HashSet<String>,name:&str,original:&str){
+ let n=name.trim();let o=original.trim();
+ if n.is_empty()||o.is_empty()||n==o||out.len()>=MAX_GLOSSARY_NAMES{return;}
+ if seen.insert(o.to_owned()){out.push((n.to_owned(),o.to_owned()));}
+}
+
+fn extract_work_glossary(val:&Value)->Vec<(String,String)>{
+ let mut out=Vec::new();let mut seen=HashSet::new();
+ if let Some(chars)=val.get("characters").and_then(Value::as_array){
+  for ch in chars{
+   let name=ch.get("name").and_then(Value::as_str).unwrap_or("");
+   let orig=ch.get("original").and_then(Value::as_str).unwrap_or("");
+   push_name_pair(&mut out,&mut seen,name,orig);
+  }
+ }
+ out
+}
+
+fn work_glossary_from_db(c:&Connection,work_id:&str)->Vec<(String,String)>{
+ let vndb_id:Option<String>=c.query_row("SELECT vndb_id FROM works WHERE id=?1",[work_id],|r|r.get(0)).optional().ok().flatten();
+ let Some(vid)=vndb_id.filter(|s|!s.trim().is_empty()) else{return Vec::new();};
+ let key=format!("exploration.v4.work.{vid}.1");
+ let raw:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[&key],|r|r.get(0)).optional().ok().flatten();
+ raw.and_then(|s|serde_json::from_str::<Value>(&s).ok()).map(|v|extract_work_glossary(&v)).unwrap_or_default()
+}
+
+fn character_glossary_from_db(c:&Connection,char_id:&str)->Vec<(String,String)>{
+ let mut out=Vec::new();let mut seen=HashSet::new();
+ let key=format!("exploration.v3.profile.character.{char_id}");
+ let raw:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[&key],|r|r.get(0)).optional().ok().flatten();
+ let mut vn_ids:Vec<String>=Vec::new();
+ if let Some(val)=raw.and_then(|s|serde_json::from_str::<Value>(&s).ok()){
+  let profile=val.get("profile").unwrap_or(&val);
+  push_name_pair(&mut out,&mut seen,profile.get("name").and_then(Value::as_str).unwrap_or(""),profile.get("original").and_then(Value::as_str).unwrap_or(""));
+  if let Some(vns)=profile.get("vns").and_then(Value::as_array){
+   for vn in vns.iter().take(2){
+    if let Some(vid)=vn.get("id").and_then(Value::as_str){vn_ids.push(vid.to_owned());}
+   }
+  }
+ }
+ for vid in vn_ids{
+  let wkey=format!("exploration.v4.work.{vid}.1");
+  if let Some(wraw)=c.query_row("SELECT value FROM settings WHERE key=?1",[&wkey],|r|r.get::<_,String>(0)).optional().ok().flatten(){
+   if let Ok(wval)=serde_json::from_str::<Value>(&wraw){
+    for (n,o) in extract_work_glossary(&wval){push_name_pair(&mut out,&mut seen,&n,&o);}
+   }
+  }
+ }
+ out
+}
+
+struct CachedCharacter{id:String,title:String,description:String,glossary:Vec<(String,String)>}
+
+fn collect_cached_characters(c:&Connection)->Vec<CachedCharacter>{
+ let mut work_glossaries:HashMap<String,Vec<(String,String)>>=HashMap::new();
+ let mut work_chars:Vec<(String,String,String,String,String)>=Vec::new(); // (cid, name, orig, desc, vid)
+ let mut profile_chars:HashMap<String,(String,String,String,Vec<String>)>=HashMap::new();
+ if let Ok(mut stmt)=c.prepare("SELECT key,value FROM settings WHERE key LIKE 'exploration.v4.work.%' OR key LIKE 'exploration.v3.profile.character.%'"){
+  if let Ok(rows)=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))){
+   for row in rows.flatten(){
+    let (key,raw)=row;
+    let Ok(val)=serde_json::from_str::<Value>(&raw) else{continue;};
+    if let Some(rest)=key.strip_prefix("exploration.v4.work."){
+     let vid=rest.split('.').next().unwrap_or("").to_owned();
+     let gloss=extract_work_glossary(&val);
+     if !vid.is_empty(){work_glossaries.insert(vid.clone(),gloss);}
+     if let Some(chars)=val.get("characters").and_then(Value::as_array){
+      for ch in chars{
+       let cid=ch.get("id").and_then(Value::as_str).unwrap_or("").trim();
+       let desc=ch.get("description").and_then(Value::as_str).unwrap_or("").trim();
+       if cid.is_empty()||desc.is_empty(){continue;}
+       let name=ch.get("name").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+       let orig=ch.get("original").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+       work_chars.push((cid.to_owned(),name,orig,desc.to_owned(),vid.clone()));
+      }
+     }
+    }else if key.starts_with("exploration.v3.profile.character."){
+     let profile=val.get("profile").unwrap_or(&val);
+     let cid=profile.get("id").and_then(Value::as_str).unwrap_or("").trim();
+     let desc=profile.get("description").and_then(Value::as_str).unwrap_or("").trim();
+     if cid.is_empty()||desc.is_empty(){continue;}
+     let name=profile.get("name").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+     let orig=profile.get("original").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+     let vids:Vec<String>=profile.get("vns").and_then(Value::as_array).map(|arr|arr.iter().filter_map(|v|v.get("id").and_then(Value::as_str).map(str::to_owned)).take(2).collect()).unwrap_or_default();
+     profile_chars.insert(cid.to_owned(),(name,orig,desc.to_owned(),vids));
+    }
+   }
+  }
+ }
+ let mut by_id:HashMap<String,CachedCharacter>=HashMap::new();
+ for (cid,(name,orig,desc,vids)) in profile_chars{
+  let mut gloss=Vec::new();let mut seen=HashSet::new();
+  push_name_pair(&mut gloss,&mut seen,&name,&orig);
+  for vid in &vids{
+   if let Some(wg)=work_glossaries.get(vid){
+    for (n,o) in wg{push_name_pair(&mut gloss,&mut seen,n,o);}
+   }
+  }
+  let title=if !orig.is_empty(){orig}else if !name.is_empty(){name}else{cid.clone()};
+  by_id.insert(cid.clone(),CachedCharacter{id:cid,title,description:desc,glossary:gloss});
+ }
+ for (cid,name,orig,desc,vid) in work_chars{
+  if by_id.contains_key(&cid){continue;}
+  let mut gloss=Vec::new();let mut seen=HashSet::new();
+  push_name_pair(&mut gloss,&mut seen,&name,&orig);
+  if let Some(wg)=work_glossaries.get(&vid){
+   for (n,o) in wg{push_name_pair(&mut gloss,&mut seen,n,o);}
+  }
+  let title=if !orig.is_empty(){orig}else if !name.is_empty(){name}else{cid.clone()};
+  by_id.insert(cid.clone(),CachedCharacter{id:cid,title,description:desc,glossary:gloss});
+ }
+ let mut out:Vec<CachedCharacter>=by_id.into_values().collect();
+ out.sort_by(|a,b|a.id.cmp(&b.id));
+ out
+}
+
 fn has_api_key(device_dir:&Path,settings:&StoredSettings)->bool{
  settings.credential_id.as_deref().is_some_and(|id|cred_read(device_dir,id).is_ok_and(|k|!k.trim().is_empty()))
 }
@@ -143,7 +287,22 @@ fn is_configured(device_dir:&Path,settings:&StoredSettings)->bool{
  let effective_url=if settings.base_url.is_empty(){settings.provider.default_endpoint()}else{&settings.base_url};
  !settings.model.trim().is_empty()&&(has_api_key(device_dir,settings)||is_loopback_url(effective_url))
 }
-fn settings_json(device_dir:&Path,settings:&StoredSettings,untranslated_works:i64)->Value{
+struct TranslationCounts{untranslated_works:i64,total_works:i64,untranslated_characters:i64,total_characters:i64}
+fn count_translation_targets(c:&Connection,lang:&str)->TranslationCounts{
+ let total_works:i64=c.query_row("SELECT count(*) FROM works WHERE merged_into IS NULL AND trim(description)!=''",[],|r|r.get(0)).unwrap_or(0);
+ let untranslated_works:i64=c.query_row("SELECT count(*) FROM works w WHERE w.merged_into IS NULL AND trim(w.description)!='' AND NOT EXISTS(SELECT 1 FROM translations t WHERE t.target_kind='work' AND t.target_id=w.id AND t.target_lang=?1)",[lang],|r|r.get(0)).unwrap_or(0);
+ let cached_chars=collect_cached_characters(c);
+ let total_characters=cached_chars.len() as i64;
+ let mut translated_chars:HashSet<String>=HashSet::new();
+ if let Ok(mut stmt)=c.prepare("SELECT target_id FROM translations WHERE target_kind='character' AND target_lang=?1"){
+  if let Ok(rows)=stmt.query_map([lang],|r|r.get::<_,String>(0)){
+   for id in rows.flatten(){translated_chars.insert(id);}
+  }
+ }
+ let untranslated_characters=cached_chars.iter().filter(|ch|!translated_chars.contains(&ch.id)).count() as i64;
+ TranslationCounts{untranslated_works,total_works,untranslated_characters,total_characters}
+}
+fn settings_json(device_dir:&Path,settings:&StoredSettings,counts:&TranslationCounts)->Value{
  let has_key=has_api_key(device_dir,settings);
  json!({
   "provider":settings.provider.as_str(),
@@ -153,9 +312,13 @@ fn settings_json(device_dir:&Path,settings:&StoredSettings,untranslated_works:i6
   "default_model":settings.provider.default_model(),
   "target_language":settings.target_language,
   "system_prompt":settings.system_prompt,
+  "keep_original_names":settings.keep_original_names,
   "has_api_key":has_key,
   "configured":is_configured(device_dir,settings),
-  "untranslated_works":untranslated_works,
+  "untranslated_works":counts.untranslated_works,
+  "total_works":counts.total_works,
+  "untranslated_characters":counts.untranslated_characters,
+  "total_characters":counts.total_characters,
  })
 }
 
@@ -175,13 +338,13 @@ fn build_genai_client(settings:&StoredSettings,api_key:String)->R<(Client,String
  Ok((client,model_name))
 }
 
-async fn execute_llm_translation(device_dir:&Path,settings:&StoredSettings,text:&str)->R<(String,String)>{
+async fn execute_llm_translation(device_dir:&Path,settings:&StoredSettings,text:&str,glossary:&[(String,String)])->R<(String,String)>{
  let trimmed=text.trim();
  if trimmed.is_empty(){return Err("Source description is empty".into());}
  if trimmed.chars().count()>MAX_SOURCE_CHARS{return Err(format!("Source text is too long (max {MAX_SOURCE_CHARS} characters)"));}
  let api_key=settings.credential_id.as_deref().and_then(|id|cred_read(device_dir,id).ok()).unwrap_or_default();
  let (client,model_name)=build_genai_client(settings,api_key)?;
- let prompt=if settings.system_prompt.trim().is_empty(){default_system_prompt(&settings.target_language)}else{settings.system_prompt.trim().to_owned()};
+ let prompt=effective_system_prompt(settings,glossary);
  let req=ChatRequest::from_system(prompt).append_message(ChatMessage::user(trimmed));
  let res=client.exec_chat(&model_name,req,None).await.map_err(|e|format!("LLM translation failed: {e}"))?;
  let translated=res.into_first_text().map(|s|s.trim().to_owned()).filter(|s|!s.is_empty()).ok_or_else(||"LLM returned an empty translation".to_owned())?;
@@ -195,15 +358,11 @@ fn require_writable(a:&App,h:&HeaderMap)->Result<(),ApiError>{
 fn validate_kind(kind:&str)->R<&'static str>{match kind{"work"=>Ok("work"),"character"=>Ok("character"),_=>Err("Invalid translation target kind".into())}}
 fn validate_id(id:&str)->R<&str>{let t=id.trim();if t.is_empty()||t.len()>128||t.chars().any(char::is_control){return Err("Invalid target id".into());}Ok(t)}
 
-fn count_untranslated_works(c:&Connection,lang:&str)->i64{
- c.query_row("SELECT count(*) FROM works w WHERE trim(w.description)!='' AND NOT EXISTS(SELECT 1 FROM translations t WHERE t.target_kind='work' AND t.target_id=w.id AND t.target_lang=?1)",[lang],|r|r.get(0)).unwrap_or(0)
-}
-
 pub async fn get_settings(State(a):State<App>,h:HeaderMap)->crate::Result<Value>{
  require_writable(&a,&h)?;
  let settings=load_settings(&a.device_dir);
- let untranslated=count_untranslated_works(&a.db.lock().unwrap(),&settings.target_language);
- Ok(Json(settings_json(&a.device_dir,&settings,untranslated)))
+ let counts=count_translation_targets(&a.db.lock().unwrap(),&settings.target_language);
+ Ok(Json(settings_json(&a.device_dir,&settings,&counts)))
 }
 
 #[derive(Deserialize)]
@@ -214,6 +373,7 @@ pub struct SettingsPatch{
  pub model:Option<String>,
  pub target_language:Option<String>,
  pub system_prompt:Option<String>,
+ pub keep_original_names:Option<bool>,
  pub api_key:Option<String>,
  #[serde(default)]pub clear_api_key:bool,
 }
@@ -235,6 +395,7 @@ pub async fn save_settings_route(State(a):State<App>,h:HeaderMap,Json(patch):Jso
   if prompt.chars().count()>MAX_PROMPT_CHARS{return Err(ApiError(format!("System prompt exceeds {MAX_PROMPT_CHARS} characters")));}
   settings.system_prompt=prompt.trim().to_owned();
  }
+ if let Some(keep)=patch.keep_original_names{settings.keep_original_names=keep;}
  if patch.clear_api_key{
   if let Some(old_id)=settings.credential_id.take(){let _=cred_delete(&a.device_dir,&old_id);}
  }else if let Some(key)=patch.api_key{
@@ -246,8 +407,8 @@ pub async fn save_settings_route(State(a):State<App>,h:HeaderMap,Json(patch):Jso
   }
  }
  save_settings(&a.device_dir,&settings)?;
- let untranslated=count_untranslated_works(&a.db.lock().unwrap(),&settings.target_language);
- Ok(Json(settings_json(&a.device_dir,&settings,untranslated)))
+ let counts=count_translation_targets(&a.db.lock().unwrap(),&settings.target_language);
+ Ok(Json(settings_json(&a.device_dir,&settings,&counts)))
 }
 
 #[derive(Deserialize,Default)]
@@ -258,6 +419,7 @@ pub struct TestRequest{
  pub model:Option<String>,
  pub api_key:Option<String>,
  pub target_language:Option<String>,
+ pub keep_original_names:Option<bool>,
 }
 
 pub async fn test_connection(State(a):State<App>,h:HeaderMap,Json(req):Json<TestRequest>)->crate::Result<Value>{
@@ -267,13 +429,15 @@ pub async fn test_connection(State(a):State<App>,h:HeaderMap,Json(req):Json<Test
  if let Some(url)=req.base_url{settings.base_url=normalize_base_url(&url)?;}
  if let Some(m)=req.model{settings.model=m.trim().to_owned();}
  if let Some(l)=req.target_language{if !l.trim().is_empty(){settings.target_language=l.trim().to_owned();}}
+ if let Some(keep)=req.keep_original_names{settings.keep_original_names=keep;}
  let api_key=match req.api_key.as_deref().map(str::trim).filter(|s|!s.is_empty()){
   Some(k)=>k.to_owned(),
   None=>settings.credential_id.as_deref().and_then(|id|cred_read(&a.device_dir,id).ok()).unwrap_or_default(),
  };
  let (client,model_name)=build_genai_client(&settings,api_key)?;
  let started=Instant::now();
- let chat=ChatRequest::from_system(default_system_prompt(&settings.target_language)).append_message(ChatMessage::user("A short visual novel story about summer memories."));
+ let sample_glossary=vec![("Minakami Takumi".to_owned(),"水上 拓海".to_owned())];
+ let chat=ChatRequest::from_system(effective_system_prompt(&settings,&sample_glossary)).append_message(ChatMessage::user("Minakami Takumi spends a quiet summer with his childhood friend."));
  let res=client.exec_chat(&model_name,chat,None).await.map_err(|e|ApiError(format!("Connection test failed: {e}")))?;
  let sample=res.into_first_text().map(|s|s.trim().to_owned()).filter(|s|!s.is_empty()).ok_or_else(||ApiError("Provider returned an empty reply".into()))?;
  Ok(Json(json!({"ok":true,"provider":settings.provider.as_str(),"model":model_name,"latency_ms":started.elapsed().as_millis() as u64,"sample":sample})))
@@ -332,7 +496,11 @@ async fn translate_one_inner(a:App,h:HeaderMap,kind:&str,id:String,req:Translate
   ).optional()?;
   if let Some(hit)=cached{return Ok(Json(json!({"configured":true,"target_language":settings.target_language,"translation":hit})));}
  }
- let (translated,model_name)=execute_llm_translation(&a.device_dir,&settings,&source_text).await?;
+ let glossary=if settings.keep_original_names{
+  let c=a.db.lock().unwrap();
+  if kind=="work"{work_glossary_from_db(&c,&id)}else{character_glossary_from_db(&c,&id)}
+ }else{Vec::new()};
+ let (translated,model_name)=execute_llm_translation(&a.device_dir,&settings,&source_text,&glossary).await?;
  let now=db::now();
  {
   let c=a.db.lock().unwrap();
@@ -375,56 +543,111 @@ pub async fn batch_status(State(a):State<App>,h:HeaderMap)->crate::Result<Value>
  Ok(Json(serde_json::to_value(a.translation_batch.snapshot()).unwrap()))
 }
 
-#[derive(Deserialize,Default)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BatchRequest{pub limit:Option<usize>,#[serde(default)]pub force:bool}
+pub struct BatchRequest{
+ pub limit:Option<usize>,
+ #[serde(default)]pub force:bool,
+ #[serde(default="default_batch_scope")]pub scope:String,
+}
+impl Default for BatchRequest{
+ fn default()->Self{Self{limit:None,force:false,scope:default_batch_scope()}}
+}
+
+struct BatchItem{kind:&'static str,id:String,title:String,desc:String,glossary:Vec<(String,String)>}
 
 pub async fn start_batch(State(a):State<App>,h:HeaderMap,Json(req):Json<BatchRequest>)->crate::Result<Value>{
  require_writable(&a,&h)?;
+ let scope=match req.scope.trim(){""|"works"=>"works","characters"=>"characters","all"=>"all",_=>return Err(ApiError("Invalid batch scope (must be works, characters, or all)".into()))};
  let settings=load_settings(&a.device_dir);
  if !is_configured(&a.device_dir,&settings){return Err(ApiError("Configure an LLM provider and API key first".into()));}
  {
   let s=a.translation_batch.state.lock().unwrap();
   if s.running{return Err(ApiError("A batch translation is already running".into()));}
  }
- let works:Vec<(String,String,String)>={
+ let items:Vec<BatchItem>={
   let c=a.db.lock().unwrap();
-  let mut stmt=c.prepare("SELECT w.id,w.title,w.description,t.source_hash FROM works w LEFT JOIN translations t ON t.target_kind='work' AND t.target_id=w.id AND t.target_lang=?1 WHERE trim(w.description)!='' ORDER BY w.title")?;
-  let rows=stmt.query_map([&settings.target_language],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-  rows.into_iter().filter(|(_,_,desc,existing)|req.force||existing.as_deref()!=Some(source_hash(desc).as_str())).take(req.limit.unwrap_or(usize::MAX)).map(|(id,title,desc,_)|(id,title,desc)).collect()
+  let mut list=Vec::new();
+  if matches!(scope,"works"|"all"){
+   let mut stmt=c.prepare("SELECT w.id,w.title,w.description,t.source_hash FROM works w LEFT JOIN translations t ON t.target_kind='work' AND t.target_id=w.id AND t.target_lang=?1 WHERE w.merged_into IS NULL AND trim(w.description)!='' ORDER BY w.title")?;
+   let rows=stmt.query_map([&settings.target_language],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+   for (id,title,desc,existing) in rows{
+    if req.force||existing.as_deref()!=Some(source_hash(&desc).as_str()){
+     let glossary=if settings.keep_original_names{work_glossary_from_db(&c,&id)}else{Vec::new()};
+     list.push(BatchItem{kind:"work",id,title,desc,glossary});
+    }
+   }
+  }
+  if matches!(scope,"characters"|"all"){
+   let mut existing_hashes:HashMap<String,String>=HashMap::new();
+   if let Ok(mut stmt)=c.prepare("SELECT target_id,source_hash FROM translations WHERE target_kind='character' AND target_lang=?1"){
+    if let Ok(rows)=stmt.query_map([&settings.target_language],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))){
+     for (cid,sh) in rows.flatten(){existing_hashes.insert(cid,sh);}
+    }
+   }
+   for ch in collect_cached_characters(&c){
+    if req.force||existing_hashes.get(&ch.id).map(String::as_str)!=Some(source_hash(&ch.description).as_str()){
+     let glossary=if settings.keep_original_names{ch.glossary}else{Vec::new()};
+     list.push(BatchItem{kind:"character",id:ch.id,title:ch.title,desc:ch.description,glossary});
+    }
+   }
+  }
+  if let Some(lim)=req.limit{list.truncate(lim);}
+  list
  };
- let total=works.len();
+ let total=items.len();
  {
   let mut s=a.translation_batch.state.lock().unwrap();
-  *s=BatchStatus{running:total>0,total,translated:0,failed:0,skipped:0,current_title:None,last_error:None,started_at:Some(db::now()),finished_at:if total==0{Some(db::now())}else{None}};
+  *s=BatchStatus{running:total>0,scope:scope.into(),total,translated:0,failed:0,skipped:0,current_title:None,last_error:None,started_at:Some(db::now()),finished_at:if total==0{Some(db::now())}else{None}};
  }
  if total==0{return Ok(Json(serde_json::to_value(a.translation_batch.snapshot()).unwrap()));}
- let app=a.clone();
- let runner=Arc::clone(&a.translation_batch);
- let handle=tokio::spawn(async move{
-  for (id,title,desc) in works{
-   {runner.state.lock().unwrap().current_title=Some(title.clone());}
-   let shash=source_hash(&desc);
-   match execute_llm_translation(&app.device_dir,&settings,&desc).await{
-    Ok((translated,model_name))=>{
-     let now=db::now();
-     let saved={
-      let c=app.db.lock().unwrap();
-      let res=c.execute("INSERT INTO translations(target_kind,target_id,target_lang,source_hash,translated_text,provider,model,updated) VALUES('work',?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(target_kind,target_id,target_lang) DO UPDATE SET source_hash=excluded.source_hash,translated_text=excluded.translated_text,provider=excluded.provider,model=excluded.model,updated=excluded.updated",params![&id,&settings.target_language,&shash,&translated,settings.provider.as_str(),&model_name,now]);
-      if res.is_ok(){let _=crate::catalog_changes::bump(&c);}
-      res
-     };
-     let mut s=runner.state.lock().unwrap();
-     match saved{Ok(_)=>s.translated+=1,Err(e)=>{s.failed+=1;s.last_error=Some(e.to_string());}}
+ let queue=Arc::new(Mutex::new(VecDeque::from(items)));
+ let stop_flag=Arc::new(AtomicBool::new(false));
+ let remaining_workers=Arc::new(Mutex::new(BATCH_CONCURRENCY.min(total)));
+ let worker_count=BATCH_CONCURRENCY.min(total);
+ *a.translation_batch.stop_flag.lock().unwrap()=Some(stop_flag.clone());
+ let mut handles=Vec::with_capacity(worker_count);
+ for _ in 0..worker_count{
+  let app=a.clone();
+  let runner=Arc::clone(&a.translation_batch);
+  let q=Arc::clone(&queue);
+  let flag=Arc::clone(&stop_flag);
+  let rem=Arc::clone(&remaining_workers);
+  let cfg=settings.clone();
+  let handle=tokio::spawn(async move{
+   loop{
+    if flag.load(Ordering::SeqCst){break;}
+    let item=q.lock().unwrap().pop_front();
+    let Some(item)=item else{break;};
+    {runner.state.lock().unwrap().current_title=Some(item.title.clone());}
+    let shash=source_hash(&item.desc);
+    match execute_llm_translation(&app.device_dir,&cfg,&item.desc,&item.glossary).await{
+     Ok((translated,model_name))=>{
+      if flag.load(Ordering::SeqCst){break;}
+      let now=db::now();
+      let saved={
+       let c=app.db.lock().unwrap();
+       let res=c.execute("INSERT INTO translations(target_kind,target_id,target_lang,source_hash,translated_text,provider,model,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(target_kind,target_id,target_lang) DO UPDATE SET source_hash=excluded.source_hash,translated_text=excluded.translated_text,provider=excluded.provider,model=excluded.model,updated=excluded.updated",params![item.kind,&item.id,&cfg.target_language,&shash,&translated,cfg.provider.as_str(),&model_name,now]);
+       if res.is_ok(){let _=crate::catalog_changes::bump(&c);}
+       res
+      };
+      let mut s=runner.state.lock().unwrap();
+      match saved{Ok(_)=>s.translated+=1,Err(e)=>{s.failed+=1;s.last_error=Some(e.to_string());}}
+     }
+     Err(e)=>{let mut s=runner.state.lock().unwrap();s.failed+=1;s.last_error=Some(e);}
     }
-    Err(e)=>{let mut s=runner.state.lock().unwrap();s.failed+=1;s.last_error=Some(e);}
+    tokio::time::sleep(Duration::from_millis(BATCH_PACING_MS)).await;
    }
-   tokio::time::sleep(Duration::from_millis(BATCH_PACING_MS)).await;
-  }
-  let mut s=runner.state.lock().unwrap();s.running=false;s.current_title=None;s.finished_at=Some(db::now());
-  *runner.abort.lock().unwrap()=None;
- });
- *a.translation_batch.abort.lock().unwrap()=Some(handle.abort_handle());
+   let last={let mut r=rem.lock().unwrap();*r=r.saturating_sub(1);*r==0};
+   if last{
+    let mut s=runner.state.lock().unwrap();s.running=false;s.current_title=None;s.finished_at=Some(db::now());
+    runner.abort.lock().unwrap().clear();
+    *runner.stop_flag.lock().unwrap()=None;
+   }
+  });
+  handles.push(handle.abort_handle());
+ }
+ *a.translation_batch.abort.lock().unwrap()=handles;
  Ok(Json(serde_json::to_value(a.translation_batch.snapshot()).unwrap()))
 }
 
@@ -478,9 +701,9 @@ mod tests{
   let mut owner=HeaderMap::new();
   owner.insert(axum::http::header::AUTHORIZATION,format!("Bearer {}",app.token).parse().unwrap());
 
-  // 1. OpenAI-compatible
-  let saved=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Openai),base_url:Some(format!("{base}/v1")),model:Some("gpt-test".into()),target_language:Some("zh-TW".into()),system_prompt:None,api_key:Some("test-openai-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap().0;
-  assert_eq!(saved["has_api_key"],true);assert_eq!(saved["configured"],true);
+  // 1. OpenAI-compatible + keep_original_names glossary injection
+  let saved=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Openai),base_url:Some(format!("{base}/v1")),model:Some("gpt-test".into()),target_language:Some("zh-TW".into()),system_prompt:None,keep_original_names:Some(true),api_key:Some("test-openai-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap().0;
+  assert_eq!(saved["has_api_key"],true);assert_eq!(saved["configured"],true);assert_eq!(saved["keep_original_names"],true);
   let res=translate_work(State(app.clone()),owner.clone(),ApiPath("w1".into()),Json(TranslateRequest::default())).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(res["translation"]["translated_text"],"OPENAI_ZH:Hello [spoiler]secret[/spoiler]");
   assert_eq!(res["translation"]["cached"],false);
@@ -493,13 +716,13 @@ mod tests{
   assert_eq!(fetched["translation"]["stale"],true);
 
   // 2. Claude-compatible
-  let _=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Claude),base_url:Some(format!("{base}/v1")),model:Some("claude-test".into()),target_language:None,system_prompt:None,api_key:Some("test-claude-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap();
+  let _=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Claude),base_url:Some(format!("{base}/v1")),model:Some("claude-test".into()),target_language:None,system_prompt:None,keep_original_names:Some(false),api_key:Some("test-claude-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap();
   let res=translate_work(State(app.clone()),owner.clone(),ApiPath("w1".into()),Json(TranslateRequest{source_text:None,lang:None,force:true})).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(res["translation"]["translated_text"],"CLAUDE_ZH:Updated text");
   assert_eq!(res["translation"]["provider"],"claude");
 
   // 3. Gemini-compatible + character translation
-  let _=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Gemini),base_url:Some(format!("{base}/v1beta")),model:Some("gemini-2.5-flash".into()),target_language:None,system_prompt:None,api_key:Some("test-gemini-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap();
+  let _=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:Some(Provider::Gemini),base_url:Some(format!("{base}/v1beta")),model:Some("gemini-2.5-flash".into()),target_language:None,system_prompt:None,keep_original_names:Some(true),api_key:Some("test-gemini-key".into()),clear_api_key:false})).await.map_err(|e|e.0).unwrap();
   let res=translate_character(State(app.clone()),owner.clone(),ApiPath("c123".into()),Json(TranslateRequest{source_text:Some("Heroine bio".into()),lang:None,force:false})).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(res["translation"]["translated_text"],"GEMINI_ZH:Heroine bio");
   assert_eq!(res["translation"]["provider"],"gemini");
@@ -508,20 +731,25 @@ mod tests{
   let tested=test_connection(State(app.clone()),owner.clone(),Json(TestRequest::default())).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(tested["ok"],true);assert_eq!(tested["provider"],"gemini");
 
-  // 5. Batch translation translates untranslated work
-  app.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,description) VALUES('w2','Winter','ウィンター','Cold snow')",[]).unwrap();
-  let started=start_batch(State(app.clone()),owner.clone(),Json(BatchRequest::default())).await.map_err(|e|e.0).unwrap().0;
-  assert_eq!(started["total"],1);
-  for _ in 0..30{if !app.translation_batch.snapshot().running{break;}tokio::time::sleep(Duration::from_millis(50)).await;}
+  // 5. Batch translation translates untranslated works AND cached characters
+  app.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title,vndb_id,description) VALUES('w2','Winter','ウィンター','v99','Cold snow')",[]).unwrap();
+  app.db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('exploration.v4.work.v99.1',?1)",[json!({"characters":[{"id":"c900","name":"Hoshino Nagisa","original":"星野 なぎさ","description":"Cheerful classmate"}]}).to_string()]).unwrap();
+  let prompt_with_names=effective_system_prompt(&load_settings(&app.device_dir),&work_glossary_from_db(&app.db.lock().unwrap(),"w2"));
+  assert!(prompt_with_names.contains("Hoshino Nagisa -> 星野 なぎさ"));
+  let started=start_batch(State(app.clone()),owner.clone(),Json(BatchRequest{limit:None,force:false,scope:"all".into()})).await.map_err(|e|e.0).unwrap().0;
+  assert_eq!(started["total"],2);
+  for _ in 0..40{if !app.translation_batch.snapshot().running{break;}tokio::time::sleep(Duration::from_millis(50)).await;}
   let done=app.translation_batch.snapshot();
-  assert!(!done.running);assert_eq!(done.translated,1);assert_eq!(done.failed,0);
+  assert!(!done.running);assert_eq!(done.translated,2);assert_eq!(done.failed,0);
   let w2=get_work_translation(State(app.clone()),owner.clone(),ApiPath("w2".into()),Query(GetQuery::default())).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(w2["translation"]["translated_text"],"GEMINI_ZH:Cold snow");
+  let c900=get_character_translation(State(app.clone()),owner.clone(),ApiPath("c900".into()),Query(GetQuery::default())).await.map_err(|e|e.0).unwrap().0;
+  assert_eq!(c900["translation"]["translated_text"],"GEMINI_ZH:Cheerful classmate");
 
   // 6. Delete translation & clear key
   let del=delete_character_translation(State(app.clone()),owner.clone(),ApiPath("c123".into()),Query(DeleteQuery::default())).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(del["deleted"],true);
-  let cleared=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:None,base_url:Some("https://api.openai.com/v1".into()),model:None,target_language:None,system_prompt:None,api_key:None,clear_api_key:true})).await.map_err(|e|e.0).unwrap().0;
+  let cleared=save_settings_route(State(app.clone()),owner.clone(),Json(SettingsPatch{provider:None,base_url:Some("https://api.openai.com/v1".into()),model:None,target_language:None,system_prompt:None,keep_original_names:None,api_key:None,clear_api_key:true})).await.map_err(|e|e.0).unwrap().0;
   assert_eq!(cleared["has_api_key"],false);assert_eq!(cleared["configured"],false);
 
   server.abort();
