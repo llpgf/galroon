@@ -81,6 +81,7 @@ pub mod access;
 pub mod network;
 pub mod updates;
 pub mod release_calendar;
+pub mod translation;
 pub mod pairing;
 pub mod lan_tls;
 pub mod lan_client;
@@ -97,7 +98,7 @@ use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub data_root:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>,pub relaunch:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<backup::RelaunchRequest>>>>}
+#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub translation_batch:std::sync::Arc<translation::BatchRunner>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub data_root:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>,pub relaunch:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<backup::RelaunchRequest>>>>}
 pub struct ApiError(pub String);
 impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"||self.0=="Owner access required for full backups"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
@@ -119,7 +120,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
-    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,data_root:dir.clone(),state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1)),relaunch:Default::default()})
+    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),translation_batch:Default::default(),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,data_root:dir.clone(),state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1)),relaunch:Default::default()})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
@@ -150,6 +151,12 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/bangumi/vndb/{work_id}",get(bangumi::vndb::get))
     .route("/api/context",get(context::get).post(context::update))
     .route("/api/release-calendar",get(release_calendar::get)).route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
+    .route("/api/translation/settings",get(translation::get_settings).post(translation::save_settings_route))
+    .route("/api/translation/test",post(translation::test_connection))
+    .route("/api/translations/batch",get(translation::batch_status).post(translation::start_batch))
+    .route("/api/translations/batch/cancel",post(translation::cancel_batch))
+    .route("/api/translations/work/{id}",get(translation::get_work_translation).post(translation::translate_work).delete(translation::delete_work_translation))
+    .route("/api/translations/character/{id}",get(translation::get_character_translation).post(translation::translate_character).delete(translation::delete_character_translation))
     .route("/api/access/status",get(access::status)).route("/api/access/me",get(access::me))
     .route("/api/access/setup",post(access::configure)).route("/api/access/password",post(access::change_password))
     .route("/api/access/login",post(access::web_login_from)).route("/api/access/logout",post(access::logout))

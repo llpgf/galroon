@@ -90,6 +90,7 @@ pub fn open(path: &Path) -> anyhow_result::Result<Db> {
     crate::suggestions::migrate(&tx)?;
     crate::bangumi::migrate(&tx)?;
     crate::vndb_sync::migrate(&tx)?;
+    crate::translation::migrate(&tx)?;
     crate::catalog_changes::migrate(&tx)?;
     crate::collection_download::migrate(&tx,version<48)?;
     if version>0 && version<53 {

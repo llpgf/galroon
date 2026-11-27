@@ -31,7 +31,8 @@ fn visit_files(c:&Connection,rid:&str,mut visit:impl FnMut(Value)->R<()>)->R<()>
 }
 fn files(c:&Connection,rid:&str)->R<Vec<Value>>{let mut result=Vec::new();visit_files(c,rid,|file|{result.push(file);Ok(())})?;Ok(result)}
 fn resource_metadata(c:&Connection,rid:&str)->R<Value>{let mut v=sql(c.query_row("SELECT root_id,title,revision,relative_path,work_id,release_label,manual_group FROM resources WHERE id=?1",[rid],|r|Ok(json!({"id":rid,"root_id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"revision":r.get::<_,i64>(2)?,"relative":r.get::<_,String>(3)?,"work_id":r.get::<_,Option<String>>(4)?,"release":r.get::<_,String>(5)?,"manual":r.get::<_,bool>(6)?}))))?;v["bindings"]=json!(editions::bindings(c,rid)?);for binding in v["bindings"].as_array_mut().unwrap(){use rusqlite::OptionalExtension;let wid=binding["work_id"].as_str().unwrap();binding["work_title"]=json!(sql(c.query_row("SELECT title FROM works WHERE id=?1",[wid],|r|r.get::<_,String>(0)).optional())?);binding["edition_label"]=if let Some(eid)=binding["release_id"].as_str(){json!(sql(c.query_row("SELECT label FROM releases WHERE id=?1",[eid],|r|r.get::<_,String>(0)).optional())?)}else{Value::Null};}Ok(v)}
-fn resource(c:&Connection,rid:&str)->R<Value>{let mut v=resource_metadata(c,rid)?;v["files"]=Value::Array(files(c,rid)?);Ok(v)}
+fn sorted_object(map:serde_json::Map<String,Value>)->Value{let sorted:BTreeMap<String,Value>=map.into_iter().collect();Value::Object(sorted.into_iter().collect())}
+fn resource(c:&Connection,rid:&str)->R<Value>{let Value::Object(mut m)=resource_metadata(c,rid)? else{unreachable!()};m.insert("files".into(),Value::Array(files(c,rid)?));Ok(sorted_object(m))}
 pub fn members(db:&Db,rid:&str)->R<Value>{resource(&*db.lock().map_err(|e|e.to_string())?,rid)}
 fn ids(c:&Connection,query:&str,rid:&str,target:&str)->R<Vec<String>>{let mut s=sql(c.prepare(query))?;let rows=sql(sql(s.query_map(params![rid,target],|r|r.get(0)))?.collect::<rusqlite::Result<Vec<_>>>())?;Ok(rows)}
 // Serialize directly into SHA-256; avoid retaining a second full JSON byte buffer.
@@ -101,14 +102,17 @@ pub(crate) fn snapshot(c:&Connection,rid:&str,v:&Selection)->R<Value>{
  if combined.clone().any(|f|f["root_id"]!=source["root_id"]){return Err("Finish restoring or moving these resource files before regrouping".into());}
  let mut base=PathBuf::from(combined.clone().next().unwrap()["relative"].as_str().unwrap());base.pop();for f in combined{let p=Path::new(f["relative"].as_str().unwrap());if p.is_absolute()||p.components().any(|x|!matches!(x,std::path::Component::Normal(_)|std::path::Component::CurDir)){return Err("File has an unsafe source-relative path".into());}while !p.starts_with(&base){if !base.pop(){return Err("Files do not share a source folder".into());}}}
  let (retired_plans,retired_jobs)=snapshot_plan_guards(c,rid,v)?;
- let mut result=json!({"target_title":target.as_ref().map(|t|t["title"].as_str().unwrap()).unwrap_or(v.title.trim()),"target_relative":base.to_string_lossy()});
- // Move owned JSON trees into the snapshot instead of serializing borrowed Values again.
- let object=result.as_object_mut().unwrap();
+ let target_title=target.as_ref().map(|t|t["title"].as_str().unwrap().to_owned()).unwrap_or_else(||v.title.trim().to_owned());
+ let mut object=serde_json::Map::new();
+ // Insert keys in alphabetical order so snapshot_digest matches stream_snapshot_digest even with serde_json/preserve_order.
+ object.insert("retired_jobs".into(),Value::Array(retired_jobs.into_iter().map(Value::String).collect()));
+ object.insert("retired_plans".into(),Value::Array(retired_plans.into_iter().map(Value::String).collect()));
+ object.insert("selected".into(),Value::Array(selected));
  object.insert("source".into(),source);
  object.insert("target".into(),target.unwrap_or(Value::Null));
- object.insert("selected".into(),Value::Array(selected));
- object.insert("retired_plans".into(),Value::Array(retired_plans.into_iter().map(Value::String).collect()));
- object.insert("retired_jobs".into(),Value::Array(retired_jobs.into_iter().map(Value::String).collect()));
+ object.insert("target_relative".into(),json!(base.to_string_lossy()));
+ object.insert("target_title".into(),json!(target_title));
+ let mut result=Value::Object(object);
  result["digest"]=json!(snapshot_digest(&result)?);Ok(result)
 }
 // The HTTP caller holds one read transaction across validation, digest and page query.

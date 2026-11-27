@@ -16,7 +16,8 @@ import {ArrowLeft,RefreshCw,ExternalLink,FolderOpen,Eye,EyeOff,Users} from 'luci
 import {useTranslation} from 'react-i18next';
 import {type Work} from './api';
 import {titleFor,tagNames,coverTone} from './library';
-import {visibleCharacter,visibleWorkTags,voiceFor,plainDescription,type Person,type Character,type Company} from './exploration';
+import {visibleCharacter,visibleWorkTags,voiceFor,type Person,type Character,type Company} from './exploration';
+import {TranslatedDescription} from './TranslatedDescription';
 
 function Credit({person,role,onOpen,hidden}:{person:Person;role:string;onOpen:(p:Person)=>void;hidden:boolean}){
  const names=useNames();
@@ -25,7 +26,7 @@ function Credit({person,role,onOpen,hidden}:{person:Person;role:string;onOpen:(p
 type Profile={kind:'character';character:Character}|{kind:'person';person:Person}|{kind:'company';company:Company}|{kind:'search';query:DiscoveryQuery}|{kind:'work';work:DiscoveryWork};
 export function WorkExperience({canWrite=false,backLabel="myCollection",initialSearch,work,safe,titleMode,actions,children,onBack,onWork}:{canWrite?:boolean;backLabel?:string;initialSearch?:DiscoveryQuery|null;work:Work;safe:boolean;titleMode:'display'|'original';actions:ReactNode;children:ReactNode;onBack:()=>void;onWork:(w:Work)=>void}){
  const {t}=useTranslation();const names=useNames();const [spoilers,setSpoilers]=useState(false),[allStaff,setAllStaff]=useState(true),[expandedStaff,setExpandedStaff]=useState(false),[frames,setFrames]=useState<{view:Profile;y:number;origin:HTMLElement|null}[]>(()=>initialSearch?[{view:{kind:'search',query:initialSearch},y:0,origin:null}]:[]);
- const [editingRelations,setEditingRelations]=useState(false),[expanded,setExpanded]=useState(false);const relationRevision=useRelationshipRevision();
+ const [editingRelations,setEditingRelations]=useState(false);const relationRevision=useRelationshipRevision();
  const rootScroll=useRef(0),container=useRef<HTMLDivElement>(null);
  const {data,error,loading,attempt,refresh}=useWorkExploration(`/works/${work.id}/exploration`,spoilers,relationRevision);
  const ownership=useOwnedWorks((data?.vn?.relations||[]).map(work=>work.id),frames.length===0);const works=ownership.works;
@@ -37,7 +38,6 @@ export function WorkExperience({canWrite=false,backLabel="myCollection",initialS
  const characters=(data?.characters||[]).filter(c=>visibleCharacter(c,work.vndb_id||'',spoilers)).sort((a,b)=>{const rank=(c:Character)=>({main:0,primary:1,side:2,appears:3}[c.vns?.find(v=>v.id===work.vndb_id)?.role||'']??4);return rank(a)-rank(b)||a.name.localeCompare(b.name);});
  const credits=(data?.vn?.staff||[]).filter(p=>allStaff||p.eid==null);const seen=new Set<string>();const staff=credits.filter(p=>{const key=`${p.id}:${p.aid}:${p.role}:${p.eid}:${p.note}`;if(seen.has(key))return false;seen.add(key);return true;});
  const jump=(id:string)=>container.current?.querySelector<HTMLElement>('#'+id)?.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});
- const description=plainDescription(work.description,spoilers);
  // Works without a VNDB link have no credits to explore, so one notice replaces three empty sections.
  const local=!work.vndb_id;
  const role=(p:Person)=>t('staff_'+p.role,{defaultValue:p.role||t('staffCredit')});
@@ -45,7 +45,7 @@ export function WorkExperience({canWrite=false,backLabel="myCollection",initialS
   <div className="exploration-frame" hidden={frames.length>0}>
    <header className="work-hero"><Picture image={{url:work.cover}} name="" hidden={safe} className="work-hero-backdrop"/>
    <button className="back-button" onClick={onBack}><ArrowLeft size={16}/>{t(backLabel)}</button>
-   <div className="work-detail"><Picture image={{url:work.cover}} name={work.title} hidden={safe} className={'detail-cover cover-'+coverTone(work.id)} fallback={<span className="cover-title" aria-hidden="true">{work.original_title||work.title}</span>}/><div className="work-introduction"><h1 tabIndex={-1}>{titleFor(work,titleMode)}</h1>{work.original_title!==work.title&&<p className="original">{work.original_title}</p>}<p className="work-facts"><span className="work-companies">{data?.vn?.developers?.length?data.vn.developers.map(company=><button key={company.id} onClick={()=>open({kind:'company',company})}>{names.name(company)}</button>):!work.vndb_id&&work.developer||t('unknown')}</span><span>{work.released||t('unknown')}</span>{work.vndb_id&&<a href={`https://vndb.org/${work.vndb_id}`} target="_blank" rel="noreferrer">VNDB <ExternalLink size={12}/></a>}</p>{description&&<><p className={'description'+(expanded?' expanded':'')}>{description}</p>{description.length>360&&<button className="text-button description-toggle" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{t(expanded?'showLess':'readMore')}</button>}</>}{!description&&<p className="description muted">{t('noDescription')}</p>}<div className="work-actions"><button className="primary" onClick={()=>jump('work-files')}><FolderOpen size={16}/>{t('editionsFiles')}</button>{actions}<button aria-pressed={spoilers} title={t(spoilers?'showingSpoilers':'noSpoilers')} onClick={()=>setSpoilers(!spoilers)}>{spoilers?<Eye size={16}/>:<EyeOff size={16}/>}{t(spoilers?'showingSpoilers':'noSpoilers')}</button></div></div></div>
+   <div className="work-detail"><Picture image={{url:work.cover}} name={work.title} hidden={safe} className={'detail-cover cover-'+coverTone(work.id)} fallback={<span className="cover-title" aria-hidden="true">{work.original_title||work.title}</span>}/><div className="work-introduction"><h1 tabIndex={-1}>{titleFor(work,titleMode)}</h1>{work.original_title!==work.title&&<p className="original">{work.original_title}</p>}<p className="work-facts"><span className="work-companies">{data?.vn?.developers?.length?data.vn.developers.map(company=><button key={company.id} onClick={()=>open({kind:'company',company})}>{names.name(company)}</button>):!work.vndb_id&&work.developer||t('unknown')}</span><span>{work.released||t('unknown')}</span>{work.vndb_id&&<a href={`https://vndb.org/${work.vndb_id}`} target="_blank" rel="noreferrer">VNDB <ExternalLink size={12}/></a>}</p><TranslatedDescription kind="work" id={work.id} sourceText={work.description} spoilers={spoilers} canWrite={canWrite} collapsible emptyFallback={<p className="description muted">{t('noDescription')}</p>}/><div className="work-actions"><button className="primary" onClick={()=>jump('work-files')}><FolderOpen size={16}/>{t('editionsFiles')}</button>{actions}<button aria-pressed={spoilers} title={t(spoilers?'showingSpoilers':'noSpoilers')} onClick={()=>setSpoilers(!spoilers)}>{spoilers?<Eye size={16}/>:<EyeOff size={16}/>}{t(spoilers?'showingSpoilers':'noSpoilers')}</button></div></div></div>
    </header>
    {!local&&<nav className="work-anchors" aria-label={t('onThisPage')}>{['characters','staff','related'].map(s=><button key={s} onClick={()=>jump('work-'+s)}>{t(s)}</button>)}</nav>}
    {!loading&&!local&&<button className="text-button credits-refresh" onClick={refresh}><RefreshCw size={14}/>{t('refreshCredits')}</button>}

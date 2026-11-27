@@ -631,7 +631,8 @@ button.home-calendar-row:hover{background:var(--fill-2);filter:none}
 .description{font-size:15px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text-2);max-width:74ch}
 .work-introduction .description{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:22px}
 .work-introduction .description:has(+.description-toggle){margin-bottom:4px}
-.description-toggle{margin-bottom:20px;font-size:13px}
+.description-toggle{margin-bottom:8px;font-size:13px}
+.translation-bar{margin:4px 0 18px;gap:10px;flex-wrap:wrap;align-items:center}
 .work-introduction .description.expanded{display:block}
 .work-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .detail-actions{display:contents}
