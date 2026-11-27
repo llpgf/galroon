@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::OnceLock, time::{Duration, Instant}};
 use unicode_normalization::UnicodeNormalization;
-pub const ALGORITHM_VERSION:i64=15;
+pub const ALGORITHM_VERSION:i64=16;
 
 fn replace(text: &str, pattern: &str, with: &str) -> String {
     Regex::new(pattern).unwrap().replace_all(text, with).into_owned()
@@ -100,7 +100,11 @@ pub struct Input { pub titles: Vec<String>, pub queries: Vec<String>, pub direct
     pub runtime_filtered: bool,
     /// Distribution brands and release dates read from [brackets] in the resource and member names.
     /// They only corroborate a title; they never identify a work by themselves.
-    pub brands: Vec<String>, pub dates: Vec<String> }
+    pub brands: Vec<String>, pub dates: Vec<String>,
+    /// Single DLsite product code (VJ/RJ) retained only when local names yield no title queries.
+    pub dlsite_code: Option<String>,
+    /// Failure note when DLsite product-code title lookup could not resolve a usable title.
+    pub dlsite_error: Option<String> }
 /// Brand and date labels such as `[251219] [しばそふと]`. Store codes and numeric IDs are ignored.
 fn labels(raw: &str, brands: &mut Vec<String>, dates: &mut Vec<String>) {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -492,8 +496,9 @@ fn title_variants(title:&str)->Vec<(String,bool)>{
 pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     if query.len() > 4096 || query.trim().is_empty() { return Err("Enter a title or VNDB work ID (up to 4096 bytes)".into()); }
     let direct = Regex::new(r"(?i)^(?:https://vndb\.org/)?(v[0-9]+)/*$").unwrap();
-    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()), runtime_filtered: false, brands: vec![], dates: vec![] }); }
+    if let Some(c) = direct.captures(query.trim()) { return Ok(Input { titles: vec![query.into()], queries: vec![], direct_id: Some(c[1].to_lowercase()), runtime_filtered: false, brands: vec![], dates: vec![], dlsite_code: None, dlsite_error: None }); }
     let mut titles = Vec::new(); let mut seen = HashSet::new(); let (mut brands, mut dates) = (Vec::new(), Vec::new());
+    let mut dlsite_codes = Vec::new();
     let mut runtime_filtered=false;
     for (index,raw) in std::iter::once(query).chain(hints.iter().take(32).map(String::as_str)).enumerate() {
         // Only a relative name is searched; the caller never supplies the source root.
@@ -510,6 +515,7 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
         };
         for part in parts {
             labels(part, &mut brands, &mut dates);
+            for code in crate::dlsite::extract_codes(part) { if !dlsite_codes.contains(&code) { dlsite_codes.push(code); } }
             // Runtime files and media tracks are not competing work identities.
             if Regex::new(r"(?i)\.(?:txt|json|torrent|exe|dll|xp3|dat|ini|arc|ws2|png|jpg|jpeg|gif|bmp|webp|wav|mp3|ogg|flac|m4a|mp4|avi|log|ybn|ypf|pck|ks|tjs|html?|css|js|pdf)$").unwrap().is_match(part) { continue; }
             let title = clean_name(part);
@@ -533,7 +539,9 @@ pub fn prepare(query: &str, hints: &[String]) -> Result<Input, String> {
     }
     queries.truncate(3);
     for (title,ranking) in variants{if ranking&&seen.insert(normalized(&title)){titles.push(title);}}
-    Ok(Input { titles, queries, direct_id: None, runtime_filtered, brands, dates })
+    // Only invoke DLsite product-code lookup when local names yield no normal title queries and a single unambiguous code exists.
+    let dlsite_code=if queries.is_empty()&&dlsite_codes.len()==1{Some(dlsite_codes.remove(0))}else{None};
+    Ok(Input { titles, queries, direct_id: None, runtime_filtered, brands, dates, dlsite_code, dlsite_error: None })
 }
 #[test]fn shiina_rio_members_are_technical_and_do_not_trip_the_short_guard(){
     for member in ["Rio","SysGraphic1.arc","add01.ws2","Graphic2.ARC","Script.arc","Rio/内部タイトル/readme.txt"]{
@@ -687,7 +695,33 @@ pub fn vndb_api() -> String { std::env::var("GALROON_VNDB_API").ok().filter(|v|!
 struct Provider { client: reqwest::Client, cache: HashMap<String, (Instant,Value)> }
 static PROVIDER: OnceLock<tokio::sync::Mutex<Provider>> = OnceLock::new();
 pub(crate) async fn known_artwork(url:&str)->bool{let Some(provider)=PROVIDER.get()else{return false;};provider.lock().await.cache.values().any(|(_,data)|crate::artwork::referenced(data,url))}
-pub async fn search(input: Input) -> Result<Value,String> {
+/// Resolve a bare DLsite product code into normal title queries when local names are insufficient.
+/// Any network, HTTP or parse error is recorded on `input.dlsite_error` so matching falls back to review.
+pub async fn resolve_dlsite(input: &mut Input) {
+    resolve_dlsite_at(input, None).await;
+}
+pub(crate) async fn resolve_dlsite_at(input: &mut Input, base: Option<&str>) {
+    if !input.queries.is_empty() || input.direct_id.is_some() || input.dlsite_error.is_some() { return; }
+    let Some(code) = input.dlsite_code.clone() else { return; };
+    let looked = match base {
+        Some(base) => crate::dlsite::lookup_at(base, &code).await,
+        None => crate::dlsite::lookup(&code).await,
+    };
+    match looked {
+        Ok(product) => match prepare(&product.title, &[]) {
+            Ok(resolved) if !resolved.queries.is_empty() && resolved.direct_id.is_none() => {
+                input.titles = resolved.titles;
+                input.queries = resolved.queries;
+                for brand in resolved.brands { if !input.brands.contains(&brand) { input.brands.push(brand); } }
+                for date in resolved.dates { if !input.dates.contains(&date) { input.dates.push(date); } }
+            }
+            _ => { input.dlsite_error = Some(format!("DLsite returned no usable title for {code}")); }
+        },
+        Err(err) => { input.dlsite_error = Some(err); }
+    }
+}
+pub async fn search(mut input: Input) -> Result<Value,String> {
+    resolve_dlsite(&mut input).await;
     let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new() }));
     let mut provider = shared.try_lock().map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
     retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
@@ -759,7 +793,10 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
     }
     let mut results=rank(input,candidates);
     if incomplete {for c in &mut results{c["match"]["strength"]=json!("review");}}
-    Ok(json!({"algorithm_version":ALGORITHM_VERSION,"results":results,"searched":searched,"titles":input.titles,"incomplete":incomplete,"warning":warning,"needs_title":input.queries.is_empty()&&input.direct_id.is_none()}))
+    let mut out=json!({"algorithm_version":ALGORITHM_VERSION,"results":results,"searched":searched,"titles":input.titles,"incomplete":incomplete,"warning":warning,"needs_title":input.queries.is_empty()&&input.direct_id.is_none()});
+    if let Some(code)=&input.dlsite_code{out["dlsite_code"]=json!(code);}
+    if let Some(err)=&input.dlsite_error{out["dlsite_error"]=json!(err);}
+    Ok(out)
 }
 
 #[cfg(test)] mod tests {
@@ -1178,6 +1215,71 @@ async fn retrieve(input: &Input, provider: &mut Provider, endpoint: &str, spacin
         let input=prepare("First title",&["Second title".into(),"Third title".into()]).unwrap();
         let result=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(result["incomplete"],true);assert!(result["warning"].as_str().unwrap().contains("429"));assert_eq!(result["results"].as_array().unwrap().len(),1);assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),2);
         let _=retrieve(&input,&mut provider,&url,Duration::ZERO).await.unwrap();assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),3);task.abort();
+    }
+    #[tokio::test] async fn dlsite_product_code_resolves_bare_codes_and_skips_titled_folders() {
+        use axum::{extract::Query,http::StatusCode,routing::{get,post},Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        let hits=Arc::new(AtomicUsize::new(0));let dlsite_hits=hits.clone();
+        let dlsite_app=Router::new()
+            .route("/pro/api/=/product.json",get(move|Query(q):Query<HashMap<String,String>>|{let dlsite_hits=dlsite_hits.clone();async move{
+                dlsite_hits.fetch_add(1,Ordering::SeqCst);
+                match q.get("workno").map(String::as_str){
+                    Some("VJ01001192")=>(StatusCode::OK,Json(json!([{"workno":"VJ01001192","work_name":"こあくまちゃんの誘惑っ！","maker_name":"Clover GAME"}]))),
+                    Some("VJ01004242")=>(StatusCode::OK,Json(json!([{"workno":"VJ01004242","work_name":"メイドちゃんは迷途ちゅう","maker_name":"Clover GAME"}]))),
+                    Some("VJ00000500")=>(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({}))),
+                    _ =>(StatusCode::OK,Json(json!([]))),
+                }
+            }}))
+            .route("/soft/api/=/product.json",get(||async{(StatusCode::OK,Json(json!([])))}));
+        let dlsite_listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dlsite_base=format!("http://{}",dlsite_listener.local_addr().unwrap());
+        let dlsite_task=tokio::spawn(async move{axum::serve(dlsite_listener,dlsite_app).await.unwrap()});
+
+        let vndb_app=Router::new()
+            .route("/vn",post(|Json(v):Json<Value>|async move{
+                let q=v["filters"][2].as_str().unwrap_or("");
+                let rows=if q.contains("こあくまちゃん"){json!([{"id":"v48419","title":"Koakuma-chan no Yuuwaku!","alttitle":"こあくまちゃんの誘惑っ！"}])}
+                else if q.contains("メイドちゃん"){json!([{"id":"v55899","title":"Maid-chan wa Meitochuu","alttitle":"メイドちゃんは迷途ちゅう"}])}
+                else{json!([])};
+                Json(json!({"results":rows,"more":false}))
+            }))
+            .route("/release",post(||async{Json(json!({"results":[],"more":false}))}));
+        let vndb_listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let vndb_url=format!("http://{}/vn",vndb_listener.local_addr().unwrap());
+        let vndb_task=tokio::spawn(async move{axum::serve(vndb_listener,vndb_app).await.unwrap()});
+
+        // 1. Titled folders and bare codes with titled internal files never touch DLsite.
+        let mut titled=prepare("[250530][VJ01004242][Clover GAME] メイドちゃんは迷途ちゅう DL版&特典 (files).rar",&[]).unwrap();
+        assert_eq!(titled.dlsite_code,None);resolve_dlsite_at(&mut titled,Some(&dlsite_base)).await;
+        let mut inner_titled=prepare("VJ01001192",&["VJ01001192/こあくまちゃんの誘惑っ！/game.exe".into()]).unwrap();
+        assert_eq!(inner_titled.dlsite_code,None);resolve_dlsite_at(&mut inner_titled,Some(&dlsite_base)).await;
+        let mut multi_code=prepare("VJ01001192",&["VJ01001192/VJ01004242/data.bin".into()]).unwrap();
+        assert_eq!(multi_code.dlsite_code,None);resolve_dlsite_at(&mut multi_code,Some(&dlsite_base)).await;
+        assert_eq!(hits.load(Ordering::SeqCst),0,"Titled or ambiguous folders must not call DLsite");
+
+        // 2. Bare VJ01001192 and VJ01004242 resolve via DLsite and match strongly on VNDB.
+        let mut provider=Provider{client:reqwest::Client::new(),cache:HashMap::new()};
+        for (code,expected_id,expected_title) in [("VJ01001192","v48419","こあくまちゃんの誘惑っ！"),("VJ01004242","v55899","メイドちゃんは迷途ちゅう")]{
+            let mut input=prepare(code,&[format!("{code}/data/game.exe")]).unwrap();
+            assert!(input.queries.is_empty());assert_eq!(input.dlsite_code.as_deref(),Some(code));
+            resolve_dlsite_at(&mut input,Some(&dlsite_base)).await;
+            assert_eq!(input.titles,vec![clean_name(expected_title)]);assert!(input.dlsite_error.is_none());
+            let result=retrieve(&input,&mut provider,&vndb_url,Duration::ZERO).await.unwrap();
+            assert_eq!(result["results"][0]["id"],expected_id);assert_eq!(result["results"][0]["match"]["strength"],"strong");
+            assert_eq!(crate::automatch::review_reason(&result),None);
+        }
+
+        // 3. DLsite HTTP error or missing record falls back cleanly to review (never false match, never pauses job).
+        for bad in ["VJ00000500","VJ00000404"]{
+            let mut input=prepare(bad,&[]).unwrap();
+            resolve_dlsite_at(&mut input,Some(&dlsite_base)).await;
+            assert!(input.queries.is_empty());assert!(input.dlsite_error.is_some());
+            let result=retrieve(&input,&mut provider,&vndb_url,Duration::ZERO).await.unwrap();
+            assert_eq!(result["needs_title"],true);assert!(result["warning"].is_null());assert!(result["results"].as_array().unwrap().is_empty());
+            assert!(crate::automatch::review_reason(&result).unwrap().contains("DLsite lookup failed"));
+        }
+
+        dlsite_task.abort();vndb_task.abort();
     }
 }
 

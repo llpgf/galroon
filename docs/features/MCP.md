@@ -24,6 +24,45 @@ Status: source increment 2026-10-09. `galroon-mcp` is a [Model Context Protocol]
 
 Galroon must be running. Core listens on a new loopback port each start, so on Windows the server finds it through the existing identity-checked control pipe (same user, executable path verified against `galroon-core.exe` next to `galroon-mcp.exe`). Only the URL and library identity are kept from that exchange; the owner credential is discarded. After Core restarts, a refused connection triggers one rediscovery. `--url http://127.0.0.1:<port>` or `GALROON_URL` overrides discovery (required on non-Windows development hosts).
 
+### Connecting to a remote LAN HTTPS Core
+
+When Core is hosted on another machine on your LAN with HTTPS enabled (Settings > Access > Network), `galroon-mcp` connects using strict SPKI certificate pinning:
+
+1. Pair directly with the LAN pairing string from Settings > Access:
+
+   ```bash
+   galroon-mcp pair "galroon-pair:v1?addr=192.168.50.154:14830&code=ABCD1234EF56&fp=<52-char-base32-spki>"
+   ```
+
+   Or pass the endpoint and SPKI fingerprint explicitly:
+
+   ```bash
+   galroon-mcp pair ABCD-1234-EF56 --url https://192.168.50.154:14830 --fingerprint <SPKI>
+   ```
+
+   Pairing verifies the TLS SPKI pin against `/api/health` before transmitting the pairing code, then stores the token, URL, SPKI pin, `library_id`, and `device_id` in the private `0600` credential file so subsequent `galroon-mcp check` and `galroon-mcp serve` runs work without repeating flags.
+
+2. To run without a credential file (keeping secrets out of process argv):
+
+   ```bash
+   # Read bearer token from an environment variable:
+   export MY_GALROON_TOKEN="..."
+   galroon-mcp serve \
+     --url https://192.168.50.154:14830 \
+     --fingerprint <52-char-base32-spki> \
+     --token-env MY_GALROON_TOKEN \
+     --library <library-id> \
+     --device <device-id>
+
+   # Or read bearer token from the first line of stdin (before JSON-RPC input on serve, or standalone on check):
+   printf '%s\n' "$MY_GALROON_TOKEN" | galroon-mcp check \
+     --url https://192.168.50.154:14830 \
+     --fingerprint <52-char-base32-spki> \
+     --token-stdin
+   ```
+
+   Equivalent environment variables: `GALROON_URL`, `GALROON_FINGERPRINT`, `GALROON_TOKEN`, `GALROON_LIBRARY`, `GALROON_DEVICE`. Passing `--token` on the command line is refused so secrets stay out of process listings.
+
 ## Tools
 
 | Tool | Effect |
@@ -43,8 +82,8 @@ For unmatched/review cases, assistants should use **`suggest_match`, not `match_
 ## Boundaries
 
 - The credential has the paired-desktop role: catalog/file management routes are allowed by Core, owner access administration is not. Revoke it any time in Settings > Access; the next call reports that pairing is needed again.
-- Every request carries `x-galroon-library` with the paired collection ID. If another collection is open, Core answers 409 and the tool reports the mismatch instead of editing the wrong catalog.
-- Only `http://127.0.0.1:<port>` is accepted; no proxies or redirects. Pairing sends a same-origin `Origin` header as Core requires.
+- Every request carries `x-galroon-library` with the paired collection ID (and `x-galroon-device` when paired with a LAN Core or passed via `--device` / `GALROON_DEVICE`). If another collection or device answers, Core returns 409 and the tool reports the mismatch instead of editing the wrong catalog.
+- Local connections accept only `http://127.0.0.1:<port>`. Remote LAN connections require `https://<private-ip-or-lan-host>:<port>` plus a canonical 52-character base32 SPKI SHA-256 `--fingerprint` (verified via `galroon_core::lan_client::pinned_client`); public IP literals, unpinned HTTPS, proxies, and redirects are rejected. Pairing sends a same-origin `Origin` header as Core requires.
 - IDs passed to path segments are restricted to `[A-Za-z0-9_:-]`.
 - The credential file is not stored in Windows Credential Manager yet (desktop pairings are). It relies on the per-user `%LOCALAPPDATA%` ACL; on Unix it is created `0600`. `GALROON_TOKEN` / `GALROON_MCP_TOKEN_FILE` override it.
 - Protocol: newline-delimited JSON-RPC 2.0 on stdio, MCP versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05; tools capability only; no batching.

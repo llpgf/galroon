@@ -103,7 +103,7 @@ fn catalog_snapshot(c:&Connection,rid:&str,include_bound:bool)->R<Option<Snapsho
     let mut rows=sql(s.query([rid]))?;let mut members=Vec::new();
     while let Some(r)=sql(rows.next())?{let id:String=sql(r.get(0))?;let path:String=sql(r.get(1))?;let size:i64=sql(r.get(2))?;let mtime:String=sql(r.get(3))?;hash.update(json!([id,path,size,mtime]).to_string().as_bytes());members.push(path);}
     if members.is_empty(){return Ok(None);}hints.extend(member_hints(members).iter().map(|p|local(p)));
-    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,runtime_filtered:false,brands:vec![],dates:vec![]}}else{matching::prepare(&local(&title),&hints)?}}))
+    Ok(Some(Snapshot{revision,fingerprint:hex::encode(hash.finalize()),input:if title.trim().is_empty(){matching::Input{titles:vec![],queries:vec![],direct_id:None,runtime_filtered:false,brands:vec![],dates:vec![],dlsite_code:None,dlsite_error:None}}else{matching::prepare(&local(&title),&hints)?}}))
 }
 /// Strong evidence is necessary; conflicting meaningful source names prevent admission.
 fn eligible(response:&Value)->Option<&Value>{
@@ -120,7 +120,7 @@ pub fn review_reason(response:&Value)->Option<String>{
     if response["incomplete"]==true{return Some(if response["warning"].is_string(){"Search incomplete. Refresh when VNDB is available."}else{"VNDB has too many works with this name to be sure. Choose the work manually."}.into());}
     // No recorded search yet (queued, or matching paused before reaching it): never claim VNDB has no candidate.
     if response.get("results").is_none(){return Some("Not checked against VNDB yet.".into());}
-    let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{"No usable work title in this resource."}else{"No VNDB candidate found."}.into());};
+    let Some(candidate)=response["results"].as_array().and_then(|v|v.first())else{return Some(if response["needs_title"]==true{if let Some(err)=response["dlsite_error"].as_str(){format!("DLsite lookup failed ({err}). Choose the work manually.")}else{"No usable work title in this resource.".into()}}else{"No VNDB candidate found.".into()});};
     if candidate["match"]["ambiguous"]==true{return Some("Multiple works have equally strong evidence.".into());}
     if candidate["match"]["strength"]!="strong" {return Some(match candidate["match"]["reason"].as_str(){Some("release_conflict")=>"The folder's brand and release date belong to a different work with the same name.",Some("different_subtitle")=>"Only a partial title matches; the subtitle or edition needs confirmation.",Some("number_conflict")=>"The title and candidate have different sequel numbers.",_=>"The name is too short or the candidate evidence is not exact."}.into());}
     let Some(titles)=response["titles"].as_array()else{return Some("Source title evidence is missing.".into());};
@@ -188,7 +188,10 @@ fn with_confirmation(c:&Connection,rid:&str,input:&matching::Input,response:&Val
         let identities:std::collections::HashSet<_>=proofs.iter().map(|(_,_,_,id)|id).collect();
         if identities.len()==1 {for candidate in &mut candidates{let proof:Vec<_>=proofs.iter().filter(|(_,_,_,id)|candidate["id"]==id.as_str()).map(|(id,_,rev,_)|json!({"title":label,"resource_id":id,"revision":rev,"basis":"manual_binding_same_source_and_brand"})).collect();if !proof.is_empty(){candidate["confirmed_titles"]=json!(proof);}}}
     }
-    result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
+    result["algorithm_version"]=json!(matching::ALGORITHM_VERSION);result["results"]=json!(matching::rank(input,candidates));result["titles"]=json!(input.titles);result["brands"]=json!(input.brands);result["dates"]=json!(input.dates);
+    if let Some(code)=&input.dlsite_code{result["dlsite_code"]=json!(code);}
+    if let Some(err)=&input.dlsite_error{result["dlsite_error"]=json!(err);}
+    result["decision"]=json!({"reason":review_reason(&result)});Ok(result)
 }
 pub fn explain(c:&Connection,rid:&str,response:&Value)->R<Value>{let snap=snapshot(c,rid)?.ok_or("Resource already matched")?;with_confirmation(c,rid,&snap.input,response)}
 /// Read-only input for live diagnostics, including bound resources; shares automatch's catalog builder.
@@ -895,6 +898,36 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         db.lock().unwrap().execute("UPDATE jobs SET state='completed' WHERE id='scan'",[]).unwrap();let first=kick(&db,true).unwrap().unwrap();assert_eq!(status(&db).unwrap()["waiting"],false);
         db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&first]).unwrap();let second=kick(&db,true).unwrap().unwrap();assert_ne!(first,second);assert_eq!(scalar(&db,"SELECT count(*) FROM jobs WHERE state='cancelled'"),1);
     }
+    #[tokio::test] async fn dlsite_code_automatch_binds_resolved_title_and_falls_back_on_error(){
+        use axum::{extract::Query,http::StatusCode,routing::get,Json,Router};
+        use std::collections::HashMap;
+        let app=Router::new()
+            .route("/pro/api/=/product.json",get(|Query(q):Query<HashMap<String,String>>|async move{
+                match q.get("workno").map(String::as_str){
+                    Some("VJ01001192")=>(StatusCode::OK,Json(json!([{"workno":"VJ01001192","work_name":"こあくまちゃんの誘惑っ！"}]))),
+                    _ =>(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({}))),
+                }
+            }))
+            .route("/soft/api/=/product.json",get(||async{(StatusCode::OK,Json(json!([])))}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base=format!("http://{}",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        std::env::set_var("GALROON_DLSITE_API",&base);
+        let (_t,db)=fixture(&["VJ01001192","VJ00000500"]);
+        let job=kick(&db,true).unwrap().unwrap();
+        run_with(&db,&job,|i|async move{
+            if i.queries.is_empty()&&i.direct_id.is_none(){Ok(json!({"results":[],"titles":[],"incomplete":false,"needs_title":true,"dlsite_code":i.dlsite_code,"dlsite_error":i.dlsite_error}))}
+            else{Ok(response(i,vec![json!({"id":"v48419","title":"Koakuma-chan no Yuuwaku!","alttitle":"こあくまちゃんの誘惑っ！"})]))}
+        }).await.unwrap();
+        std::env::remove_var("GALROON_DLSITE_API");
+        server.abort();
+        let c=db.lock().unwrap();
+        assert_eq!(c.query_row("SELECT state FROM jobs WHERE id=?1",[&job],|r|r.get::<_,String>(0)).unwrap(),"completed");
+        assert_eq!(c.query_row("SELECT state FROM match_items WHERE resource_id='r0'",[],|r|r.get::<_,String>(0)).unwrap(),"matched");
+        assert_eq!(c.query_row("SELECT state FROM match_items WHERE resource_id='r1'",[],|r|r.get::<_,String>(0)).unwrap(),"review");
+        let reason:String=c.query_row("SELECT review_reason FROM match_items WHERE resource_id='r1'",[],|r|r.get(0)).unwrap();
+        assert!(reason.contains("DLsite lookup failed"),"{reason}");
+    }
 }
 fn complete_item(c:&Connection,job:&str,rid:&str,state:&str,response:&Value,work:Option<&str>)->R<()>{
     sql(crate::job_summary::resource(c,job,rid))?;
@@ -966,7 +999,8 @@ async fn run_with<F,Fut>(db:&Db,job:&str,search:F)->R<()> where F:Fn(matching::I
         };
         let (rid,revision)=next;
         let snap={let mut connection=db.lock().map_err(|e|e.to_string())?;let c=sql(connection.transaction())?;let snap=snapshot(&c,&rid)?;if snap.as_ref().is_none_or(|s|s.revision!=revision){complete_item(&c,job,&rid,"skipped",&json!({"reason":"Resource already changed or matched"}),None)?;sql(c.commit())?;None}else{sql(c.execute("UPDATE jobs SET current_path=(SELECT title FROM resources WHERE id=?2),updated=?3 WHERE id=?1",params![job,rid,db::now()]))?;sql(c.commit())?;snap}};
-        let Some(snap)=snap else{continue;};
+        let Some(mut snap)=snap else{continue;};
+        matching::resolve_dlsite(&mut snap.input).await;
         match search(snap.input.clone()).await {
             Ok(result) if !result["warning"].is_string()=>apply(db,job,&rid,&snap,&result)?,
             result=>{let message=match result{Err(e)=>e,Ok(v)=>v["warning"].as_str().unwrap_or("VNDB search incomplete. Refine the name or refresh later.").to_string()};

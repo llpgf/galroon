@@ -10,7 +10,7 @@ const MAX_OUTPUT: usize = 100_000;
 const STATUSES: [&str; 5] = ["backlog", "playing", "completed", "on_hold", "dropped"];
 
 pub struct Tools {
-    url: Option<String>,
+    options: config::Options,
     fixed: bool,
     core: tokio::sync::Mutex<Option<Arc<Core>>>,
 }
@@ -18,11 +18,15 @@ pub struct Tools {
 impl Tools {
     /// Discovers the Core lazily and again after it restarts on a new port.
     pub fn new(url: Option<String>) -> Self {
-        Self { url, fixed: false, core: Default::default() }
+        Self::with_options(config::Options { url, ..Default::default() })
+    }
+
+    pub fn with_options(options: config::Options) -> Self {
+        Self { options, fixed: false, core: Default::default() }
     }
 
     pub fn fixed(core: Core) -> Self {
-        Self { url: None, fixed: true, core: tokio::sync::Mutex::new(Some(Arc::new(core))) }
+        Self { options: config::Options::default(), fixed: true, core: tokio::sync::Mutex::new(Some(Arc::new(core))) }
     }
 
     async fn core(&self) -> R<Arc<Core>> {
@@ -30,14 +34,20 @@ impl Tools {
         if let Some(core) = slot.as_ref() {
             return Ok(core.clone());
         }
-        let credential = config::load_credential()?;
-        let endpoint = config::endpoint(self.url.as_deref()).await?;
+        let credential = config::load_credential_with(&self.options)?;
+        let endpoint = config::resolve_endpoint(&self.options, Some(&credential)).await?;
         if let Some(found) = &endpoint.library_id {
             if !credential.library_id.is_empty() && *found != credential.library_id {
                 return Err("Galroon has a different collection open than the one this MCP server was paired with. Switch collections in Galroon or pair again.".into());
             }
         }
-        let core = Arc::new(Core::new(endpoint.url, credential.token, Some(credential.library_id))?);
+        let library_id = Some(credential.library_id);
+        let device_id = credential.device_id;
+        let core = match endpoint.fingerprint {
+            Some(fp) => Core::new_lan(endpoint.url, &fp, credential.token, library_id, device_id)?,
+            None => Core::new_with_device(endpoint.url, credential.token, library_id, device_id)?,
+        };
+        let core = Arc::new(core);
         *slot = Some(core.clone());
         Ok(core)
     }
