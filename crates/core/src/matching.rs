@@ -723,7 +723,14 @@ pub(crate) async fn resolve_dlsite_at(input: &mut Input, base: Option<&str>) {
 pub async fn search(mut input: Input) -> Result<Value,String> {
     resolve_dlsite(&mut input).await;
     let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new() }));
-    let mut provider = shared.try_lock().map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
+    let mut provider = tokio::time::timeout(Duration::from_secs(12), shared.lock()).await.map_err(|_| "Another VNDB search is running. Try again shortly.".to_string())?;
+    retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
+}
+/// Background automatic matching waits for the shared VNDB provider instead of failing on contention.
+pub async fn search_queued(mut input: Input) -> Result<Value,String> {
+    resolve_dlsite(&mut input).await;
+    let shared = PROVIDER.get_or_init(|| tokio::sync::Mutex::new(Provider { client:reqwest::Client::new(), cache:HashMap::new() }));
+    let mut provider = shared.lock().await;
     retrieve(&input, &mut provider, &format!("{}/vn",vndb_api()), Duration::from_millis(1600)).await
 }
 /// Exact work lookup shares search's provider cache, request spacing and field shape.

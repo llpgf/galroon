@@ -4,7 +4,7 @@ use notify::{Watcher,RecursiveMode,EventKind};
 use rusqlite::{Connection,params,OptionalExtension};
 use serde::{Serialize,Deserialize};
 use serde_json::{Value,json};
-use std::{collections::BTreeMap,path::{Path,PathBuf,Component},sync::{Arc,atomic::{AtomicBool,Ordering},mpsc},thread,time::{Duration,Instant}};
+use std::{collections::BTreeMap,path::{Path,PathBuf,Component},sync::{Arc,atomic::{AtomicBool,Ordering},mpsc},thread,time::{Duration,Instant,SystemTime}};
 type R<T>=Result<T,String>;
 fn sql<T>(r:rusqlite::Result<T>)->R<T>{r.map_err(|e|e.to_string())}
 const QUIET_SECONDS:i64=3;
@@ -64,15 +64,31 @@ fn enqueue(app:&App,cfg:&Config,stop:&AtomicBool,full:bool)->R<Option<String>>{
  let j=scan::enqueue(&tx,scan::ScanSpec{root_id:cfg.id.clone(),scope:change.scope,exclude:exclusions(app,cfg)},change.recursive,true)?;
  sql(tx.execute("UPDATE source_watch SET pending=?2,job_id=?3 WHERE root_id=?1",params![cfg.id,json!(pending).to_string(),j]))?;sql(tx.commit())?;Ok(Some(j))
 }
-struct Attached<W:Watcher>{_watcher:W,rx:mpsc::Receiver<notify::Result<notify::Event>>,overflow:Arc<AtomicBool>,revision:i64,path:String}
+type TopSnapshot=BTreeMap<String,(bool,Option<SystemTime>)>;
+fn top_level_snapshot(root:&Path)->Option<TopSnapshot>{
+ let entries=std::fs::read_dir(root).ok()?;
+ let mut map=BTreeMap::new();
+ for entry in entries.flatten(){
+  let name=entry.file_name().to_string_lossy().into_owned();
+  if let Ok(meta)=entry.metadata(){map.insert(name,(meta.is_dir(),meta.modified().ok()));}
+ }
+ Some(map)
+}
+fn top_level_diff(root:&Path,previous:&TopSnapshot,current:&TopSnapshot)->Vec<PathBuf>{
+ let mut paths=Vec::new();
+ for (name,info) in current{if previous.get(name)!=Some(info){paths.push(root.join(name));}}
+ for name in previous.keys(){if !current.contains_key(name){paths.push(root.join(name));}}
+ paths
+}
+struct Attached<W:Watcher>{_watcher:W,rx:mpsc::Receiver<notify::Result<notify::Event>>,overflow:Arc<AtomicBool>,revision:i64,path:String,top_snapshot:TopSnapshot,next_top_check:Instant}
 struct Polling{revision:i64,next:Instant}
 struct Runtime<W:Watcher>{attached:BTreeMap<String,Attached<W>>,retries:BTreeMap<String,(i64,Instant)>,polling:BTreeMap<String,Polling>}
 impl<W:Watcher> Runtime<W>{fn new()->Self{Self{attached:BTreeMap::new(),retries:BTreeMap::new(),polling:BTreeMap::new()}}}
-struct Options{force_polling:bool,poll_interval:Duration,retry_interval:Duration}
+struct Options{force_polling:bool,poll_interval:Duration,retry_interval:Duration,top_check_interval:Duration}
 impl Options{
  fn from_values(force:Option<&str>,seconds:Option<&str>)->Self{
   let interval=Duration::from_secs(seconds.and_then(|s|s.parse::<u64>().ok()).unwrap_or(900).max(60));
-  Self{force_polling:force==Some("1"),poll_interval:if Instant::now().checked_add(interval).is_some(){interval}else{Duration::from_secs(900)},retry_interval:Duration::from_secs(30)}
+  Self{force_polling:force==Some("1"),poll_interval:if Instant::now().checked_add(interval).is_some(){interval}else{Duration::from_secs(900)},retry_interval:Duration::from_secs(30),top_check_interval:Duration::from_secs(60)}
  }
  fn environment()->Self{
   // For filesystems without inotify, and for N1 NAS fallback verification without
@@ -84,7 +100,10 @@ fn attach<W:Watcher>(cfg:&Config)->notify::Result<Attached<W>>{
  let (tx,rx)=mpsc::sync_channel(256);let overflow=Arc::new(AtomicBool::new(false));let full=overflow.clone();
  let mut watcher=W::new(move|event:notify::Result<notify::Event>|{if matches!(&event,Ok(e)if matches!(e.kind,EventKind::Access(_))){return;}
   if tx.try_send(event).is_err(){full.store(true,Ordering::SeqCst);}},notify::Config::default())?;
- watcher.watch(Path::new(&cfg.path),RecursiveMode::Recursive)?;Ok(Attached{_watcher:watcher,rx,overflow,revision:cfg.revision,path:cfg.path.clone()})
+ let root=Path::new(&cfg.path);
+ watcher.watch(root,RecursiveMode::Recursive)?;
+ let top_snapshot=top_level_snapshot(root).unwrap_or_default();
+ Ok(Attached{_watcher:watcher,rx,overflow,revision:cfg.revision,path:cfg.path.clone(),top_snapshot,next_top_check:Instant::now()+Duration::from_secs(60)})
 }
 fn polling<W:Watcher>(app:&App,cfg:&Config,runtime:&mut Runtime<W>,options:&Options,reason:&str)->R<()>{
  let seconds=options.poll_interval.as_secs();let interval=if seconds>0&&seconds.is_multiple_of(60){format!("{} minutes",seconds/60)}else{format!("{seconds} seconds")};
@@ -123,9 +142,18 @@ fn tick<W:Watcher>(app:&App,stop:&AtomicBool,runtime:&mut Runtime<W>,options:&Op
     let c=app.db.lock().map_err(|e|e.to_string())?;gap(&c,&cfg.id,"Scan to cover changes before watching began.")?;sql(c.execute("UPDATE source_watch SET status='watching' WHERE root_id=?1 AND revision=?2",params![cfg.id,cfg.revision]))?;
    },Err(e)=>{runtime.retries.insert(cfg.id.clone(),(cfg.revision,Instant::now()+options.retry_interval));polling(app,&cfg,runtime,options,&e.to_string())?;}}
   }
-  if let Some(a)=runtime.attached.get(&cfg.id){
+  if let Some(a)=runtime.attached.get_mut(&cfg.id){
    let mut changed=Vec::new();let mut missed=a.overflow.swap(false,Ordering::SeqCst);let mut backend_failed=None;
    for result in a.rx.try_iter().take(256){match result{Ok(e)=>{if e.need_rescan()||e.paths.is_empty(){missed=true;}for hint in hints(root,&e.paths,&cfg.exclude,&app.state_dir){merge(&mut changed,hint);}},Err(e)=>{missed=true;backend_failed=Some(e.to_string());}}}
+   // Lightweight top-level sweep catches moves/downloads if native inotify misses an event (e.g. NAS/Btrfs).
+   if Instant::now()>=a.next_top_check{
+    a.next_top_check=Instant::now()+options.top_check_interval;
+    if let Some(current)=top_level_snapshot(root){
+     let diff=top_level_diff(root,&a.top_snapshot,&current);
+     a.top_snapshot=current;
+     for hint in hints(root,&diff,&cfg.exclude,&app.state_dir){merge(&mut changed,hint);}
+    }
+   }
    {let c=app.db.lock().map_err(|e|e.to_string())?;if missed{gap(&c,&cfg.id,"Some file notifications were missed. Run a manual scan.")?;}save_hints(&c,&cfg,changed)?;}
    if let Some(reason)=backend_failed{runtime.attached.remove(&cfg.id);runtime.retries.insert(cfg.id.clone(),(cfg.revision,Instant::now()+options.retry_interval));polling(app,&cfg,runtime,options,&reason)?;}
   }
@@ -146,7 +174,7 @@ fn tick<W:Watcher>(app:&App,stop:&AtomicBool,runtime:&mut Runtime<W>,options:&Op
 
 #[cfg(test)]mod tests{
  use super::*;
- fn short_options(force:bool)->Options{Options{force_polling:force,poll_interval:Duration::from_millis(10),retry_interval:Duration::from_secs(30)}}
+ fn short_options(force:bool)->Options{Options{force_polling:force,poll_interval:Duration::from_millis(10),retry_interval:Duration::from_secs(30),top_check_interval:Duration::from_millis(10)}}
  fn scans(app:&App)->i64{app.db.lock().unwrap().query_row("SELECT count(*) FROM jobs WHERE kind='scan'",[],|r|r.get(0)).unwrap()}
  #[test]fn polling_environment_defaults_and_minimum(){
   let default=Options::from_values(None,None);assert!(!default.force_polling);assert_eq!(default.poll_interval,Duration::from_secs(900));
@@ -210,4 +238,17 @@ fn tick<W:Watcher>(app:&App,stop:&AtomicBool,runtime:&mut Runtime<W>,options:&Op
  #[test]fn incremental_scan_does_not_visit_siblings_and_deletion_is_proven_by_parent(){let(_t,app,cfg)=fixture();let root=Path::new(&cfg.path);std::fs::remove_file(root.join("A/nested/b.bin")).unwrap();std::fs::remove_dir(root.join("A/nested")).unwrap();std::fs::write(root.join("A/new.bin"),b"new").unwrap();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:false}]);let j=enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().unwrap();scan::run(app.db.clone(),j.clone());let c=app.db.lock().unwrap();let n:i64=c.query_row("SELECT count(*) FROM observations WHERE job_id=?1",[&j],|r|r.get(0)).unwrap();assert_eq!(n,2);let missing:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%b.bin'",[],|r|r.get(0)).unwrap();assert_eq!(missing,"missing");let outside:String=c.query_row("SELECT availability FROM files WHERE relative_path LIKE '%outside.bin'",[],|r|r.get(0)).unwrap();assert_eq!(outside,"present");assert_eq!(std::fs::read(root.join("B/outside.bin")).unwrap(),b"B/outside.bin");}
  #[test]fn queue_survives_reopen_and_respects_pause_cancel_and_shutdown(){let(t,app,cfg)=fixture();pending(&app,&cfg,vec![Change{scope:"A".into(),recursive:true}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(true),false).unwrap().is_none());drop(app);let app=crate::initialize(t.path().join("state")).unwrap();let j=enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().unwrap();app.db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&j]).unwrap();pending(&app,&cfg,vec![Change{scope:"B".into(),recursive:false}]);assert!(enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().is_none());app.db.lock().unwrap().execute("UPDATE jobs SET state='cancelled' WHERE id=?1",[&j]).unwrap();assert!(enqueue(&app,&cfg,&AtomicBool::new(false),false).unwrap().is_none());let s=status(&app.db.lock().unwrap(),"r").unwrap();assert_eq!(s["enabled"],false);let enabled=configure(&app.db,"r",Edit{revision:s["revision"].as_i64().unwrap(),enabled:true,exclude:vec![]}).unwrap();assert_eq!(enabled["job_id"],Value::Null);}
  #[test]fn overflow_requires_manual_scan_and_stale_settings_are_rejected(){let(_t,app,cfg)=fixture();let c=app.db.lock().unwrap();save_hints(&c,&cfg,(0..129).map(|i|Change{scope:format!("folder-{i}"),recursive:false}).collect()).unwrap();let s=status(&c,"r").unwrap();assert_eq!(s["pending"],0);assert_eq!(s["needs_scan"],true);drop(c);configure(&app.db,"r",Edit{revision:1,enabled:false,exclude:vec![]}).unwrap();assert!(configure(&app.db,"r",Edit{revision:1,enabled:true,exclude:vec![]}).is_err());assert!(configure(&app.db,"r",Edit{revision:2,enabled:true,exclude:vec!["../escape".into()]}).is_err());}
+ #[test]fn top_level_safety_sweep_discovers_new_folder_even_without_native_events(){
+  let(_t,app,cfg)=fixture();let mut runtime=Runtime::<notify::NullWatcher>::new();let options=short_options(false);let stop=AtomicBool::new(false);
+  tick(&app,&stop,&mut runtime,&options,&mut attach::<notify::NullWatcher>).unwrap();
+  let folder=Path::new(&cfg.path).join("Dropped Game");std::fs::create_dir(&folder).unwrap();std::fs::write(folder.join("game.rar"),b"rar").unwrap();
+  runtime.attached.get_mut(&cfg.id).unwrap().next_top_check=Instant::now()-Duration::from_secs(1);
+  tick(&app,&stop,&mut runtime,&options,&mut attach::<notify::NullWatcher>).unwrap();
+  // Quiet window elapses -> drain both parent check and scoped recursive folder scan.
+  app.db.lock().unwrap().execute("UPDATE source_watch SET last_event=0 WHERE root_id=?1",[&cfg.id]).unwrap();
+  tick(&app,&stop,&mut runtime,&options,&mut attach::<notify::NullWatcher>).unwrap();
+  tick(&app,&stop,&mut runtime,&options,&mut attach::<notify::NullWatcher>).unwrap();
+  let c=app.db.lock().unwrap();
+  assert_eq!(c.query_row("SELECT count(*) FROM resources WHERE relative_path='Dropped Game'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+ }
 }

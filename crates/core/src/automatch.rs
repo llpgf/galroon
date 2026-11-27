@@ -63,17 +63,40 @@ pub fn status(db:&Db)->R<Value>{let c=db.lock().map_err(|e|e.to_string())?;
 pub struct Worker(tokio::task::JoinHandle<()>,std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl Worker{pub fn request_stop(&self){self.1.store(true,std::sync::atomic::Ordering::SeqCst);}}
 impl Drop for Worker{fn drop(&mut self){self.0.abort();}}
+fn retry_backoff(errors:i64)->i64{60*(1i64<<(errors.saturating_sub(1).clamp(0,4) as u32))}
+fn schedule_step(db:&Db,stopped:&std::sync::atomic::AtomicBool,now_ts:i64)->R<Option<String>>{
+    let mut c=db.lock().map_err(|e|e.to_string())?;let tx=sql(c.transaction())?;
+    if stopped.load(std::sync::atomic::Ordering::SeqCst){return Ok(None);}
+    if !enabled(&tx)?{return explicit_retry(&tx);}
+    if let Some(id)=active(&tx)?{return Ok(Some(id));}
+    let user_paused:bool=sql(tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='match' AND state='paused' AND (errors=0 OR coalesce(json_extract(spec,'$.automatic'),1)=0))",[],|r|r.get(0)))?;
+    let manual_interrupted:bool=sql(tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='match' AND state='interrupted' AND coalesce(json_extract(spec,'$.automatic'),1)=0)",[],|r|r.get(0)))?;
+    let user_stopped=user_paused||manual_interrupted;
+    let key=scan_key(&tx)?;let old=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_scan'",[],|r|r.get::<_,String>(0)).optional())?.unwrap_or_default();
+    let requested=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_requested'",[],|r|r.get::<_,String>(0)).optional())?.as_deref()==Some("1");
+    let version=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_version'",[],|r|r.get::<_,String>(0)).optional())?;
+    let needs_fresh=requested||(!user_stopped&&(key!=old||version.as_deref()!=Some(&matching::ALGORITHM_VERSION.to_string())));
+    if needs_fresh{
+        sql(tx.execute("UPDATE jobs SET state='cancelled',message='Superseded by newer automatic matching run',updated=?1 WHERE kind='match' AND coalesce(json_extract(spec,'$.automatic'),1)=1 AND ((state='paused' AND errors>0) OR state='interrupted')",[now_ts]))?;
+        let id=queue(&tx,false)?;sql(tx.commit())?;return Ok(id);
+    }
+    if !user_stopped{
+        let busy:bool=sql(tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind NOT IN ('match','artwork') AND state IN ('queued','running','pausing','cancelling')) OR EXISTS(SELECT 1 FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
+        if !busy{
+            let recoverable:Option<(String,String,i64,i64)>=sql(tx.query_row("SELECT id,state,errors,updated FROM jobs WHERE kind='match' AND coalesce(json_extract(spec,'$.automatic'),1)=1 AND (state='interrupted' OR (state='paused' AND errors>0)) ORDER BY rowid DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
+            if let Some((id,state,errors,updated))=recoverable{
+                if state=="interrupted"||now_ts-updated>=retry_backoff(errors){
+                    let msg=if state=="interrupted"{"Resuming interrupted automatic matching"}else{"Retrying after temporary VNDB failure"};
+                    sql(tx.execute("UPDATE jobs SET state='queued',message=?2,updated=?3 WHERE id=?1 AND state IN ('paused','interrupted')",params![&id,msg,now_ts]))?;
+                    sql(tx.commit())?;return Ok(Some(id));
+                }
+            }
+        }
+    }
+    sql(tx.commit())?;Ok(None)
+}
 pub fn start(db:Db)->Worker {let stop=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));let stopped=stop.clone();Worker(tokio::spawn(async move{loop{
-    let next={let result=(||->R<Option<String>>{let mut c=db.lock().map_err(|e|e.to_string())?;let tx=sql(c.transaction())?;
-        if stopped.load(std::sync::atomic::Ordering::SeqCst){return Ok(None);}
-        if !enabled(&tx)?{return explicit_retry(&tx);}
-        if let Some(id)=active(&tx)?{return Ok(Some(id));}
-        let stopped:bool=sql(tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE kind='match' AND state IN ('paused','interrupted'))",[],|r|r.get(0)))?;
-        let key=scan_key(&tx)?;let old=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_scan'",[],|r|r.get::<_,String>(0)).optional())?.unwrap_or_default();
-        let requested=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_requested'",[],|r|r.get::<_,String>(0)).optional())?.as_deref()==Some("1");
-        let version=sql(tx.query_row("SELECT value FROM settings WHERE key='auto_match_version'",[],|r|r.get::<_,String>(0)).optional())?;
-        let id=if requested||(!stopped&&(key!=old||version.as_deref()!=Some(&matching::ALGORITHM_VERSION.to_string()))){queue(&tx,false)?}else{None};sql(tx.commit())?;Ok(id)
-    })();match result{Ok(v)=>v,Err(e)=>{crate::diagnostics::record("error","matching.scheduler",&e,None);eprintln!("Matching scheduler: {e}");None}}};
+    let next=match schedule_step(&db,&stopped,db::now()){Ok(v)=>v,Err(e)=>{crate::diagnostics::record("error","matching.scheduler",&e,None);eprintln!("Matching scheduler: {e}");None}};
     if let Some(id)=next {if let Err(e)=run(&db,&id).await {crate::diagnostics::record("error","matching.failed",&e,Some(&id));if let Ok(c)=db.lock(){let _=c.execute("UPDATE jobs SET state='failed',message=?2,updated=?3 WHERE id=?1",params![id,e,db::now()]);}}}
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
 }}),stop)}
@@ -898,6 +921,31 @@ pub fn replay(c:&Connection,rid:&str,response:&Value)->R<Option<Value>>{
         db.lock().unwrap().execute("UPDATE jobs SET state='completed' WHERE id='scan'",[]).unwrap();let first=kick(&db,true).unwrap().unwrap();assert_eq!(status(&db).unwrap()["waiting"],false);
         db.lock().unwrap().execute("UPDATE jobs SET state='paused' WHERE id=?1",[&first]).unwrap();let second=kick(&db,true).unwrap().unwrap();assert_ne!(first,second);assert_eq!(scalar(&db,"SELECT count(*) FROM jobs WHERE state='cancelled'"),1);
     }
+    #[tokio::test] async fn provider_error_paused_automatic_match_recovers_on_backoff_or_new_scan(){
+        let(_t,db)=fixture(&["Clannad"]);
+        let job=kick(&db,false).unwrap().unwrap();
+        run_with(&db,&job,|_|async{Err("VNDB temporary outage".into())}).await.unwrap();
+        assert_eq!(status(&db).unwrap()["job"]["state"],"paused");
+        let updated:i64=db.lock().unwrap().query_row("SELECT updated FROM jobs WHERE id=?1",[&job],|r|r.get(0)).unwrap();
+        let stop=std::sync::atomic::AtomicBool::new(false);
+        // Before 60s backoff, scheduler does not hammer VNDB.
+        assert!(schedule_step(&db,&stop,updated+30).unwrap().is_none());
+        // After 60s backoff, scheduler automatically re-queues the failed automatic job.
+        assert_eq!(schedule_step(&db,&stop,updated+60).unwrap().as_deref(),Some(job.as_str()));
+        run_with(&db,&job,|i|async{Ok(exact(i))}).await.unwrap();
+        assert_eq!(status(&db).unwrap()["job"]["state"],"completed");
+        // User-initiated pause (errors=0) is still respected even when a newer scan completes.
+        let(_t2,db2)=fixture(&["Clannad"]);
+        let j2=kick(&db2,false).unwrap().unwrap();
+        db2.lock().unwrap().execute("UPDATE jobs SET state='paused',errors=0 WHERE id=?1",[&j2]).unwrap();
+        db2.lock().unwrap().execute("INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('scan2','scan','completed','{}',200,200)",[]).unwrap();
+        assert!(schedule_step(&db2,&stop,500).unwrap().is_none());
+        // Provider-error pause (errors>0) is superseded immediately when a newer scan completes.
+        db2.lock().unwrap().execute("UPDATE jobs SET errors=1 WHERE id=?1",[&j2]).unwrap();
+        let j3=schedule_step(&db2,&stop,500).unwrap().unwrap();
+        assert_ne!(j3,j2);
+        assert_eq!(db2.lock().unwrap().query_row("SELECT state FROM jobs WHERE id=?1",[&j2],|r|r.get::<_,String>(0)).unwrap(),"cancelled");
+    }
     #[tokio::test] async fn dlsite_code_automatch_binds_resolved_title_and_falls_back_on_error(){
         use axum::{extract::Query,http::StatusCode,routing::get,Json,Router};
         use std::collections::HashMap;
@@ -983,7 +1031,7 @@ fn apply(db:&Db,job:&str,rid:&str,expected:&Snapshot,response:&Value)->R<()> {
     }else{complete_item(&tx,job,rid,"review",response,None)?;}
     sql(tx.commit())?;Ok(())
 }
-async fn run(db:&Db,job:&str)->R<()>{run_with(db,job,matching::search).await}
+async fn run(db:&Db,job:&str)->R<()>{run_with(db,job,matching::search_queued).await}
 async fn run_with<F,Fut>(db:&Db,job:&str,search:F)->R<()> where F:Fn(matching::Input)->Fut,Fut:std::future::Future<Output=R<Value>> {
     {let c=db.lock().map_err(|e|e.to_string())?;sql(c.execute("UPDATE jobs SET state='running',message='Matching resources',updated=?2 WHERE id=?1 AND state='queued'",params![job,db::now()]))?;}
     loop{
