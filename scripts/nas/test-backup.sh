@@ -247,4 +247,163 @@ expect_failure plist_value ProgramArguments.3
 expect_failure plist_value EnvironmentVariables.GALROON_NAS
 bash "$wrapper" uninstall-mac-schedule
 pass 'Mac schedule: lint, escaped paths, arguments, time/environment, bootout/bootstrap and uninstall'
+
+# Core-format scheduled backup pull (pull-core / pull --source core) and Core schedule.
+core_remote="$root/core-remote"
+mkdir -p "$core_remote"
+make_core_backup() {
+    local name=$1 created=$2 origin=$3
+    local dir="$core_remote/$name"
+    mkdir -p "$dir/identity"
+    cp "$weekly/library.sqlite" "$dir/collection.sqlite"
+    cp "$weekly/artwork-library.sqlite" "$dir/artwork-library.sqlite"
+    cp "$weekly/device.json" "$weekly/lan-key.pem" "$weekly/lan-cert.pem" "$dir/identity/"
+    cat > "$dir/manifest.json" <<JSON
+{
+  "format": "galroon-catalog-backup",
+  "version": 4,
+  "created": $created,
+  "database": "collection.sqlite",
+  "mode": "full",
+  "origin": "$origin"
+}
+JSON
+    (cd "$dir" && shasum -a 256 artwork-library.sqlite collection.sqlite identity/device.json identity/lan-cert.pem identity/lan-key.pem manifest.json > SHA256SUMS)
+}
+core_old="Galroon-backup-1700000100-aaaa-1111"
+core_latest="Galroon-backup-1700000200-bbbb-2222"
+core_manual="Galroon-backup-1700000999-cccc-3333"
+make_core_backup "$core_old" 1700000100 scheduled
+make_core_backup "$core_latest" 1700000200 scheduled
+make_core_backup "$core_manual" 1700000999 manual
+mkdir -p "$core_remote/Galroon-backup-1700000500-dddd-4444"
+ln -s "$core_remote/$core_latest" "$core_remote/Galroon-backup-1700000800-eeee-5555"
+
+export GALROON_SSH="$root/mock-core-ssh" MOCK_CORE_SSH_LOG="$root/core-ssh.log"
+cat > "$GALROON_SSH" <<'SSH'
+#!/bin/bash
+set -eu
+[[ "$1" == -o && "$2" == BatchMode=yes && "$3" == -T && "$4" == -n ]] || exit 1
+printf '%s\n' "$6" >> "$MOCK_CORE_SSH_LOG"
+sh -c "$6"
+SSH
+chmod 700 "$GALROON_SSH"
+
+core_pulls="$root/core pulls"
+GALROON_BACKUPS="$core_remote" bash "$wrapper" pull-core "$core_pulls"
+[[ -f "$core_pulls/$core_latest/collection.sqlite" && -f "$core_pulls/$core_latest/identity/lan-key.pem" && ! -e "$core_pulls/$core_latest/artwork-library.sqlite" && ! -e "$core_pulls/.partial-$core_latest" ]] || fail 'Core catalog-only pull contents/staging'
+[[ $(mode "$core_pulls/$core_latest") == 700 && $(mode "$core_pulls/$core_latest/identity") == 700 && $(mode "$core_pulls/$core_latest/identity/lan-key.pem") == 600 ]] || fail 'Core pull directory/file permissions'
+GALROON_BACKUPS="$core_remote" bash "$wrapper" pull --source core "$core_pulls" > "$root/core-noop.log"
+grep -F 'Already pulled and verified:' "$root/core-noop.log" >/dev/null || fail 'Core pull no-op output'
+[[ $(grep -c "'tar'" "$MOCK_CORE_SSH_LOG") == 1 ]] || fail 'Core no-op downloaded again'
+printf 'corrupt\n' >> "$core_pulls/$core_latest/identity/device.json"
+expect_failure env GALROON_BACKUPS="$core_remote" bash "$wrapper" pull-core "$core_pulls"
+printf 'corrupt\n' >> "$core_remote/$core_latest/collection.sqlite"
+expect_failure env GALROON_BACKUPS="$core_remote" bash "$wrapper" pull-core "$root/core-failed"
+[[ ! -e "$root/core-failed/$core_latest" && ! -e "$root/core-failed/.partial-$core_latest" ]] || fail 'Core checksum failure left files'
+cp "$weekly/library.sqlite" "$core_remote/$core_latest/collection.sqlite"
+
+core_full="$root/core full pulls"
+mkdir -p "$core_full/unrelated" "$core_full/.partial-old" "$core_full/20200101T043000Z-daily" "$root/core-link-target"
+ln -s "$root/core-link-target" "$core_full/Galroon-backup-5-1111"
+for epoch in 9 10 20; do mkdir "$core_full/Galroon-backup-$epoch-abcd"; done
+GALROON_BACKUPS="$core_remote" GALROON_PULL_KEEP=2 bash "$wrapper" pull --source core --with-artwork "$core_full"
+[[ -f "$core_full/$core_latest/artwork-library.sqlite" && -d "$core_full/Galroon-backup-20-abcd" && ! -e "$core_full/Galroon-backup-10-abcd" && ! -e "$core_full/Galroon-backup-9-abcd" ]] || fail 'Core artwork pull/numeric retention'
+[[ -d "$core_full/unrelated" && -d "$core_full/.partial-old" && -d "$core_full/20200101T043000Z-daily" && -L "$core_full/Galroon-backup-5-1111" ]] || fail 'Core retention touched unrelated/legacy/symlink paths'
+(cd "$core_full/$core_latest" && shasum -a 256 -c SHA256SUMS)
+expect_failure env GALROON_BACKUPS="/volume1/docker/galroon/../escape" bash "$wrapper" pull-core "$core_full"
+
+GALROON_BACKUPS="/volume1/docker/galroon/core-backups" bash "$wrapper" install-mac-schedule --source core "$schedule_dir"
+plutil -lint "$plist"
+[[ $(plist_value ProgramArguments.2) == pull-core && $(plist_value ProgramArguments.3) == "$schedule_dir" && $(plist_value EnvironmentVariables.GALROON_BACKUPS) == /volume1/docker/galroon/core-backups ]] || fail 'Core LaunchAgent arguments/environment'
+bash "$wrapper" uninstall-mac-schedule
+pass 'Core backup pull: scheduled filtering, SHA256SUMS, identity 700/600, artwork, numeric retention and LaunchAgent'
+
+# deploy.sh GALROON_BACKUPS validation (local safety rules + remote prepare/activate wiring).
+deploy=${script%/*}/deploy.sh
+fake_artifact="$root/fake-artifact"
+mkdir -p "$fake_artifact/web"
+printf 'bin\n' > "$fake_artifact/galroon-core"
+printf '<html></html>\n' > "$fake_artifact/web/index.html"
+printf '0123456789abcdef0123456789abcdef01234567\n' > "$fake_artifact/BUILD_SHA"
+(cd "$fake_artifact" && shasum -a 256 BUILD_SHA galroon-core web/index.html > SHA256SUMS)
+
+for bad_backups in \
+    "/tmp/core-backups" \
+    "/volume1/Backup/core-backups" \
+    "/volume1/docker/galroon/../escape" \
+    "/volume1/docker/galroon/core-backups/.." \
+    "/volume1/docker/galroon/core-backups/." \
+    "/volume1/docker/galroon//core-backups" \
+    "/volume1/docker/galroon/core-backups/" \
+    "/volume1/docker/galroon/core-backups;rm" \
+    "/volume1/docker/galroon/core-backups'quote" \
+    "/volume1/docker/galroon/data" \
+    "/volume1/docker/galroon/data/nested"
+do
+    expect_failure env GALROON_ARTIFACT_DIR="$fake_artifact" GALROON_BACKUPS="$bad_backups" bash "$deploy"
+done
+# Reject GALROON_DATA nested inside GALROON_BACKUPS and GALROON_BACKUPS overlapping GALROON_LIBRARY.
+expect_failure env GALROON_ARTIFACT_DIR="$fake_artifact" GALROON_DATA="/volume1/docker/galroon/core-backups/sub" GALROON_BACKUPS="/volume1/docker/galroon/core-backups" bash "$deploy"
+expect_failure env GALROON_ARTIFACT_DIR="$fake_artifact" GALROON_LIBRARY="/volume1/docker/galroon/core-backups" GALROON_BACKUPS="/volume1/docker/galroon/core-backups" bash "$deploy"
+
+deploy_ssh="$root/mock-deploy-ssh"
+export MOCK_DEPLOY_LOG="$root/deploy-ssh.log" MOCK_DEPLOY_REMOTE="$root/deploy-remote"
+mkdir -p "$MOCK_DEPLOY_REMOTE"
+cat > "$deploy_ssh" <<'SSH'
+#!/bin/bash
+set -eu
+[[ "$1" == -T ]] || exit 1
+cmd=$3
+printf 'CMD: %s\n' "$cmd" >> "$MOCK_DEPLOY_LOG"
+case "$cmd" in
+    *"'sh' '-s' '--' '/volume1/docker/galroon' '/volume1/docker/galroon/data'"*)
+        cat > "$MOCK_DEPLOY_REMOTE/prepare.sh"
+        sh -n "$MOCK_DEPLOY_REMOTE/prepare.sh"
+        printf '/volume1/docker/galroon/release.test1234\n'
+        ;;
+    *"'tar' '-xf' '-' '-C' "*)
+        cat > "$MOCK_DEPLOY_REMOTE/upload.tar"
+        ;;
+    *"'sh' '-s' '--' '/volume1/docker/galroon' '/volume1/docker/galroon/release.test1234'"*)
+        cat > "$MOCK_DEPLOY_REMOTE/activate.sh"
+        sh -n "$MOCK_DEPLOY_REMOTE/activate.sh"
+        ;;
+    *) exit 1 ;;
+esac
+SSH
+chmod 700 "$deploy_ssh"
+
+env -u GALROON_BACKUPS GALROON_ARTIFACT_DIR="$fake_artifact" GALROON_SSH="$deploy_ssh" bash "$deploy"
+grep -F "'/volume1/docker/galroon/core-backups'" "$MOCK_DEPLOY_LOG" >/dev/null || fail 'deploy.sh did not default GALROON_BACKUPS to core-backups'
+GALROON_ARTIFACT_DIR="$fake_artifact" GALROON_SSH="$deploy_ssh" GALROON_BACKUPS="/volume1/docker/galroon/custom backups" bash "$deploy"
+grep -F "'/volume1/docker/galroon/custom backups'" "$MOCK_DEPLOY_LOG" >/dev/null || fail 'deploy.sh did not pass GALROON_BACKUPS to remote scripts'
+grep -F "GALROON_BACKUPS='\$backups'" "$MOCK_DEPLOY_REMOTE/activate.sh" >/dev/null || fail 'deploy.sh activate missing GALROON_BACKUPS in deploy.env'
+
+# Exercise remote prepare.sh symlink and overlap guards locally (stubbing Linux stat -c).
+stat_stub_dir="$root/stat-stub"
+mkdir -p "$stat_stub_dir"
+cat > "$stat_stub_dir/stat" <<'STAT'
+#!/bin/sh
+if [ "${1:-}" = -c ]; then
+    case "${2:-}" in
+        %u) shift 2; exec /usr/bin/stat -f %u "$@" ;;
+        %g) shift 2; exec /usr/bin/stat -f %g "$@" ;;
+    esac
+fi
+exec /usr/bin/stat "$@"
+STAT
+chmod 700 "$stat_stub_dir/stat"
+sim_base="$root/sim-base"
+sim_lib="$root/sim-lib"
+mkdir -p "$sim_base" "$sim_lib"
+cur_uid=$(id -u); cur_gid=$(id -g)
+release_dir=$(PATH="$stat_stub_dir:$PATH" sh "$MOCK_DEPLOY_REMOTE/prepare.sh" "$sim_base" "$sim_base/data" "$sim_base/core-backups" "$sim_lib" "$cur_uid" "$cur_gid")
+[[ -d "$sim_base/core-backups" && $(mode "$sim_base/core-backups") == 700 && -d "$release_dir" ]] || fail 'Remote prepare did not create 0700 core-backups'
+ln -s "$root" "$sim_base/linked-backups"
+expect_failure env PATH="$stat_stub_dir:$PATH" sh "$MOCK_DEPLOY_REMOTE/prepare.sh" "$sim_base" "$sim_base/data" "$sim_base/linked-backups/sub" "$sim_lib" "$cur_uid" "$cur_gid"
+expect_failure env PATH="$stat_stub_dir:$PATH" sh "$MOCK_DEPLOY_REMOTE/prepare.sh" "$sim_base" "$sim_base/data" "$sim_base/data" "$sim_lib" "$cur_uid" "$cur_gid"
+ln -s "$sim_base/core-backups" "$root/lib-pointing-to-backups"
+expect_failure env PATH="$stat_stub_dir:$PATH" sh "$MOCK_DEPLOY_REMOTE/prepare.sh" "$sim_base" "$sim_base/data" "$sim_base/core-backups" "$root/lib-pointing-to-backups" "$cur_uid" "$cur_gid"
+pass 'deploy.sh GALROON_BACKUPS validation, remote prepare symlink/overlap/0700 checks and .env wiring'
 printf 'All backup tests passed.\n'

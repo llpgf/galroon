@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Usage: scripts/nas/backup.sh <install|backup|list|verify|prune|restore|restore-test|core-exports|prune-core-exports|pull|install-mac-schedule|uninstall-mac-schedule>
+# Usage: scripts/nas/backup.sh <install|backup|list|verify|prune|restore|restore-test|core-exports|prune-core-exports|pull|pull-core|install-mac-schedule|uninstall-mac-schedule>
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 umask 077
-[[ $# -gt 0 ]] || nas_die 'Usage: backup.sh <install|backup|list|verify|prune|restore|restore-test|core-exports|prune-core-exports|pull|install-mac-schedule|uninstall-mac-schedule>'
+[[ $# -gt 0 ]] || nas_die 'Usage: backup.sh <install|backup|list|verify|prune|restore|restore-test|core-exports|prune-core-exports|pull|pull-core|install-mac-schedule|uninstall-mac-schedule>'
 # launchd reads XML, including paths with shell metacharacters.
 xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g' -e "s/'/\&apos;/g"
@@ -11,6 +11,19 @@ xml_escape() {
 verify_pull() (
     cd "$1"
     [[ -f library.sqlite && -f MANIFEST && -f SHA256SUMS ]] || exit 1
+    if [[ "$with_artwork" == yes ]]; then
+        shasum -a 256 -c SHA256SUMS
+    else
+        awk '$2 != "artwork-library.sqlite"' SHA256SUMS | shasum -a 256 -c -
+    fi
+)
+verify_core_pull() (
+    cd "$1"
+    [[ -f collection.sqlite && -f manifest.json && -f SHA256SUMS ]] || exit 1
+    [[ ! -L collection.sqlite && ! -L manifest.json && ! -L SHA256SUMS ]] || exit 1
+    [[ -z "$(find . -type l)" ]] || exit 1
+    awk 'NF < 2 || $2 ~ /^\// || $2 ~ /(^|\/)\.\.(\/|$)/ { exit 1 }' SHA256SUMS || exit 1
+    awk '$2 == "collection.sqlite" { c=1 } $2 == "manifest.json" { m=1 } END { exit !(c && m) }' SHA256SUMS || exit 1
     if [[ "$with_artwork" == yes ]]; then
         shasum -a 256 -c SHA256SUMS
     else
@@ -34,6 +47,54 @@ prune_pulls() {
             printf '%s\n' "$name"
         done | LC_ALL=C sort -r
     )
+}
+prune_core_pulls() {
+    local dir name rest epoch index=0
+    while IFS=' ' read -r _epoch name; do
+        [[ -n "$name" ]] || continue
+        index=$((index + 1))
+        if [[ "$index" -gt "$pull_keep" ]]; then
+            rm -rf "$local_dir/$name"
+            printf 'Removed local Core backup: %s\n' "$local_dir/$name"
+        fi
+    done < <(
+        for dir in "$local_dir"/*; do
+            [[ -d "$dir" && ! -L "$dir" ]] || continue
+            name=${dir##*/}
+            [[ "$name" =~ ^Galroon-backup-[0-9]+-[0-9a-fA-F-]+$ ]] || continue
+            rest=${name#Galroon-backup-}
+            epoch=${rest%%-*}
+            printf '%s %s\n' "$epoch" "$name"
+        done | LC_ALL=C sort -k1,1nr -k2,2r
+    )
+}
+latest_core_backup() {
+    local remote_dir=$1
+    local finder='
+set -eu
+dir=$1
+[ -d "$dir" ] || exit 0
+for entry in "$dir"/Galroon-backup-*; do
+    [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+    name=${entry##*/}
+    case "$name" in
+        Galroon-backup-[0-9]*-*) ;;
+        *) continue ;;
+    esac
+    manifest=$entry/manifest.json
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] || continue
+    [ -f "$entry/SHA256SUMS" ] && [ ! -L "$entry/SHA256SUMS" ] || continue
+    if tr "\n\r\t" "   " < "$manifest" | grep -Eq "\"origin\"[[:space:]]*:[[:space:]]*\"scheduled\""; then
+        created=$(tr "\n\r\t" "   " < "$manifest" | sed -n "s/.*\"created\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p")
+        if [ -z "$created" ]; then
+            rest=${name#Galroon-backup-}
+            created=${rest%%-*}
+        fi
+        printf "%s %s\n" "$created" "$name"
+    fi
+done | LC_ALL=C sort -k1,1nr -k2,2r | sed -n "1s/^[^ ]* //p"
+'
+    "$ssh_command" -o BatchMode=yes -T -n "$NAS_TARGET" "$(nas_quote sh -c "$finder" sh "$remote_dir")"
 }
 command=$1; shift
 case "$command" in
@@ -62,27 +123,46 @@ STEPS
     backup|list|verify|prune|restore|restore-test|core-exports|prune-core-exports|help)
         ssh -T -n "$NAS_TARGET" "$(nas_quote "$NAS_BASE/bin/galroon-backup.sh" "$command" "$@")"
         ;;
-    pull)
+    pull|pull-core)
+        source_kind=legacy
+        if [[ "$command" == pull-core ]]; then source_kind=core; fi
         with_artwork=no
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --with-artwork) with_artwork=yes; shift ;;
+                --source)
+                    [[ $# -ge 2 && "$command" == pull ]] || nas_die 'Usage: backup.sh pull [--source legacy|core] [--with-artwork] [local-dir]'
+                    source_kind=$2; shift 2
+                    ;;
                 --) shift; break ;;
-                -*) nas_die 'Usage: backup.sh pull [--with-artwork] [local-dir]' ;;
+                -*) nas_die 'Usage: backup.sh pull [--source legacy|core] [--with-artwork] [local-dir]' ;;
                 *) break ;;
             esac
         done
-        [[ $# -le 1 ]] || nas_die 'Usage: backup.sh pull [--with-artwork] [local-dir]'
+        [[ "$source_kind" == legacy || "$source_kind" == core ]] || nas_die 'Pull source must be legacy or core.'
+        [[ $# -le 1 ]] || nas_die 'Usage: backup.sh pull [--source legacy|core] [--with-artwork] [local-dir]'
         local_dir=${1:-$HOME/GalroonBackups/nas}
         pull_keep=${GALROON_PULL_KEEP:-14}
         [[ "$pull_keep" =~ ^[0-9]+$ ]] && [[ "$pull_keep" -ge 1 ]] || nas_die 'GALROON_PULL_KEEP must be an integer >= 1.'
         ssh_command=${GALROON_SSH:-ssh}
-        name=$("$ssh_command" -o BatchMode=yes -T -n "$NAS_TARGET" "$(nas_quote "$NAS_BASE/bin/galroon-backup.sh" list)" | sed -n '1s/ .*//p')
-        [[ "$name" =~ ^[0-9]{8}T[0-9]{6}Z-(daily|weekly)$ ]] || nas_die 'No completed snapshot found.'
+        if [[ "$source_kind" == core ]]; then
+            remote_root=${GALROON_BACKUPS:-$NAS_BASE/core-backups}
+            [[ "$remote_root" =~ ^/[a-zA-Z0-9_./\ -]+$ && "$remote_root" != *'/../'* && "$remote_root" != */.. && "$remote_root" != *'/./'* && "$remote_root" != */. && "$remote_root" != *'//'* && "$remote_root" != */ ]] || nas_die 'GALROON_BACKUPS must be an absolute path without .. or metacharacters.'
+            name=$(latest_core_backup "$remote_root")
+            [[ "$name" =~ ^Galroon-backup-[0-9]+-[0-9a-fA-F-]+$ ]] || nas_die 'No completed Core scheduled backup found.'
+        else
+            remote_root=$NAS_BASE/backups
+            name=$("$ssh_command" -o BatchMode=yes -T -n "$NAS_TARGET" "$(nas_quote "$NAS_BASE/bin/galroon-backup.sh" list)" | sed -n '1s/ .*//p')
+            [[ "$name" =~ ^[0-9]{8}T[0-9]{6}Z-(daily|weekly)$ ]] || nas_die 'No completed snapshot found.'
+        fi
         mkdir -p "$local_dir"
         destination=$local_dir/$name
         if [[ -e "$destination" || -L "$destination" ]]; then
-            [[ -d "$destination" && ! -L "$destination" ]] && verify_pull "$destination" || nas_die "Local snapshot failed verification: $destination; move it aside and retry."
+            if [[ "$source_kind" == core ]]; then
+                [[ -d "$destination" && ! -L "$destination" ]] && verify_core_pull "$destination" || nas_die "Local Core backup failed verification: $destination; move it aside and retry."
+            else
+                [[ -d "$destination" && ! -L "$destination" ]] && verify_pull "$destination" || nas_die "Local snapshot failed verification: $destination; move it aside and retry."
+            fi
             printf 'Already pulled and verified: %s\n' "$destination"
             exit 0
         fi
@@ -91,20 +171,45 @@ STEPS
         trap 'rm -rf "$partial"' EXIT
         trap 'exit 1' HUP INT TERM
         chmod 700 "$partial"
-        tar_args=(tar -C "$NAS_BASE/backups")
+        tar_args=(tar -C "$remote_root")
         if [[ "$with_artwork" == no ]]; then tar_args+=(--exclude=artwork-library.sqlite); fi
         tar_args+=(-cf - "$name")
         "$ssh_command" -o BatchMode=yes -T -n "$NAS_TARGET" "$(nas_quote "${tar_args[@]}")" \
             | tar -xf - -C "$partial" --strip-components=1
-        verify_pull "$partial"
-        chmod 600 "$partial"/*
+        if [[ "$source_kind" == core ]]; then
+            verify_core_pull "$partial"
+        else
+            verify_pull "$partial"
+        fi
+        find "$partial" -type d -exec chmod 700 {} +
+        find "$partial" -type f -exec chmod 600 {} +
         mv "$partial" "$destination"
         trap - EXIT HUP INT TERM
-        printf 'Pulled snapshot: %s (with-artwork=%s)\n' "$destination" "$with_artwork"
-        prune_pulls
+        if [[ "$source_kind" == core ]]; then
+            printf 'Pulled Core backup: %s (with-artwork=%s)\n' "$destination" "$with_artwork"
+            prune_core_pulls
+        else
+            printf 'Pulled snapshot: %s (with-artwork=%s)\n' "$destination" "$with_artwork"
+            prune_pulls
+        fi
         ;;
     install-mac-schedule)
-        [[ $# -le 1 ]] || nas_die 'Usage: backup.sh install-mac-schedule [local-dir]'
+        schedule_source=legacy
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --source)
+                    [[ $# -ge 2 ]] || nas_die 'Usage: backup.sh install-mac-schedule [--source legacy|core] [local-dir]'
+                    schedule_source=$2; shift 2
+                    ;;
+                --) shift; break ;;
+                -*) nas_die 'Usage: backup.sh install-mac-schedule [--source legacy|core] [local-dir]' ;;
+                *) break ;;
+            esac
+        done
+        [[ "$schedule_source" == legacy || "$schedule_source" == core ]] || nas_die 'Schedule source must be legacy or core.'
+        [[ $# -le 1 ]] || nas_die 'Usage: backup.sh install-mac-schedule [--source legacy|core] [local-dir]'
+        pull_cmd=pull
+        if [[ "$schedule_source" == core ]]; then pull_cmd=pull-core; fi
         agents_dir=${GALROON_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}
         launchctl=${GALROON_LAUNCHCTL:-launchctl}
         plist=$agents_dir/com.galroon.nas-backup-pull.plist
@@ -121,7 +226,7 @@ STEPS
     <array>
         <string>/bin/bash</string>
 PLIST
-            printf '        <string>%s</string>\n' "$(xml_escape "$NAS_ROOT/scripts/nas/backup.sh")" pull
+            printf '        <string>%s</string>\n' "$(xml_escape "$NAS_ROOT/scripts/nas/backup.sh")" "$pull_cmd"
             if [[ $# == 1 ]]; then
                 local_dir=$1
                 case "$local_dir" in /*) ;; *) local_dir=$PWD/$local_dir ;; esac
@@ -143,12 +248,15 @@ PLIST
             if [[ -n "${GALROON_NAS:-}" ]]; then
                 printf '        <key>GALROON_NAS</key><string>%s</string>\n' "$(xml_escape "$GALROON_NAS")"
             fi
+            if [[ "$schedule_source" == core && -n "${GALROON_BACKUPS:-}" ]]; then
+                printf '        <key>GALROON_BACKUPS</key><string>%s</string>\n' "$(xml_escape "$GALROON_BACKUPS")"
+            fi
             printf '    </dict>\n</dict>\n</plist>\n'
         } > "$plist"
         plutil -lint "$plist"
         "$launchctl" bootout "gui/$(id -u)/com.galroon.nas-backup-pull" 2>/dev/null || true
         "$launchctl" bootstrap "gui/$(id -u)" "$plist"
-        printf 'Installed daily 06:00 pull: %s\n' "$plist"
+        printf 'Installed daily 06:00 %s: %s\n' "$pull_cmd" "$plist"
         ;;
     uninstall-mac-schedule)
         [[ $# == 0 ]] || nas_die 'Usage: backup.sh uninstall-mac-schedule'

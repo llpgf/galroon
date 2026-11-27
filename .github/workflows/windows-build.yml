@@ -1,0 +1,51 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Windows desktop installer
+        run: npm run desktop:build
+      - name: Generate installer checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = Get-ChildItem -Path 'target/release/bundle/nsis' -Filter '*-setup.exe' -File | Sort-Object Name
+          if (-not $installers) {
+            throw 'No NSIS installer found in target/release/bundle/nsis/*-setup.exe'
+          }
+          $lines = foreach ($file in $installers) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $outPath = Join-Path (Resolve-Path 'target/release/bundle/nsis').Path 'SHA256SUMS.txt'
+          [System.IO.File]::WriteAllLines($outPath, $lines, [System.Text.UTF8Encoding]::new($false))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: galroon-windows-x64
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

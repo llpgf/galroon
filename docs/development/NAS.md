@@ -24,7 +24,8 @@ NAS 需要 Container Manager 的 `/usr/local/bin/docker` 與 `docker compose` pl
 
 | NAS 路徑 | 用途 |
 | --- | --- |
-| `/volume1/docker/galroon/data` | 持久資料、裝置身分、資料庫 |
+| `/volume1/docker/galroon/data` | 持久資料、裝置身分、資料庫（掛載至 container `/data`） |
+| `/volume1/docker/galroon/core-backups` | Core 內建排程與手動備份目的地（掛載至 container `/backups`） |
 | `/run/galroon/control`（container 內 tmpfs 的子目錄） | owner 控制通道 `core.sock` |
 | `/volume1/docker/galroon/compose.yaml`、`.env` | 最近一次部署的 compose 與非機密設定 |
 | `/volume1/docker/galroon/release.*` | 每次上傳的獨立 build context，保留供檢查 |
@@ -64,12 +65,13 @@ Dockerfile 未設定固定 `USER`，因此**一律透過 compose 執行**；若�
    export GALROON_NAS=galroon-dev@192.168.50.154
    export GALROON_UID=1032 GALROON_GID=100
    export GALROON_DATA=/volume1/docker/galroon/data
+   export GALROON_BACKUPS=/volume1/docker/galroon/core-backups
    export GALROON_LIBRARY=/volume1/Backup/Galgame
    scripts/nas/deploy.sh
    scripts/nas/status.sh
    ```
 
-   `GALROON_NAS` 適用於全部 SSH 腳本；使用者若改帳號，uid/gid 必須與 SSH 帳號相符。`GALROON_DATA` 限制在 `/volume1/docker/galroon/` 下，禁止 `..` 與 symlink；路徑允許空白，但不接受 compose 分隔符或 shell 插值字元。收藏必須事先存在，腳本不建立或修改收藏。自訂資料目錄不可與收藏目錄重疊。
+   `GALROON_NAS` 適用於全部 SSH 腳本；使用者若改帳號，uid/gid 必須與 SSH 帳號相符。`GALROON_DATA` 與 `GALROON_BACKUPS`（預設 `/volume1/docker/galroon/core-backups`，掛載至 container `/backups`）皆限制在 `/volume1/docker/galroon/` 下，禁止 `..` 與 symlink；路徑允許空白，但不接受 compose 分隔符或 shell 插值字元。收藏必須事先存在，腳本不建立或修改收藏。`GALROON_DATA`、`GALROON_BACKUPS` 與收藏目錄彼此不可重疊；目錄由 SSH 帳號以 `umask 077` 建立並驗證 owner/group 與可寫權限。
 
    部署透過 tar 串流與 `ssh -T` 上傳到全新的 `release.*`。在 `/volume1/docker/galroon/` 執行 `sudo -n /usr/local/bin/docker build`，以該 release 為 context，標記 `galroon:<BUILD_SHA 前 12 碼>` 與 `galroon:local`。`.dockerignore` 只允許 binary、Web 與 Dockerfile，不傳入資料庫。接著檢查 compose 設定、寫入 `.env`，執行 `docker compose up -d --no-deps galroon`；compose 選用 SHA tag、`pull_policy: never`，避免誤拉 registry image。只對 project/service `galroon` 操作；若同名 container 屬於其他 project/service 則停止。
 
@@ -175,7 +177,23 @@ mv .env.rollback .env
 
 ## 自動備份與還原
 
-NAS 腳本 `galroon-backup.sh` 提供完整災難復原快照：以 SQLite `.backup` 線上備份 `library.sqlite`，預設每天也備份 `artwork-library.sqlite`，另複製 `device.json`、`network.json` 與 `lan-*.pem`。不複製 `lan-tls.lock`、Core 自有的 `backups/`、`migration-backups/`，也不複製遊戲收藏。Core 的 `backup::export` 會移除憑證與裝置身分，因此不適合此用途。每個資料庫各自取得一致快照；兩個資料庫與身分檔不是同一瞬間的跨檔案交易，變更配對／網路設定時請避開備份時段。
+### Core 內建自動備份（建議）
+
+compose 預設將 NAS 的 `GALROON_BACKUPS`（預設 `/volume1/docker/galroon/core-backups`）掛載為 container 內的 `/backups`，與舊腳本的 `/volume1/docker/galroon/backups` 分開，兩者可並行而不互相干擾。在 Backup 面板可設定目的地為 `/backups`、每日／每週排程、保留份數與 `full`／`portable` 模式（`full` 含 `identity/` 與憑證，只限 owner 設定；請勿共享或上傳雲端）。
+
+從 Mac 拉回最新的 Core 排程備份（只抓 `manifest.json` 標記 `origin:"scheduled"` 的資料夾，並以 `SHA256SUMS` 驗證，目錄與檔案權限設為 700／600）：
+
+```bash
+scripts/nas/backup.sh pull-core                       # 等同 pull --source core，預設略過 artwork
+# scripts/nas/backup.sh pull-core --with-artwork /另一個本機目錄
+scripts/nas/backup.sh install-mac-schedule --source core   # 每天 06:00 拉回 Core 格式
+```
+
+`pull-core`／`pull --source core` 預設從 `/volume1/docker/galroon/core-backups`（可用 `GALROON_BACKUPS` 覆寫）拉回，依 `GALROON_PULL_KEEP`（預設 14）以資料夾名稱中的 epoch 保留最新份數，不會動到舊腳本快照或其他目錄。與下方舊腳本並行驗證 2 週並確認無誤後，可在 DSM 工作排程器停用 `Galroon backup` 任務並改用 `--source core` 的 Mac 拉回排程。
+
+### 舊版 NAS 腳本快照（過渡並存）
+
+NAS 腳本 `galroon-backup.sh` 提供完整災難復原快照：以 SQLite `.backup` 線上備份 `library.sqlite`，預設每天也備份 `artwork-library.sqlite`，另複製 `device.json`、`network.json` 與 `lan-*.pem`。不複製 `lan-tls.lock`、Core 自有的 `backups/`、`migration-backups/`，也不複製遊戲收藏。每個資料庫各自取得一致快照；兩個資料庫與身分檔不是同一瞬間的跨檔案交易，變更配對／網路設定時請避開備份時段。
 
 預設從 `/volume1/docker/galroon/.env` 解析 `GALROON_DATA`（例如 `/volume1/docker/galroon/data-production-20261016`），不執行 `.env`。快照存放在 `/volume1/docker/galroon/backups/<UTC時間>-daily|weekly`。最近 6.5 天內沒有完成的 weekly 時，本次為 weekly，否則為 daily；預設保留最新 **7 份 daily＋4 份 weekly**。先在 `.incomplete-*` 目錄完成 SQLite 完整性、筆數與 SHA-256 記錄，轉為不需 WAL 的副本，執行 `sync` 後改名，才清理舊快照。失敗會回傳非零狀態並移除本次暫存目錄；舊 `.incomplete-*` 只警告、不自動刪除。若留下 `.lock`，先確認沒有備份／清理作業執行，再依錯誤訊息用 `rmdir` 移除。
 

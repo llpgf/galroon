@@ -23,6 +23,8 @@ services:
     volumes:
       # NAS-local writable state, precreated by its owner; no SMB/NFS database.
       - "${GALROON_DATA:-/volume1/docker/galroon/data}:/data"
+      # Core scheduled/manual backup destination, separate from data and legacy script backups/.
+      - "${GALROON_BACKUPS:-/volume1/docker/galroon/core-backups}:/backups"
       # Identical NAS/container path; library remains read-only throughout N1.
       - "${GALROON_LIBRARY:-/volume1/Backup/Galgame}:${GALROON_LIBRARY:-/volume1/Backup/Galgame}:ro"
     environment:
