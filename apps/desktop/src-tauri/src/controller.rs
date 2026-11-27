@@ -1,4 +1,4 @@
-use std::{path::PathBuf,fs,io::Write,time::Duration};
+use std::{path::PathBuf,fs,time::Duration};
 use galroon_core::{local_core,backup,plans};
 pub struct Controller{pub base:PathBuf,pub exe:PathBuf,pub gate:tokio::sync::Mutex<()>,remote:tokio::sync::Mutex<Option<Remote>>,proxy:tokio::sync::Mutex<Option<galroon_core::lan_proxy::LocalProxy>>}
 struct Remote{entry:crate::paired::Connection,connection:std::sync::Arc<galroon_core::lan_client::LanConnection>}
@@ -43,7 +43,7 @@ impl Controller{
  pub async fn pair_lan(&self,pairing:String)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::pair_lan(&self.base,&pairing).await}
 
  fn launch_lock(&self)->Result<fs::File,String>{fs::create_dir_all(&self.base).map_err(|e|e.to_string())?;plans::validate_chain(&self.base)?;let file=fs::OpenOptions::new().create(true).read(true).write(true).open(self.base.join("launch.lock")).map_err(|e|e.to_string())?;fs2::FileExt::try_lock_exclusive(&file).map_err(|_|"Another desktop is connecting or restoring this Core; try again shortly".to_string())?;Ok(file)}
- fn active(&self)->Result<PathBuf,String>{let pointer=self.base.join("active-library.json");if !pointer.exists(){return Ok(self.base.clone());}plans::validate_chain(&pointer)?;let v:serde_json::Value=serde_json::from_slice(&fs::read(&pointer).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let dir=PathBuf::from(v["current"].as_str().ok_or("Invalid collection pointer")?).canonicalize().map_err(|e|e.to_string())?;if !dir.starts_with(self.base.canonicalize().map_err(|e|e.to_string())?){return Err("Collection pointer is outside its local data directory".into());}plans::validate_chain(&dir)?;Ok(dir)}
+ fn active(&self)->Result<PathBuf,String>{galroon_core::active_collection::resolve(&self.base)}
  pub async fn session(&self)->Result<local_core::Session,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let saved=crate::paired::read(&self.base)?;if let Some(id)=saved.selected {return crate::paired::connect(saved.entries.iter().find(|e|e.id==id).ok_or("Selected connection is missing")?).await;}local_core::connect_or_start_with_device(self.active()?,self.exe.clone(),self.base.clone()).await}
  pub async fn connections(&self)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;crate::paired::read(&self.base)}
  pub async fn restore_history(&self)->Result<serde_json::Value,String>{
@@ -78,11 +78,8 @@ impl Controller{
   let snapshot_db=galroon_core::db::open(&previous.join("library.sqlite")).map_err(|e|e.to_string())?;
   let snapshot=backup::export(&snapshot_db,&protected)?;drop(snapshot_db);
   let snapshot_manifest=backup::inspect(&snapshot)?;
-  let pointer=self.base.join("active-library.json");let pending=self.base.join(format!("active-library-{}.json",galroon_core::db::id()));plans::validate_chain(&pointer)?;
-  let mut config=if pointer.exists(){serde_json::from_slice::<serde_json::Value>(&fs::read(&pointer).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?}else{serde_json::json!({"previous":[]})};
-  config["previous"].as_array_mut().ok_or("Invalid collection history")?.push(serde_json::json!({"path":previous,"replaced_at":galroon_core::db::now(),"snapshot":snapshot,"sha256":snapshot_manifest.sha256,"library":snapshot_manifest.library}));config["current"]=serde_json::json!(restored);
-  let mut file=fs::OpenOptions::new().create_new(true).write(true).open(&pending).map_err(|e|e.to_string())?;file.write_all(&serde_json::to_vec_pretty(&config).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;file.sync_all().map_err(|e|e.to_string())?;drop(file);
-  fs::rename(&pending,&pointer).map_err(|e|e.to_string())?;Ok(restored)
+  galroon_core::active_collection::commit(&self.base,&restored,serde_json::json!({"path":previous,"replaced_at":galroon_core::db::now(),"snapshot":snapshot,"sha256":snapshot_manifest.sha256,"library":snapshot_manifest.library}))?;
+  Ok(restored)
  }
 }
 #[cfg(test)]mod tests{

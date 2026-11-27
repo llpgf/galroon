@@ -2,7 +2,7 @@
 use crate::{db::{Db,id,now},plans,scan};
 use rusqlite::{Connection,params};
 use serde::{Serialize,Deserialize};
-use std::path::{Path,PathBuf,Component};
+use std::path::{Path,PathBuf};
 use sha2::{Digest,Sha256};
 type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]pub struct Preview{pub root_id:String,pub old_path:String,pub new_path:String,pub files:usize,pub found:usize,pub missing:usize,pub changed:usize,pub jobs:usize,pub plans:usize,pub digest:String}
@@ -11,17 +11,17 @@ pub fn require_idle(c:&Connection)->R<()>{
  let n:i64=sql(c.query_row("SELECT (SELECT count(*) FROM jobs WHERE kind!='artwork' AND state IN ('queued','running','pausing','cancelling'))+(SELECT count(*) FROM plans WHERE state='executing')",[],|r|r.get(0)))?;
  if n>0{return Err("Pause running tasks and wait for file operations to finish first".into());}Ok(())
 }
-fn relative(value:&str)->R<PathBuf>{let p=Path::new(value);if p.as_os_str().is_empty()||p.components().any(|c|!matches!(c,Component::Normal(_)|Component::CurDir)){return Err("Stored file has an unsafe relative path".into());}Ok(p.into())}
-/// Joins a stored relative path one component at a time. A catalog moved from macOS stores "dir/file";
-/// pushed onto a Windows verbatim root (\\?\UNC\...) as one piece, the "/" would not be a separator.
-fn under(target:&Path,rel:&str)->R<PathBuf>{let mut out=target.to_path_buf();for part in relative(rel)?.components(){if let Component::Normal(name)=part{out.push(name);}}Ok(out)}
-/// The stored name, or its NFC form when only that exists. macOS reports SMB names decomposed (NFD) while the
-/// share keeps them composed, and Windows compares names byte for byte. Returns the relative path that exists.
+fn relative(value:&str)->R<String>{crate::backup::normalize_relative_path(value)}
+/// Joins a stored relative path one component at a time. A catalog moved from Windows or macOS
+/// may store "\" or "/"; pushing component by component works on Unix and Windows verbatim roots.
+fn under(target:&Path,rel:&str)->R<PathBuf>{let mut out=target.to_path_buf();for part in relative(rel)?.split('/'){out.push(part);}Ok(out)}
+/// The stored name (with separators normalized), or its NFC form when only that exists. macOS reports
+/// SMB names decomposed (NFD) while the share keeps them composed, and Windows compares names byte for byte.
 fn locate(target:&Path,rel:&str)->R<(PathBuf,String)>{
  use unicode_normalization::UnicodeNormalization;
- let raw=under(target,rel)?;if std::fs::symlink_metadata(&raw).is_ok(){return Ok((raw,rel.into()));}
- let composed:String=rel.nfc().collect();if composed!=rel{let nfc=under(target,&composed)?;if std::fs::symlink_metadata(&nfc).is_ok(){return Ok((nfc,composed));}}
- Ok((raw,rel.into()))
+ let norm=relative(rel)?;let raw=under(target,&norm)?;if std::fs::symlink_metadata(&raw).is_ok(){return Ok((raw,norm));}
+ let composed:String=norm.nfc().collect();if composed!=norm{let nfc=under(target,&composed)?;if std::fs::symlink_metadata(&nfc).is_ok(){return Ok((nfc,composed));}}
+ Ok((raw,norm))
 }
 fn snapshot(c:&Connection,rid:&str,target:&Path)->R<(Preview,Vec<(String,String,String)>)>{
  require_idle(c)?;plans::validate_chain(target)?;let target=scan::canonical(target)?;if !target.is_dir(){return Err("Choose an existing source folder".into());}
@@ -52,14 +52,21 @@ pub fn remap(db:&Db,rid:&str,target:&Path,digest:&str)->R<Preview>{
  sql(tx.execute("UPDATE jobs SET state='superseded',message='Source mapping changed. Start a new task; previous staging is retained.',updated=?1 WHERE state NOT IN ('completed','superseded')",[now()]))?;
  sql(tx.execute("UPDATE plans SET state='superseded',approved=NULL WHERE state NOT IN ('completed','superseded')",[]))?;
  let rows={let mut s=sql(tx.prepare("SELECT id,original,current FROM quarantine"))?;let rows=sql(sql(s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))))?.collect::<rusqlite::Result<Vec<_>>>())?;rows};
- let rewrite=|p:&str|->String{Path::new(p).strip_prefix(&preview.old_path).map(|rel|Path::new(&preview.new_path).join(rel).to_string_lossy().into_owned()).unwrap_or_else(|_|p.into())};
+ let rewrite=|p:&str|->String{
+  if let Ok(rel)=Path::new(p).strip_prefix(&preview.old_path){return Path::new(&preview.new_path).join(rel).to_string_lossy().into_owned();}
+  let old_trim=preview.old_path.trim_end_matches(['/','\\']);
+  if let Some(rest)=p.strip_prefix(old_trim).and_then(|s|s.strip_prefix(['/','\\'])){
+   if let Ok(joined)=under(Path::new(&preview.new_path),rest){return joined.to_string_lossy().into_owned();}
+  }
+  p.into()
+ };
  for(q,original,current)in rows{sql(tx.execute("UPDATE quarantine SET original=?2,current=?3 WHERE id=?1",params![q,rewrite(&original),rewrite(&current)]))?;}
  sql(tx.execute("INSERT INTO root_history(id,root_id,old_path,new_path,created) VALUES(?1,?2,?3,?4,?5)",params![id(),rid,preview.old_path,preview.new_path,now()]))?;sql(tx.commit())?;Ok(preview)
 }
 #[cfg(test)]mod tests{
  use super::*;
  #[test]fn stored_relative_paths_join_by_component(){
-  let root=Path::new("root");assert_eq!(under(root,"a/b.rar").unwrap(),root.join("a").join("b.rar"));assert!(under(root,"../x").is_err());
+  let root=Path::new("root");assert_eq!(under(root,"a/b.rar").unwrap(),root.join("a").join("b.rar"));assert_eq!(under(root,r"a\b.rar").unwrap(),root.join("a").join("b.rar"));assert!(under(root,"../x").is_err());assert!(under(root,r"..\x").is_err());
   // A name stored decomposed (NFD) is found under its composed form, and the found form is reported.
   let t=tempfile::tempdir().unwrap();let composed="ガ.rar";std::fs::write(t.path().join(composed),b"x").unwrap();
   let decomposed:String=unicode_normalization::UnicodeNormalization::nfd(composed).collect();
@@ -71,5 +78,34 @@ pub fn remap(db:&Db,rid:&str,target:&Path,digest:&str)->R<Preview>{
  let fid:String=db.lock().unwrap().query_row("SELECT id FROM files",[],|r|r.get(0)).unwrap();let rid:String=db.lock().unwrap().query_row("SELECT id FROM resources",[],|r|r.get(0)).unwrap();db.lock().unwrap().execute_batch("INSERT INTO works(id,title,original_title,notes) VALUES('w','Title','Title','Keep these notes'); UPDATE resources SET work_id='w'; INSERT INTO plans(id,kind,state,items,digest,created,approved) VALUES('p','organize','approved','[]','old',1,1);").unwrap();
  let preview=preview(&db,"r",&target).unwrap();assert_eq!(preview.found,1);assert!(remap(&db,"r",&target,"wrong").is_err());remap(&db,"r",&target,&preview.digest).unwrap();let c=db.lock().unwrap();assert_eq!(c.query_row("SELECT availability FROM files WHERE id=?1",[&fid],|r|r.get::<_,String>(0)).unwrap(),"unverified");assert_eq!(c.query_row("SELECT state FROM plans WHERE id='p'",[],|r|r.get::<_,String>(0)).unwrap(),"superseded");drop(c);
  let j=scan::create(&db,scan::ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();scan::run(db.clone(),j);let c=db.lock().unwrap();assert_eq!(c.query_row("SELECT count(*) FROM files",[],|r|r.get::<_,i64>(0)).unwrap(),1);assert_eq!(c.query_row("SELECT work_id FROM resources WHERE id=?1",[rid],|r|r.get::<_,String>(0)).unwrap(),"w");assert_eq!(c.query_row("SELECT availability FROM files WHERE id=?1",[fid],|r|r.get::<_,String>(0)).unwrap(),"present");assert_eq!(std::fs::read(source.join("story.zip")).unwrap(),b"original");assert_eq!(std::fs::read(target.join("story.zip")).unwrap(),b"original");
+ }
+ #[test]fn remap_normalizes_windows_backslash_relative_paths_across_platforms(){
+  let t=tempfile::tempdir().unwrap();let target=t.path().join("nas-games");std::fs::create_dir_all(target.join("Bundle/Game")).unwrap();
+  std::fs::write(target.join("Bundle/Game/story.zip"),b"original").unwrap();
+  let db=crate::db::open(&t.path().join("state/library.sqlite")).unwrap();
+  {let c=db.lock().unwrap();
+   c.execute_batch(r#"
+    INSERT INTO roots(id,path,label) VALUES('r','D:\Games','Windows source');
+    INSERT INTO works(id,title,original_title) VALUES('w','Story','Story');
+    INSERT INTO resources(id,root_id,relative_path,title,kind,work_id) VALUES('res','r','Bundle\Game','Game','directory','w');
+    INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES('f','r','D:\Games\Bundle\Game\story.zip','Bundle\Game\story.zip',8,'1','zip','');
+    INSERT INTO resource_files(resource_id,file_id) VALUES('res','f');
+    INSERT INTO quarantine(id,plan_id,original,current) VALUES('q','p','D:\Games\Bundle\Game\story.zip','D:\Games\Quarantine\story.zip');
+   "#).unwrap();
+  }
+  assert!(under(&target,r"..\escape").is_err());assert!(under(&target,r"C:\abs\file").is_err());
+  let p=preview(&db,"r",&target).unwrap();assert_eq!(p.found,1);assert_eq!(p.missing,0);
+  remap(&db,"r",&target,&p.digest).unwrap();
+  let c=db.lock().unwrap();
+  assert_eq!(c.query_row("SELECT relative_path FROM files WHERE id='f'",[],|r|r.get::<_,String>(0)).unwrap(),"Bundle/Game/story.zip");
+  assert_eq!(c.query_row("SELECT relative_path FROM resources WHERE id='res'",[],|r|r.get::<_,String>(0)).unwrap(),"Bundle/Game");
+  let q_orig:String=c.query_row("SELECT original FROM quarantine WHERE id='q'",[],|r|r.get(0)).unwrap();
+  assert!(q_orig.ends_with(&std::path::PathBuf::from("Bundle").join("Game").join("story.zip").to_string_lossy().into_owned()),"{q_orig}");
+  drop(c);
+  let j=scan::create(&db,scan::ScanSpec{root_id:"r".into(),scope:"".into(),exclude:vec![]}).unwrap();scan::run(db.clone(),j);
+  let c=db.lock().unwrap();
+  assert_eq!(c.query_row("SELECT count(*) FROM files",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+  assert_eq!(c.query_row("SELECT availability FROM files WHERE id='f'",[],|r|r.get::<_,String>(0)).unwrap(),"present");
+  assert_eq!(c.query_row("SELECT work_id FROM resources WHERE id='res'",[],|r|r.get::<_,String>(0)).unwrap(),"w");
  }
 }

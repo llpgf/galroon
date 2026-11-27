@@ -12,6 +12,27 @@ pub struct Options{pub mode:Mode,pub origin:Origin,pub artwork:bool}
 impl Default for Options{fn default()->Self{Self{mode:Mode::Portable,origin:Origin::Manual,artwork:true}}}
 /// Reserved export directory names are excluded even while a backup is being written.
 pub fn protected_path(path:&Path)->bool{path.components().any(|part|{let name=part.as_os_str().to_string_lossy().to_ascii_lowercase();name.starts_with("galroon-backup-")||name.starts_with(".galroon-backup-")})}
+/// Normalizes Windows or Unix relative paths into '/'-separated segments, rejecting escapes or roots.
+pub fn normalize_relative_path(value:&str)->R<String>{
+ if value.is_empty()||value.starts_with('/')||value.starts_with('\\')||value.contains('\0'){return Err("Stored file has an unsafe relative path".into());}
+ let bytes=value.as_bytes();if bytes.len()>=2&&bytes[0].is_ascii_alphabetic()&&bytes[1]==b':'{return Err("Stored file has an unsafe relative path".into());}
+ let mut parts=Vec::new();
+ for part in value.split(['/','\\']){
+  if part.is_empty()||part=="."{continue;}
+  if part==".."{return Err("Stored file has an unsafe relative path".into());}
+  parts.push(part);
+ }
+ if parts.is_empty(){return Err("Stored file has an unsafe relative path".into());}
+ Ok(parts.join("/"))
+}
+#[cfg(unix)]
+fn normalize_catalog_paths(c:&Connection)->R<()>{
+ for table in ["files","resources"]{
+  let rows={let mut q=c.prepare(&format!("SELECT id,relative_path FROM {table} WHERE instr(relative_path,'\\')>0")).map_err(|e|e.to_string())?;
+   let rows=q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;rows};
+  for (id,rel) in rows{if let Ok(norm)=normalize_relative_path(&rel){if norm!=rel{let _=c.execute(&format!("UPDATE {table} SET relative_path=?2 WHERE id=?1"),rusqlite::params![id,norm]);}}}
+ }Ok(())
+}
 #[derive(Serialize,Deserialize,Debug)]pub struct Manifest{pub format:String,pub version:u32,pub created:i64,pub database:String,pub bytes:u64,pub sha256:String,pub includes_game_files:bool,pub includes_credentials:bool,
  #[serde(default)]pub library:Option<crate::context::Library>,#[serde(default)]pub schema:Option<i64>,#[serde(default)]pub tables:Vec<String>,#[serde(default)]pub verification:String,
  #[serde(default)]pub mode:Mode,#[serde(default)]pub origin:Origin,#[serde(default)]pub identity:Option<Identity>,#[serde(default)]pub core_version:Option<String>,
@@ -163,9 +184,246 @@ fn restore(folder:&Path,destination:&Path,expected_hash:Option<&str>,full:bool)-
  // startup's ensure() must not recreate enabled watchers for restored roots.
  crate::watching::migrate(&c)?;crate::watching::ensure(&c)?;
  c.execute_batch("UPDATE source_watch SET enabled=0,pending='[]',job_id=NULL,needs_scan=1,status='disabled',revision=revision+1,message='Restored collection. Check source paths before enabling monitoring.';").map_err(|e|e.to_string())?;
+ #[cfg(unix)]normalize_catalog_paths(&c)?;
  drop(c);
  if full{let identity=manifest.identity.as_ref().unwrap();let target=destination.join("identity");fs::create_dir(&target).map_err(|e|e.to_string())?;private_permissions(&target,true)?;for file in &identity.files{let bytes=read_identity(&folder.join("identity").join(&file.name))?.ok_or("Backup identity file is missing")?;write_new(&target.join(&file.name),&bytes,true)?;}identity_details(&target,&identity.files)?;}
  fs::remove_file(marker).map_err(|e|e.to_string())?;destination.canonicalize().map_err(|e|e.to_string())
+}
+#[derive(Clone,Debug)]pub struct RelaunchRequest{pub previous_collection:PathBuf,pub new_collection:PathBuf,pub installed_identity:Vec<String>,pub replaced_identity:Option<PathBuf>}
+#[derive(Clone,Debug)]pub struct InstalledIdentity{pub replaced_dir:Option<PathBuf>,pub installed_files:Vec<String>,pub lan_disabled:bool,pub warning:Option<String>}
+fn utc_stamp(secs:i64)->String{
+ let days=secs.div_euclid(86400);let rem=secs.rem_euclid(86400);
+ let z=days+719468;let era=z.div_euclid(146097);let doe=z-era*146097;
+ let yoe=(doe-doe/1460+doe/36524-doe/146096)/365;let mut y=yoe+era*400;let doy=doe-(365*yoe+yoe/4-yoe/100);
+ let mp=(5*doy+2)/153;let d=doy-(153*mp+2)/5+1;let m=if mp<10{mp+3}else{mp-9};if m<=2{y+=1;}
+ format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",rem/3600,(rem%3600)/60,rem%60)
+}
+pub fn is_fresh_core(db:&Db)->R<bool>{
+ let c=db.lock().map_err(|e|e.to_string())?;
+ let owner:i64=c.query_row("SELECT count(*) FROM settings WHERE key='owner_password'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let roots:i64=c.query_row("SELECT count(*) FROM roots",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let works:i64=c.query_row("SELECT count(*) FROM works",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let sessions:i64=c.query_row("SELECT count(*) FROM sessions",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ Ok(owner==0&&roots==0&&works==0&&sessions==0)
+}
+fn catalog_counts(file:&Path)->R<(i64,i64,i64,i64)>{
+ let c=Connection::open_with_flags(file,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|e.to_string())?;
+ c.execute_batch("PRAGMA trusted_schema=OFF;").map_err(|e|e.to_string())?;
+ let works:i64=c.query_row("SELECT count(*) FROM works WHERE merged_into IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let resources:i64=c.query_row("SELECT count(*) FROM resources",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let files:i64=c.query_row("SELECT count(*) FROM files",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let roots:i64=c.query_row("SELECT count(*) FROM roots",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ Ok((works,resources,files,roots))
+}
+pub fn schedule_destination(device_dir:&Path)->Option<PathBuf>{
+ let path=device_dir.join("backup-schedule.json");plans::validate_chain(&path).ok()?;
+ let meta=fs::symlink_metadata(&path).ok()?;if meta.file_type().is_symlink()||!meta.is_file()||meta.len()>65536{return None;}
+ let value:serde_json::Value=serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+ value["destination"].as_str().filter(|s|!s.is_empty()).map(PathBuf::from)
+}
+pub fn default_candidate_dirs(device_dir:&Path)->Vec<PathBuf>{
+ let mut dirs=Vec::new();
+ if let Some(dest)=schedule_destination(device_dir){dirs.push(dest);}
+ let backups=std::env::var_os("GALROON_BACKUPS_DIR").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/backups"));
+ dirs.push(backups);
+ dirs
+}
+pub fn list_candidates(search_dirs:&[PathBuf])->serde_json::Value{
+ let mut seen=std::collections::BTreeSet::new();let mut searched=Vec::new();let mut items:Vec<(i64,String,serde_json::Value)>=Vec::new();
+ for raw in search_dirs{
+  if plans::validate_chain(raw).is_err(){continue;}
+  let Ok(dir)=raw.canonicalize()else{continue};
+  if !dir.is_dir()||!seen.insert(dir.clone()){continue;}
+  searched.push(dir.to_string_lossy().into_owned());
+  let Ok(entries)=fs::read_dir(&dir)else{continue};
+  for entry in entries.flatten(){
+   let path=entry.path();
+   let Some(name)=path.file_name().and_then(|n|n.to_str()).map(str::to_owned)else{continue};
+   if !name.starts_with("Galroon-backup-"){continue;}
+   if plans::validate_chain(&path).is_err(){continue;}
+   let Ok(meta)=fs::symlink_metadata(&path)else{continue};
+   if !meta.is_dir()||meta.file_type().is_symlink(){continue;}
+   let mpath=path.join("manifest.json");
+   if plans::validate_chain(&mpath).is_err(){continue;}
+   let Ok(mmeta)=fs::symlink_metadata(&mpath)else{continue};
+   if !mmeta.is_file()||mmeta.file_type().is_symlink()||mmeta.len()>16384{continue;}
+   let Ok(bytes)=fs::read(&mpath)else{continue};
+   let Ok(manifest)=serde_json::from_slice::<Manifest>(&bytes)else{continue};
+   if manifest.format!="galroon-catalog-backup"||!(1..=4).contains(&manifest.version)||manifest.database!="collection.sqlite"||manifest.includes_game_files{continue;}
+   let db_path=path.join(&manifest.database);
+   let Ok(dmeta)=fs::symlink_metadata(&db_path)else{continue};
+   if !dmeta.is_file()||dmeta.file_type().is_symlink(){continue;}
+   let path_str=path.to_string_lossy().into_owned();
+   let summary=serde_json::json!({
+    "path":path_str,"name":name,"created":manifest.created,"version":manifest.version,"mode":manifest.mode,"origin":manifest.origin,
+    "bytes":manifest.bytes,"sha256":manifest.sha256,"schema":manifest.schema,
+    "has_artwork":manifest.artwork.is_some(),"artwork_bytes":manifest.artwork.as_ref().map(|a|a.bytes),
+    "library":manifest.library,"spki_fingerprint":manifest.identity.as_ref().and_then(|i|i.spki_fingerprint.clone()),
+    "core_version":manifest.core_version
+   });
+   items.push((manifest.created,path_str,summary));
+  }
+ }
+ items.sort_by(|a,b|b.0.cmp(&a.0).then_with(||b.1.cmp(&a.1)));
+ serde_json::json!({"candidates":items.into_iter().map(|(_,_,v)|v).collect::<Vec<_>>(),"searched":searched})
+}
+pub fn inspect_summary(folder:&Path)->R<serde_json::Value>{inspect_summary_with(folder,crate::network::is_local_interface_address)}
+pub(crate) fn inspect_summary_with(folder:&Path,check_local_ip:impl Fn(std::net::IpAddr)->bool)->R<serde_json::Value>{
+ let manifest=inspect(folder)?;let canonical=folder.canonicalize().map_err(|e|e.to_string())?;
+ let(works,resources,files,roots)=catalog_counts(&canonical.join(&manifest.database))?;
+ let(net_addr,net_local)=if manifest.mode==Mode::Full{
+  match read_identity(&canonical.join("identity/network.json"))?{
+   Some(bytes)=>{let net=crate::network::NetworkSettings::parse_bytes(&bytes)?;(Some(net.address().to_string()),Some(check_local_ip(net.address())))}
+   None=>(None,None)
+  }
+ }else{(None,None)};
+ Ok(serde_json::json!({
+  "path":canonical,"manifest":manifest,"mode":manifest.mode,"origin":manifest.origin,"sha256":manifest.sha256,"schema":manifest.schema,
+  "works":works,"resources":resources,"files":files,"roots":roots,
+  "spki_fingerprint":manifest.identity.as_ref().and_then(|i|i.spki_fingerprint.clone()),
+  "device_id":manifest.identity.as_ref().map(|i|i.device_id.clone()),
+  "requires_original_offline":manifest.mode==Mode::Full,
+  "network_address":net_addr,"network_address_local":net_local
+ }))
+}
+pub fn install_identity(staged_identity_dir:&Path,device_dir:&Path,check_local_ip:impl Fn(std::net::IpAddr)->bool)->R<InstalledIdentity>{
+ plans::validate_chain(staged_identity_dir)?;plans::validate_chain(device_dir)?;fs::create_dir_all(device_dir).map_err(|e|e.to_string())?;
+ let mut staged:Vec<(String,Vec<u8>)>=Vec::new();let mut lan_disabled=false;let mut warning=None;
+ for name in IDENTITY_FILES{
+  if let Some(mut bytes)=read_identity(&staged_identity_dir.join(name))?{
+   if name=="device.json"{
+    let mut device:crate::context::Device=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    uuid::Uuid::parse_str(&device.id).map_err(|e|e.to_string())?;
+    if device.platform!=std::env::consts::OS{device.platform=std::env::consts::OS.into();bytes=serde_json::to_vec(&device).map_err(|e|e.to_string())?;}
+   }else if name=="network.json"{
+    let mut net=crate::network::NetworkSettings::parse_bytes(&bytes)?;
+    if net.enabled()&&!check_local_ip(net.address()){
+     net.set_enabled(false);
+     bytes=serde_json::to_vec_pretty(&net).map_err(|e|e.to_string())?;
+     lan_disabled=true;
+     warning=Some(format!("Restored LAN address {} is not present on this host; LAN listener was disabled. Update the LAN address in Access settings and re-enable.",net.address()));
+    }
+   }
+   staged.push((name.to_owned(),bytes));
+  }
+ }
+ if !staged.iter().any(|(n,_)|n=="device.json"){return Err("Restored full backup is missing device.json".into());}
+ let mut existing=Vec::new();
+ for name in IDENTITY_FILES{
+  let target=device_dir.join(name);plans::validate_chain(&target)?;
+  match fs::symlink_metadata(&target){
+   Ok(m)=>{if m.file_type().is_symlink()||!m.is_file(){return Err(format!("Existing identity {name} must be a regular file, not a symbolic link"));}existing.push(name);}
+   Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{}
+   Err(e)=>return Err(e.to_string())
+  }
+ }
+ let replaced_dir=if !existing.is_empty(){
+  let base_name=format!("replaced-identity-{}",utc_stamp(now()));
+  let mut dir=device_dir.join(&base_name);
+  if dir.exists(){dir=device_dir.join(format!("{base_name}-{}",&id()[..8]));}
+  fs::create_dir(&dir).map_err(|e|e.to_string())?;private_permissions(&dir,true)?;
+  let mut moved=Vec::new();
+  for name in existing{
+   if let Err(e)=fs::rename(device_dir.join(name),dir.join(name)){
+    for prev in moved{let _=fs::rename(dir.join(prev),device_dir.join(prev));}
+    let _=fs::remove_dir(&dir);return Err(e.to_string());
+   }
+   moved.push(name);
+  }
+  Some(dir)
+ }else{None};
+ let mut written=Vec::new();
+ for (name,bytes) in staged{
+  if let Err(e)=write_new(&device_dir.join(&name),&bytes,true){
+   let _=rollback_identity(device_dir,&written,replaced_dir.as_deref());
+   return Err(e);
+  }
+  written.push(name);
+ }
+ Ok(InstalledIdentity{replaced_dir,installed_files:written,lan_disabled,warning})
+}
+pub fn rollback_identity(device_dir:&Path,installed_files:&[String],replaced_dir:Option<&Path>)->R<()>{
+ for name in installed_files{
+  let path=device_dir.join(name);
+  if fs::symlink_metadata(&path).is_ok_and(|m|m.is_file()&&!m.file_type().is_symlink()){let _=fs::remove_file(&path);}
+ }
+ if let Some(dir)=replaced_dir{
+  for name in IDENTITY_FILES{
+   let src=dir.join(name);
+   if fs::symlink_metadata(&src).is_ok_and(|m|m.is_file()&&!m.file_type().is_symlink()){fs::rename(&src,device_dir.join(name)).map_err(|e|e.to_string())?;}
+  }
+  let _=fs::remove_dir(dir);
+ }
+ Ok(())
+}
+/// Offline restore CLI entry point (`galroon-core restore --from <path> --to <dir> [--full]`).
+pub fn restore_offline(from:&Path,to:&Path,full:bool,device_dir:Option<&Path>)->R<serde_json::Value>{
+ restore_offline_with(from,to,full,device_dir,crate::network::is_local_interface_address)
+}
+pub(crate) fn restore_offline_with(from:&Path,to:&Path,full:bool,device_dir:Option<&Path>,check_local_ip:impl Fn(std::net::IpAddr)->bool)->R<serde_json::Value>{
+ let manifest=inspect(from)?;
+ let restored=if full{restore_new_full(from,to,Some(&manifest.sha256))?}else{restore_new(from,to,Some(&manifest.sha256))?};
+ let(lan_disabled,warning,replaced_identity)=if full{
+  let target_device=device_dir.unwrap_or(&restored);
+  let staged=restored.join("identity");
+  match install_identity(&staged,target_device,check_local_ip){
+   Ok(installed)=>{let _=fs::remove_dir_all(&staged);(installed.lan_disabled,installed.warning,installed.replaced_dir)}
+   Err(e)=>{let _=fs::remove_dir_all(&restored);return Err(e);}
+  }
+ }else{(false,None,None)};
+ let(works,resources,files,roots)=catalog_counts(&restored.join("library.sqlite"))?;
+ Ok(serde_json::json!({
+  "restored":restored,"mode":if full{"full"}else{"portable"},"sha256":manifest.sha256,
+  "works":works,"resources":resources,"files":files,"roots":roots,
+  "spki_fingerprint":if full{manifest.identity.as_ref().and_then(|i|i.spki_fingerprint.clone())}else{None},
+  "lan_disabled":lan_disabled,"warning":warning,"replaced_identity":replaced_identity
+ }))
+}
+/// First-run online restore executed on a fresh Core; commits `active-library.json`,
+/// installs full identity when requested, and triggers in-process relaunch.
+pub fn perform_first_run_restore(app:&crate::App,folder:&Path,expected_sha256:&str,original_offline:bool)->R<serde_json::Value>{
+ perform_first_run_restore_with(app,folder,expected_sha256,original_offline,crate::network::is_local_interface_address)
+}
+pub(crate) fn perform_first_run_restore_with(app:&crate::App,folder:&Path,expected_sha256:&str,original_offline:bool,check_local_ip:impl Fn(std::net::IpAddr)->bool)->R<serde_json::Value>{
+ let _mutation=app.mutation_lock.try_lock().map_err(|_|"Another change is in progress. Retry in a moment.")?;
+ if !is_fresh_core(&app.db)?{return Err("CORE_NOT_FRESH".into());}
+ let manifest=inspect(folder)?;
+ if manifest.sha256!=expected_sha256{return Err("Backup changed since preview. Inspect it again.".into());}
+ let full=manifest.mode==Mode::Full;
+ if full&&!original_offline{return Err("Confirm that the original Core is offline before restoring a full backup".into());}
+ let relaunch_tx={let mut slot=app.relaunch.lock().map_err(|e|e.to_string())?;slot.take().ok_or("Online first-run restore requires a Core host with in-process relaunch support")?};
+ let restore_slot=|tx:tokio::sync::oneshot::Sender<RelaunchRequest>|{if let Ok(mut slot)=app.relaunch.lock(){*slot=Some(tx);}};
+ let previous_library=crate::context::library(&*app.db.lock().map_err(|e|e.to_string())?).ok();
+ let previous_collection=app.state_dir.canonicalize().unwrap_or_else(|_|app.state_dir.clone());
+ let collections=app.data_root.join("collections");
+ if let Err(e)=plans::validate_chain(&collections).and_then(|_|fs::create_dir_all(&collections).map_err(|e|e.to_string())){restore_slot(relaunch_tx);return Err(e);}
+ let destination=collections.join(id());
+ let restored=match if full{restore_new_full(folder,&destination,Some(expected_sha256))}else{restore_new(folder,&destination,Some(expected_sha256))}{
+  Ok(path)=>path,Err(e)=>{let _=fs::remove_dir_all(&destination);restore_slot(relaunch_tx);return Err(e);}
+ };
+ let installed=if full{
+  let staged=restored.join("identity");
+  match install_identity(&staged,&app.device_dir,check_local_ip){
+   Ok(info)=>{let _=fs::remove_dir_all(&staged);Some(info)}
+   Err(e)=>{let _=fs::remove_dir_all(&restored);restore_slot(relaunch_tx);return Err(e);}
+  }
+ }else{None};
+ let previous_entry=serde_json::json!({"path":previous_collection,"replaced_at":now(),"library":previous_library});
+ if let Err(e)=crate::active_collection::commit(&app.data_root,&restored,previous_entry){
+  if let Some(info)=&installed{let _=rollback_identity(&app.device_dir,&info.installed_files,info.replaced_dir.as_deref());}
+  let _=fs::remove_dir_all(&restored);restore_slot(relaunch_tx);return Err(e);
+ }
+ let(lan_disabled,warning,replaced_identity,installed_files)=match installed{
+  Some(i)=>(i.lan_disabled,i.warning,i.replaced_dir,i.installed_files),
+  None=>(false,None,None,Vec::new())
+ };
+ let req=RelaunchRequest{previous_collection,new_collection:restored.clone(),installed_identity:installed_files,replaced_identity:replaced_identity.clone()};
+ let _=relaunch_tx.send(req);
+ Ok(serde_json::json!({
+  "status":"relaunching","mode":manifest.mode,"collection":restored,"relaunch":true,
+  "lan_disabled":lan_disabled,"warning":warning,"replaced_identity":replaced_identity,
+  "requires_new_session":true
+ }))
 }
 #[cfg(test)]mod tests{
  use super::*;
@@ -304,6 +562,89 @@ fn restore(folder:&Path,destination:&Path,expected_hash:Option<&str>,full:bool)-
  let folder=export(&db,t.path()).unwrap();let m=inspect(&folder).unwrap();assert!(!m.includes_game_files);assert!(!m.includes_credentials);let raw=fs::read(folder.join("collection.sqlite")).unwrap();for secret in [b"test-session-secret".as_slice(),b"test-password-secret".as_slice()]{assert!(!raw.windows(secret.len()).any(|w|w==secret));}
  let restored=restore_new(&folder,&t.path().join("restored"),None).unwrap();let c=Connection::open(restored.join("library.sqlite")).unwrap();assert_eq!(c.query_row("SELECT title FROM works WHERE id='w'",[],|r|r.get::<_,String>(0)).unwrap(),"Manual title");assert!(restore_new(&folder,&restored,None).is_err());assert_eq!(db.lock().unwrap().query_row("SELECT count(*) FROM sessions",[],|r|r.get::<_,i64>(0)).unwrap(),1);
  fs::OpenOptions::new().append(true).open(folder.join("collection.sqlite")).unwrap().write_all(b"corruption").unwrap();assert!(inspect(&folder).is_err());
+ }
+ async fn http_req(app:&crate::App,transport:crate::Transport,method:&str,uri:&str,auth:Option<(&str,&str)>,body:Option<Value>)->(axum::http::StatusCode,Value){
+  use tower::ServiceExt;
+  let host=if transport==crate::Transport::Lan{"192.168.1.1:14830"}else{"127.0.0.1:14800"};
+  let origin=if transport==crate::Transport::Lan{"https://192.168.1.1:14830"}else{"http://127.0.0.1:14800"};
+  let mut req=axum::http::Request::builder().method(method).uri(uri).header("Host",host).header("Origin",origin).header("Content-Type","application/json");
+  if let Some((k,v))=auth{req=req.header(k,v);}
+  let body_bytes=body.map(|v|v.to_string()).unwrap_or_default();
+  let response=crate::router_for(app.clone(),transport).oneshot(req.body(axum::body::Body::from(body_bytes)).unwrap()).await.unwrap();
+  let status=response.status();let bytes=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+  (status,serde_json::from_slice(&bytes).unwrap_or_else(|_|json!(String::from_utf8_lossy(&bytes))))
+ }
+ #[tokio::test]async fn setup_restore_endpoints_enforce_fresh_core_owner_loopback_and_full_confirm(){
+  let t=tempfile::tempdir().unwrap();
+  let src=crate::initialize(t.path().join("src")).unwrap();
+  crate::access::setup(&src.db,PASSWORD,false).unwrap();let _desktop=desktop_token(&src).await;
+  let net=crate::network::NetworkSettings::for_test("192.168.50.154".parse().unwrap(),14830);
+  crate::lan_tls::LanTls::load_or_generate(&src.device_dir,&net).unwrap();
+  fs::write(src.device_dir.join("network.json"),serde_json::to_vec(&net).unwrap()).unwrap();
+  src.db.lock().unwrap().execute_batch("INSERT INTO works(id,title,original_title) VALUES('w1','Game','Game'); INSERT INTO roots(id,path,label) VALUES('r1','D:\\Games','Win'); INSERT INTO resources(id,root_id,relative_path,title,kind,work_id) VALUES('res1','r1','Sub\\Game','Game','directory','w1'); INSERT INTO files(id,root_id,path,relative_path,size,mtime,ext,seen_job) VALUES('f1','r1','D:\\Games\\Sub\\Game\\a.zip','Sub\\Game\\a.zip',4,'1','zip','');").unwrap();
+  let backups_dir=t.path().join("backups");fs::create_dir(&backups_dir).unwrap();
+  let full_bk=export_with(&src.db,&backups_dir,Some(&src.device_dir),Options{origin:Origin::Scheduled,..full()}).unwrap();
+  let port_bk=export_with(&src.db,&backups_dir,None,Options::default()).unwrap();
+  let full_m=inspect(&full_bk).unwrap();
+
+  // Non-fresh Core cases: owner_password, roots, works, sessions -> all 409.
+  for case in 0..4{
+   let fresh=crate::initialize(t.path().join(format!("nonfresh-{case}"))).unwrap();
+   match case{
+    0=>crate::access::setup(&fresh.db,PASSWORD,false).unwrap(),
+    1=>{fresh.db.lock().unwrap().execute("INSERT INTO roots(id,path,label) VALUES('r','/tmp','R')",[]).unwrap();},
+    2=>{fresh.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w','T','T')",[]).unwrap();},
+    _=>{fresh.db.lock().unwrap().execute("INSERT INTO sessions(token_hash,role,created,id,name,expires) VALUES('h','desktop',0,'s','S',0)",[]).unwrap();}
+   }
+   let owner=format!("Bearer {}",fresh.token);
+   let(s1,b1)=http_req(&fresh,crate::Transport::Loopback,"GET","/api/setup/restore/candidates",Some(("Authorization",&owner)),None).await;
+   assert_eq!(s1,409,"case {case}: {b1}");assert_eq!(b1["code"],"core_not_fresh");
+   let(s2,b2)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore/inspect",Some(("Authorization",&owner)),Some(json!({"path":full_bk}))).await;
+   assert_eq!(s2,409,"case {case}: {b2}");
+   let(s3,b3)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore",Some(("Authorization",&owner)),Some(json!({"path":full_bk,"sha256":full_m.sha256,"original_offline":true}))).await;
+   assert_eq!(s3,409,"case {case}: {b3}");
+  }
+
+  // LAN transport and non-owner roles -> 403.
+  let mut lan_fresh=crate::initialize(t.path().join("lan-fresh")).unwrap();
+  lan_fresh.network=Some(crate::network::NetworkSettings::for_test("192.168.1.1".parse().unwrap(),14830));
+  let owner_h=format!("Bearer {}",lan_fresh.token);
+  for (method,uri,body) in [("GET","/api/setup/restore/candidates",None),("POST","/api/setup/restore/inspect",Some(json!({"path":full_bk}))),("POST","/api/setup/restore",Some(json!({"path":full_bk,"sha256":full_m.sha256,"original_offline":true}))) ]{
+   let(st,_)=http_req(&lan_fresh,crate::Transport::Lan,method,uri,Some(("Authorization",&owner_h)),body).await;assert_eq!(st,403,"LAN {method} {uri}");
+  }
+  let dt=desktop_token(&src).await;let dt_h=format!("Bearer {dt}");
+  for (method,uri,body) in [("GET","/api/setup/restore/candidates",None),("POST","/api/setup/restore/inspect",Some(json!({"path":full_bk}))),("POST","/api/setup/restore",Some(json!({"path":full_bk,"sha256":full_m.sha256,"original_offline":true}))) ]{
+   let(st,_)=http_req(&src,crate::Transport::Loopback,method,uri,Some(("Authorization",&dt_h)),body).await;assert_eq!(st,403,"desktop {method} {uri}");
+  }
+
+  // Fresh Core: candidates, inspect, validation, and 202 full restore with identity replacement & non-local IP disabling.
+  let fresh=crate::initialize(t.path().join("fresh")).unwrap();
+  let(tx,mut rx)=tokio::sync::oneshot::channel();*fresh.relaunch.lock().unwrap()=Some(tx);
+  fs::write(fresh.device_dir.join("backup-schedule.json"),json!({"version":1,"enabled":false,"destination":backups_dir,"frequency":"daily","minute_utc":1230,"weekday":null,"keep":14,"mode":"full","artwork":true,"last_started":null,"last_success":null,"last_error":null,"last_path":null}).to_string()).unwrap();
+  let old_device_id=fresh.device.id.clone();let owner_h=format!("Bearer {}",fresh.token);
+  let(st,cands)=http_req(&fresh,crate::Transport::Loopback,"GET","/api/setup/restore/candidates",Some(("Authorization",&owner_h)),None).await;
+  assert_eq!(st,200,"{cands}");assert_eq!(cands["candidates"].as_array().unwrap().len(),2);
+  let(st,insp)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore/inspect",Some(("Authorization",&owner_h)),Some(json!({"path":full_bk}))).await;
+  assert_eq!(st,200,"{insp}");assert_eq!(insp["mode"],"full");assert_eq!(insp["works"],1);assert_eq!(insp["resources"],1);assert_eq!(insp["files"],1);assert_eq!(insp["roots"],1);assert_eq!(insp["requires_original_offline"],true);assert_eq!(insp["spki_fingerprint"],json!(full_m.identity.as_ref().unwrap().spki_fingerprint));assert_eq!(insp["network_address"],"192.168.50.154");
+  let(st,err)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore",Some(("Authorization",&owner_h)),Some(json!({"path":full_bk,"sha256":full_m.sha256,"original_offline":false}))).await;
+  assert_eq!(st,400,"{err}");
+  let(st,err)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore",Some(("Authorization",&owner_h)),Some(json!({"path":full_bk,"sha256":"bad","original_offline":true}))).await;
+  assert_eq!(st,400,"{err}");
+  let(st,res)=http_req(&fresh,crate::Transport::Loopback,"POST","/api/setup/restore",Some(("Authorization",&owner_h)),Some(json!({"path":full_bk,"sha256":full_m.sha256,"original_offline":true}))).await;
+  assert_eq!(st,202,"{res}");assert_eq!(res["status"],"relaunching");assert_eq!(res["mode"],"full");assert_eq!(res["lan_disabled"],true);assert!(res["warning"].is_string());assert!(res["replaced_identity"].is_string());
+  let req=rx.try_recv().unwrap();assert_eq!(crate::active_collection::resolve(&fresh.data_root).unwrap(),req.new_collection);
+  let replaced=PathBuf::from(res["replaced_identity"].as_str().unwrap());assert!(replaced.file_name().unwrap().to_string_lossy().starts_with("replaced-identity-"));
+  let old_dev:crate::context::Device=serde_json::from_slice(&fs::read(replaced.join("device.json")).unwrap()).unwrap();assert_eq!(old_dev.id,old_device_id);
+  let new_dev:crate::context::Device=serde_json::from_slice(&fs::read(fresh.device_dir.join("device.json")).unwrap()).unwrap();assert_eq!(new_dev.id,src.device.id);
+  let restored_net=crate::network::NetworkSettings::load(&fresh.device_dir).unwrap().unwrap();assert!(!restored_net.enabled());
+  #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;for f in IDENTITY_FILES{assert_eq!(fs::metadata(fresh.device_dir.join(f)).unwrap().permissions().mode()&0o777,0o600,"{f}");}}
+  #[cfg(unix)]{let c=Connection::open(req.new_collection.join("library.sqlite")).unwrap();assert_eq!(c.query_row("SELECT relative_path FROM files WHERE id='f1'",[],|r|r.get::<_,String>(0)).unwrap(),"Sub/Game/a.zip");assert_eq!(c.query_row("SELECT relative_path FROM resources WHERE id='res1'",[],|r|r.get::<_,String>(0)).unwrap(),"Sub/Game");}
+
+  // Offline restore (portable and full).
+  let off_port=t.path().join("offline-portable");
+  let v=restore_offline(&port_bk,&off_port,false,None).unwrap();assert_eq!(v["mode"],"portable");assert_eq!(v["works"],1);assert!(!off_port.join("lan-key.pem").exists());
+  let off_full=t.path().join("offline-full");
+  let v=restore_offline_with(&full_bk,&off_full,true,None,|_|false).unwrap();assert_eq!(v["mode"],"full");assert_eq!(v["lan_disabled"],true);assert!(!off_full.join("identity").exists());assert!(off_full.join("device.json").exists());assert!(off_full.join("lan-key.pem").exists());assert!(!crate::network::NetworkSettings::load(&off_full).unwrap().unwrap().enabled());
  }
 }
 

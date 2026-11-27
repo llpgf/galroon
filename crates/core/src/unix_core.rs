@@ -41,7 +41,8 @@ async fn read_line(stream:&mut (impl AsyncRead+Unpin),limit:usize)->R<Vec<u8>>{
  let mut bytes=Vec::new();loop{let b=stream.read_u8().await.map_err(|e|e.to_string())?;if b==b'\n'{return Ok(bytes);}
   if bytes.len()==limit{return Err("Control message exceeded limit".into());}bytes.push(b);}
 }
-pub async fn request(dir:&Path,action:&str)->R<Value>{
+pub async fn request(dir:&Path,action:&str)->R<Value>{request_with_timeout(dir,action,Duration::from_secs(5)).await}
+pub async fn request_with_timeout(dir:&Path,action:&str,timeout:Duration)->R<Value>{
  if action.len()>REQUEST_LIMIT||action.contains(['\n','\r']){return Err("Invalid control request".into());}
  let path=socket_path(dir);private_metadata(path.parent().unwrap(),true)?;private_metadata(&path,false)?;
  let mut stream=tokio::time::timeout(Duration::from_secs(4),UnixStream::connect(&path)).await.map_err(|_|"Control connection timed out")?.map_err(|e|e.to_string())?;
@@ -53,7 +54,7 @@ pub async fn request(dir:&Path,action:&str)->R<Value>{
   let value:Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid control response")?;
   if let Some(error)=value["error"].as_str(){return Err(error.into());}Ok(value)
  };
- tokio::time::timeout(Duration::from_secs(5),exchange).await.map_err(|_|"Local Core did not respond".to_string())?
+ tokio::time::timeout(timeout,exchange).await.map_err(|_|"Local Core did not respond".to_string())?
 }
 async fn owner_command(app:&App,session:&Session,action:&[u8])->R<Value>{
  if action==b"session"{return serde_json::to_value(session).map_err(|e|e.to_string());}
@@ -71,21 +72,67 @@ async fn handle(mut stream:UnixStream,app:&App,session:&Session)->R<()>{
  tokio::time::timeout(Duration::from_secs(3),stream.write_all(payload.as_bytes())).await.map_err(|_|"Control write timed out")?.map_err(|e|e.to_string())?;
  let _=tokio::time::timeout(Duration::from_secs(3),stream.read_u8()).await;Ok(())
 }
+fn rollback_relaunch(data_root:&Path,device_dir:&Path,req:&crate::backup::RelaunchRequest,reason:&str){
+ crate::diagnostics::record("error","core.relaunch.rollback",&format!("Relaunch into {} failed ({reason}); rolling back to {}",req.new_collection.display(),req.previous_collection.display()),None);
+ if let Err(e)=crate::active_collection::rollback(data_root,&req.previous_collection){crate::diagnostics::record("error","core.relaunch.rollback",&format!("Failed to roll back active-library.json: {e}"),None);}
+ if !req.installed_identity.is_empty()||req.replaced_identity.is_some(){
+  if let Err(e)=crate::backup::rollback_identity(device_dir,&req.installed_identity,req.replaced_identity.as_deref()){crate::diagnostics::record("error","core.relaunch.rollback",&format!("Failed to roll back device identity: {e}"),None);}
+ }
+}
 pub async fn run(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16)->R<()>{
  if port==0{return Err("Loopback port must be between 1 and 65535".into());}
- check_data_filesystem(&dir)?;let _=crate::diagnostics::init(&dir);
  let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e|e.to_string())?;
  let mut interrupt=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e|e.to_string())?;
- let (host,listener)=CoreHost::initialize(dir,&device_dir,port).await?;
- let control=Control::bind(&host.app,&control_dir)?;let app=host.app.clone();let session=host.session.clone();let core=host.start(listener)?;
- let result=loop{tokio::select!{biased;
-  _=terminate.recv()=>break Ok(()),_=interrupt.recv()=>break Ok(()),
-  accepted=control.listener.accept()=>match accepted{
-   Ok((stream,_))=>{let _=handle(stream,&app,&session).await;},
-   Err(e)=>break Err(e.to_string())
+ run_with_shutdown(dir,device_dir,control_dir,port,async move{tokio::select!{_=terminate.recv()=>{},_=interrupt.recv()=>{}}}).await
+}
+pub(crate) async fn run_with_shutdown(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send)->R<()>{
+ run_loop(dir,device_dir,control_dir,port,shutdown,None).await
+}
+async fn run_loop(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send,fail_relaunch_once:Option<std::sync::Arc<std::sync::atomic::AtomicBool>>)->R<()>{
+ check_data_filesystem(&dir)?;let _=crate::diagnostics::init(&dir);
+ let data_root=dir;let mut pending_rollback:Option<crate::backup::RelaunchRequest>=None;
+ tokio::pin!(shutdown);
+ loop{
+  let active=match crate::active_collection::resolve(&data_root){
+   Ok(path)=>path,
+   Err(err)=>{if let Some(req)=pending_rollback.take(){rollback_relaunch(&data_root,&device_dir,&req,&err);continue;}return Err(err);}
+  };
+  let started=async{
+   if pending_rollback.is_some()&&fail_relaunch_once.as_ref().is_some_and(|f|f.swap(false,std::sync::atomic::Ordering::SeqCst)){
+    return Err("Injected relaunch startup failure".into());
+   }
+   let(mut host,listener)=CoreHost::initialize(active.clone(),&device_dir,port).await?;
+   host.app.data_root=data_root.clone();
+   let(relaunch_tx,relaunch_rx)=tokio::sync::oneshot::channel();
+   *host.app.relaunch.lock().map_err(|e|e.to_string())?=Some(relaunch_tx);
+   let control=Control::bind(&host.app,&control_dir)?;
+   let app=host.app.clone();let session=host.session.clone();
+   let core=host.start(listener)?;
+   Ok::<_,String>((core,control,app,session,relaunch_rx))
+  }.await;
+  let(core,control,app,session,mut relaunch_rx)=match started{
+   Ok(v)=>{let _=pending_rollback.take();v}
+   Err(err)=>{if let Some(req)=pending_rollback.take(){rollback_relaunch(&data_root,&device_dir,&req,&err);continue;}return Err(err);}
+  };
+  enum Next{Stop(R<()>),Relaunch(crate::backup::RelaunchRequest)}
+  let next=loop{tokio::select!{biased;
+   _=&mut shutdown=>break Next::Stop(Ok(())),
+   res=&mut relaunch_rx=>match res{Ok(req)=>break Next::Relaunch(req),Err(_)=>break Next::Stop(Ok(()))},
+   accepted=control.listener.accept()=>match accepted{
+    Ok((stream,_))=>{let _=handle(stream,&app,&session).await;},
+    Err(e)=>break Next::Stop(Err(e.to_string()))
+   }
+  }};
+  drop(control);drop(app);
+  let stop_res=core.pause_for_stop();let shut_res=core.shutdown().await;
+  match next{
+   Next::Stop(res)=>{stop_res?;shut_res?;return res;}
+   Next::Relaunch(req)=>{
+    if let Err(err)=stop_res.and(shut_res){crate::diagnostics::record("error","core.relaunch.shutdown",&err,None);}
+    pending_rollback=Some(req);
+   }
   }
- }};
- drop(control);core.pause_for_stop()?;core.shutdown().await?;result
+ }
 }
 #[cfg(any(target_os="linux",target_os="android",test))]
 fn rejected_magic(kind:u32)->bool{matches!(kind,0x6969|0xff534d42|0xfe534d42|0x517b|0x65735546)} // NFS, CIFS, SMB2, SMB, FUSE
@@ -174,6 +221,98 @@ pub fn check_data_filesystem(dir:&Path)->R<()>{
  #[test]fn injected_filesystem_types_reject_network_and_fuse(){
   for kind in [0x6969,0xff534d42,0xfe534d42,0x517b,0x65735546]{assert!(rejected_magic(kind));}for kind in [0xef53,0x9123683e,0x58465342,0x794c7630]{assert!(!rejected_magic(kind));}
   for name in ["nfs","smbfs","cifs","smb2","osxfuse","macfuse","fusefs"]{assert!(rejected_name(name));}for name in ["apfs","hfs","ext4"]{assert!(!rejected_name(name));}
+ }
+ async fn wait_session(control_dir:&Path,previous_instance:Option<&str>)->Session{
+  let deadline=tokio::time::Instant::now()+Duration::from_secs(10);
+  loop{
+   if let Ok(v)=request(control_dir,"session").await{
+    if let Ok(s)=serde_json::from_value::<Session>(v){if previous_instance.is_none_or(|old|s.instance_id!=old){return s;}}
+   }
+   assert!(tokio::time::Instant::now()<deadline,"Timed out waiting for Core session");
+   tokio::time::sleep(Duration::from_millis(50)).await;
+  }
+ }
+ #[tokio::test]async fn first_run_full_restore_relaunches_in_process_preserving_spki_and_sessions(){
+  let t=tempfile::tempdir_in("/tmp").unwrap();
+  let src=crate::initialize(t.path().join("src")).unwrap();
+  let password="Generated full relaunch owner password";
+  crate::access::setup(&src.db,password,false).unwrap();
+  let pair=crate::owner_cli::execute(&src,crate::owner_cli::OwnerCommand::Pair{name:"Paired desktop".into(),role:"desktop".into()}).await.unwrap();
+  let redeemed=crate::access::pair(axum::extract::State(src.clone()),axum::Json(json!({"code":pair["code"]}))).await.map_err(|e|e.0).unwrap();
+  let redeemed:Value=serde_json::from_slice(&axum::body::to_bytes(redeemed.into_body(),8192).await.unwrap()).unwrap();
+  let desktop_token=redeemed["token"].as_str().unwrap().to_owned();
+  let net=crate::network::NetworkSettings::for_test("192.168.50.154".parse().unwrap(),14830);
+  let tls=crate::lan_tls::LanTls::load_or_generate(&src.device_dir,&net).unwrap();
+  let expected_spki=crate::lan_tls::format_spki_fingerprint(&crate::lan_tls::spki_fingerprint(&tls.cert_der));
+  std::fs::write(src.device_dir.join("network.json"),serde_json::to_vec(&net).unwrap()).unwrap();
+  {let c=src.db.lock().unwrap();c.execute_batch("INSERT INTO works(id,title,original_title) VALUES('w1','Restored Game','Restored Game'); INSERT INTO roots(id,path,label) VALUES('r1','/tmp/source','Source'); INSERT INTO jobs(id,kind,state,spec,created,updated) VALUES('j1','scan','running','{}',1,1);").unwrap();crate::watching::ensure(&c).unwrap();c.execute("UPDATE source_watch SET enabled=1 WHERE root_id='r1'",[]).unwrap();}
+  let backups=t.path().join("backups");std::fs::create_dir(&backups).unwrap();
+  let bk=crate::backup::export_with(&src.db,&backups,Some(&src.device_dir),crate::backup::Options{mode:crate::backup::Mode::Full,origin:crate::backup::Origin::Scheduled,artwork:true}).unwrap();
+  let manifest=crate::backup::inspect(&bk).unwrap();let src_device_id=src.device.id.clone();drop(src);
+
+  // Pick a free fixed loopback port to prove in-process relaunch rebinds the exact same port.
+  let probe=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let port=probe.local_addr().unwrap().port();drop(probe);
+  let data=t.path().join("data");let control=t.path().join("control");
+  let(stop_tx,stop_rx)=tokio::sync::oneshot::channel::<()>();
+  let server=tokio::spawn(run_with_shutdown(data.clone(),data.clone(),control.clone(),port,async{let _=stop_rx.await;}));
+  let before=wait_session(&control,None).await;assert_ne!(before.device_id,src_device_id);
+  let client=reqwest::Client::new();
+  let resp=client.post(format!("{}/api/setup/restore",before.url)).bearer_auth(&before.token).json(&json!({"path":bk,"sha256":manifest.sha256,"original_offline":true})).send().await.unwrap();
+  assert_eq!(resp.status(),202);let body:Value=resp.json().await.unwrap();assert_eq!(body["status"],"relaunching");assert_eq!(body["lan_disabled"],true);
+
+  let after=wait_session(&control,Some(&before.instance_id)).await;
+  assert_eq!(after.url,before.url);assert_ne!(after.token,before.token);assert_eq!(after.device_id,src_device_id);
+  let me:Value=client.get(format!("{}/api/access/me",after.url)).bearer_auth(&desktop_token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(me["role"],"desktop");
+  let login=client.post(format!("{}/api/access/login",after.url)).header("Origin",&after.url).json(&json!({"password":password})).send().await.unwrap();
+  assert_eq!(login.status(),200);
+  let works:Value=client.get(format!("{}/api/works",after.url)).bearer_auth(&after.token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(works.as_array().unwrap().len(),1);assert_eq!(works[0]["title"],"Restored Game");
+  let net_show:Value=client.get(format!("{}/api/access/network",after.url)).bearer_auth(&after.token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(net_show["spki_fingerprint"],expected_spki);assert_eq!(net_show["settings"]["enabled"],false);
+  let watch:Value=client.get(format!("{}/api/roots/r1/watch",after.url)).bearer_auth(&after.token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(watch["enabled"],false);
+  let job:Value=client.get(format!("{}/api/jobs/j1",after.url)).bearer_auth(&after.token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(job["state"],"interrupted");
+
+  let _=stop_tx.send(());tokio::time::timeout(Duration::from_secs(5),server).await.unwrap().unwrap().unwrap();
+ }
+ #[tokio::test]async fn owner_cli_restore_relaunches_and_failed_relaunch_rolls_back_to_previous(){
+  let t=tempfile::tempdir_in("/tmp").unwrap();
+  let src=crate::initialize(t.path().join("src")).unwrap();
+  src.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w1','CLI Game','CLI Game')",[]).unwrap();
+  let backups=t.path().join("backups");std::fs::create_dir(&backups).unwrap();
+  let bk=crate::backup::export(&src.db,&backups).unwrap();drop(src);
+
+  let data=t.path().join("data");let control=t.path().join("control");
+  let(stop_tx,stop_rx)=tokio::sync::oneshot::channel::<()>();
+  let server=tokio::spawn(run_with_shutdown(data.clone(),data.clone(),control.clone(),0,async{let _=stop_rx.await;}));
+  let before=wait_session(&control,None).await;
+  let cmd=crate::owner_cli::parse([std::ffi::OsString::from("owner"),"restore".into(),"--from".into(),bk.into(),"--control-dir".into(),control.clone().into()]).unwrap();
+  crate::owner_cli::run(cmd).await.unwrap();
+  let after=wait_session(&control,Some(&before.instance_id)).await;
+  let client=reqwest::Client::new();
+  let works:Value=client.get(format!("{}/api/works",after.url)).bearer_auth(&after.token).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+  assert_eq!(works[0]["title"],"CLI Game");
+  let _=stop_tx.send(());tokio::time::timeout(Duration::from_secs(5),server).await.unwrap().unwrap().unwrap();
+
+  // Live rollback test: inject a startup failure on relaunch and verify unix_core rolls back collection & identity.
+  let src2=crate::initialize(t.path().join("src2")).unwrap();
+  let bk2=crate::backup::export_with(&src2.db,&backups,Some(&src2.device_dir),crate::backup::Options{mode:crate::backup::Mode::Full,origin:crate::backup::Origin::Manual,artwork:false}).unwrap();
+  drop(src2);
+  let data2=t.path().join("rollback-data");let control2=t.path().join("rollback-control");
+  let fail_once=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+  let(stop2_tx,stop2_rx)=tokio::sync::oneshot::channel::<()>();
+  let server2=tokio::spawn(run_loop(data2.clone(),data2.clone(),control2.clone(),0,async{let _=stop2_rx.await;},Some(fail_once)));
+  let initial=wait_session(&control2,None).await;
+  let cmd2=crate::owner_cli::parse([std::ffi::OsString::from("owner"),"restore".into(),"--from".into(),bk2.into(),"--confirm-original-offline".into(),"--control-dir".into(),control2.clone().into()]).unwrap();
+  crate::owner_cli::run(cmd2).await.unwrap();
+  let recovered=wait_session(&control2,Some(&initial.instance_id)).await;
+  assert_eq!(recovered.device_id,initial.device_id);
+  assert_eq!(recovered.library_id,initial.library_id);
+  assert_eq!(crate::active_collection::resolve(&data2).unwrap(),data2.canonicalize().unwrap());
+  assert_eq!(crate::context::device(&data2).unwrap().id,initial.device_id);
+  let _=stop2_tx.send(());tokio::time::timeout(Duration::from_secs(5),server2).await.unwrap().unwrap().unwrap();
  }
  // A different uid needs another OS user; both peers call verify_peer before all I/O.
 }

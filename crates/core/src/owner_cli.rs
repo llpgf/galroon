@@ -5,19 +5,33 @@ use serde_json::{Value,json};
 use axum::{extract::{State,Path},http::{HeaderMap,header},Json};
 type R<T>=Result<T,String>;
 #[derive(Serialize,Deserialize)]#[serde(tag="command",rename_all="lowercase",deny_unknown_fields)]
-pub(crate) enum OwnerCommand{Setup{password:String},ChangePassword{password:String},Pair{name:String,role:String},Devices,Revoke{id:String},PairingCodes,RevokePairingCode{id:String},NetworkShow,NetworkSet{settings:crate::network::NetworkEdit},Session}
-pub enum Command{Serve{dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16},Owner{dir:PathBuf,control_dir:PathBuf,action:OwnerAction}}
+pub(crate) enum OwnerCommand{Setup{password:String},ChangePassword{password:String},Pair{name:String,role:String},Devices,Revoke{id:String},PairingCodes,RevokePairingCode{id:String},NetworkShow,NetworkSet{settings:crate::network::NetworkEdit},Restore{from:String,#[serde(default)]confirm_original_offline:bool},Session}
+pub enum Command{Serve{dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16},Owner{dir:PathBuf,control_dir:PathBuf,action:OwnerAction},Restore{from:PathBuf,to:PathBuf,full:bool,device_dir:Option<PathBuf>}}
 pub struct OwnerAction(OwnerCommand);
-const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--control-dir <dir> (default <data-dir>/control)] [--loopback-port <1-65535>] | galroon-core owner <setup|change-password|pair --name <name> [--role desktop|web]|pairing-codes [revoke <id>]|network show|network set --address <IP> [--port 14830] [--hostname <name>]... [--enable|--disable]|devices|revoke <id>|session> [--data-dir <dir> (default /data)] [--control-dir <dir> (default <data-dir>/control)]";
+const USAGE:&str="Usage: galroon-core serve --data-dir <dir> [--device-dir <dir>] [--control-dir <dir> (default <data-dir>/control)] [--loopback-port <1-65535>] | galroon-core restore --from <backup> --to <new-dir> [--full] [--device-dir <dir>] | galroon-core owner <setup|change-password|pair --name <name> [--role desktop|web]|pairing-codes [revoke <id>]|network show|network set --address <IP> [--port 14830] [--hostname <name>]... [--enable|--disable]|devices|revoke <id>|restore --from <backup> [--confirm-original-offline]|session> [--data-dir <dir> (default /data)] [--control-dir <dir> (default <data-dir>/control)]";
 pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
  let mut args=args.into_iter();let mode=args.next().ok_or(USAGE)?;let mut rest:Vec<OsString>=args.collect();
- let mut dir=None;let mut device_dir=None;let mut control_dir=None;let mut port=None;let mut name=None;let mut role=None;let mut address=None;let mut network_port=None;let mut hostnames=Vec::new();let mut enabled=None;let mut positional=Vec::new();let mut i=0;
+ let mut dir=None;let mut device_dir=None;let mut control_dir=None;let mut port=None;let mut name=None;let mut role=None;let mut address=None;let mut network_port=None;let mut hostnames=Vec::new();let mut enabled=None;let mut from=None;let mut to=None;let mut full=None;let mut confirm_offline=None;let mut positional=Vec::new();let mut i=0;
  while i<rest.len(){
   if mode=="owner"{match rest[i].to_str(){
    Some("--hostname")=>{i+=1;hostnames.push(rest.get(i).and_then(|v|v.to_str()).ok_or(USAGE)?.to_owned());i+=1;continue;},
-   Some(flag @ ("--enable"|"--disable"))=>{if enabled.replace(flag=="--enable").is_some(){return Err(USAGE.into());}i+=1;continue;},_=>{}
+   Some(flag @ ("--enable"|"--disable"))=>{if enabled.replace(flag=="--enable").is_some(){return Err(USAGE.into());}i+=1;continue;},
+   Some("--confirm-original-offline")=>{if confirm_offline.replace(true).is_some(){return Err(USAGE.into());}i+=1;continue;},_=>{}
   }}
-  let slot=match rest[i].to_str(){Some("--data-dir")=>Some(&mut dir),Some("--control-dir")=>Some(&mut control_dir),Some("--device-dir")if mode=="serve"=>Some(&mut device_dir),Some("--loopback-port")if mode=="serve"=>Some(&mut port),Some("--address")if mode=="owner"=>Some(&mut address),Some("--port")if mode=="owner"=>Some(&mut network_port),Some("--name")if mode=="owner"=>Some(&mut name),Some("--role")if mode=="owner"=>Some(&mut role),_=>None};
+  if mode=="restore"&&rest[i].to_str()==Some("--full"){if full.replace(true).is_some(){return Err(USAGE.into());}i+=1;continue;}
+  let slot=match rest[i].to_str(){
+   Some("--data-dir")if mode!="restore"=>Some(&mut dir),
+   Some("--control-dir")if mode!="restore"=>Some(&mut control_dir),
+   Some("--device-dir")if mode=="serve"||mode=="restore"=>Some(&mut device_dir),
+   Some("--loopback-port")if mode=="serve"=>Some(&mut port),
+   Some("--address")if mode=="owner"=>Some(&mut address),
+   Some("--port")if mode=="owner"=>Some(&mut network_port),
+   Some("--name")if mode=="owner"=>Some(&mut name),
+   Some("--role")if mode=="owner"=>Some(&mut role),
+   Some("--from")if mode=="owner"||mode=="restore"=>Some(&mut from),
+   Some("--to")if mode=="restore"=>Some(&mut to),
+   _=>None
+  };
   if let Some(slot)=slot{if slot.is_some()||i+1==rest.len(){return Err(USAGE.into());}*slot=Some(std::mem::take(&mut rest[i+1]));i+=2;}else{if rest[i].to_str().is_some_and(|v|v.starts_with('-')){return Err(USAGE.into());}positional.push(std::mem::take(&mut rest[i]));i+=1;}
  }
  if mode=="serve"{
@@ -26,9 +40,15 @@ pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
   let control_dir=control_dir.map(PathBuf::from).unwrap_or_else(||dir.join("control"));
   return Ok(Command::Serve{dir,device_dir,control_dir,port});
  }
+ if mode=="restore"{
+  if !positional.is_empty(){return Err(USAGE.into());}
+  let from=PathBuf::from(from.ok_or(USAGE)?);let to=PathBuf::from(to.ok_or(USAGE)?);
+  return Ok(Command::Restore{from,to,full:full.unwrap_or(false),device_dir:device_dir.map(PathBuf::from)});
+ }
  if mode!="owner"{return Err(USAGE.into());}
  let verb=positional.first().and_then(|v|v.to_str()).ok_or(USAGE)?;
  if verb!="pair"&&(name.is_some()||role.is_some()){return Err(USAGE.into());}
+ if verb!="restore"&&(from.is_some()||confirm_offline.is_some()){return Err(USAGE.into());}
  if !(verb=="network"&&positional.get(1).is_some_and(|v|v=="set"))&&(address.is_some()||network_port.is_some()||!hostnames.is_empty()||enabled.is_some()){return Err(USAGE.into());}
  let action=match (verb,positional.len()){
   ("setup",1)=>OwnerCommand::Setup{password:String::new()},("change-password",1)=>OwnerCommand::ChangePassword{password:String::new()},("devices",1)=>OwnerCommand::Devices,("session",1)=>OwnerCommand::Session,
@@ -38,6 +58,7 @@ pub fn parse(args:impl IntoIterator<Item=OsString>)->R<Command>{
   ("pairing-codes",3)if positional[1]=="revoke"=>OwnerCommand::RevokePairingCode{id:positional[2].to_str().ok_or("Invalid pairing code id")?.into()},
   ("network",2)if positional[1]=="show"=>OwnerCommand::NetworkShow,
   ("network",2)if positional[1]=="set"=>{let address=address.and_then(|v|v.into_string().ok()).ok_or("Network set requires --address")?.parse().map_err(|_|"Invalid IP address")?;let port=match network_port{Some(v)=>v.to_str().and_then(|v|v.parse::<u16>().ok()).filter(|v|*v!=0).ok_or("Invalid network port")?,None=>14830};OwnerCommand::NetworkSet{settings:crate::network::NetworkEdit{address,port,hostnames,enabled}}},
+  ("restore",1)=>{let from=from.and_then(|v|v.into_string().ok()).filter(|s|!s.is_empty()).ok_or("Restore requires --from")?;OwnerCommand::Restore{from,confirm_original_offline:confirm_offline.unwrap_or(false)}},
   _=>return Err(USAGE.into())
  };
  let dir=dir.map(PathBuf::from).unwrap_or_else(||PathBuf::from("/data"));let control_dir=control_dir.map(PathBuf::from).unwrap_or_else(||dir.join("control"));
@@ -56,9 +77,14 @@ fn action_line(action:OwnerAction,input:&mut impl BufRead)->R<String>{
 pub async fn run(command:Command)->R<()>{
  match command{
   Command::Serve{dir,device_dir,control_dir,port}=>crate::unix_core::run(dir,device_dir,control_dir,port).await,
+  Command::Restore{from,to,full,device_dir}=>{
+   let value=tokio::task::spawn_blocking(move||crate::backup::restore_offline(&from,&to,full,device_dir.as_deref())).await.map_err(|_|"Offline restore failed")??;
+   println!("{value}");Ok(())
+  }
   Command::Owner{control_dir,action,..}=>{
+   let is_restore=matches!(action.0,OwnerCommand::Restore{..});
    let line=action_line(action,&mut std::io::stdin().lock())?;
-   let value=crate::unix_core::request(&control_dir,&line).await?;
+   let value=crate::unix_core::request_with_timeout(&control_dir,&line,std::time::Duration::from_secs(if is_restore{600}else{5})).await?;
    // Owner results (including session tokens and pairing codes) go only to stdout.
    println!("{value}");Ok(())
   }
@@ -77,6 +103,15 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
   OwnerCommand::RevokePairingCode{id}=>crate::access::revoke_pairing_code(State(app.clone()),headers,Path(id)).await.map(|Json(v)|v).map_err(|e|e.0),
   OwnerCommand::NetworkShow=>crate::access::network_show(State(app.clone()),headers).await.map(|Json(v)|v).map_err(|e|e.0),
   OwnerCommand::NetworkSet{settings}=>crate::access::network_set(State(app.clone()),headers,Json(settings)).await.map(|Json(v)|v).map_err(|e|e.0),
+  OwnerCommand::Restore{from,confirm_original_offline}=>{
+   let app=app.clone();
+   tokio::task::spawn_blocking(move||{
+    if !crate::backup::is_fresh_core(&app.db)?{return Err("First-run restore is only available on a fresh Core with no owner, roots, works or sessions".into());}
+    let path=std::path::Path::new(&from);
+    let manifest=crate::backup::inspect(path)?;
+    crate::backup::perform_first_run_restore(&app,path,&manifest.sha256,confirm_original_offline).map_err(|e|if e=="CORE_NOT_FRESH"{"First-run restore is only available on a fresh Core with no owner, roots, works or sessions".into()}else{e})
+   }).await.map_err(|_|"Owner restore failed")?
+  },
   OwnerCommand::Session=>Err("Use the session control command".into())
  }
 }
@@ -148,5 +183,32 @@ pub(crate) async fn execute(app:&crate::App,command:OwnerCommand)->R<Value>{
  }
  #[test]fn invalid_network_cli_shapes_are_rejected(){
   for args in [vec!["owner","network","set"],vec!["owner","network","set","--address","not-ip"],vec!["owner","network","set","--address","192.168.1.1","--enable","--disable"],vec!["owner","network","show","--enable"],vec!["owner","pairing-codes","revoke"],vec!["owner","pairing-codes","--hostname","nas"]]{assert!(parse(args.iter().map(OsString::from)).is_err(),"{args:?}");}
+ }
+ #[test]fn restore_cli_parses_online_and_offline_modes_and_rejects_bad_flags(){
+  let Command::Owner{action,..}=parse(["owner","restore","--from","/backups/b1","--confirm-original-offline"].iter().map(OsString::from)).unwrap()else{panic!()};
+  let encoded=action_line(action,&mut std::io::Cursor::new("")).unwrap();let v:Value=serde_json::from_str(&encoded).unwrap();
+  assert_eq!(v,json!({"command":"restore","from":"/backups/b1","confirm_original_offline":true}));
+  let Command::Owner{action,..}=parse(["owner","restore","--from","/backups/b1"].iter().map(OsString::from)).unwrap()else{panic!()};
+  let v:Value=serde_json::from_str(&action_line(action,&mut std::io::Cursor::new("")).unwrap()).unwrap();
+  assert_eq!(v,json!({"command":"restore","from":"/backups/b1","confirm_original_offline":false}));
+  let Command::Restore{from,to,full,device_dir}=parse(["restore","--from","/bk","--to","/new","--full","--device-dir","/dev"].iter().map(OsString::from)).unwrap()else{panic!()};
+  assert_eq!(from,PathBuf::from("/bk"));assert_eq!(to,PathBuf::from("/new"));assert!(full);assert_eq!(device_dir,Some(PathBuf::from("/dev")));
+  let Command::Restore{full,device_dir,..}=parse(["restore","--from","/bk","--to","/new"].iter().map(OsString::from)).unwrap()else{panic!()};
+  assert!(!full);assert!(device_dir.is_none());
+  for bad in [vec!["restore"],vec!["restore","--from","/bk"],vec!["restore","--to","/new"],vec!["restore","--from","/bk","--to","/new","--full","--full"],vec!["restore","--from","/bk","--to","/new","--data-dir","/d"],vec!["owner","restore"],vec!["owner","restore","--from","/bk","--confirm-original-offline","--confirm-original-offline"],vec!["owner","session","--from","/bk"],vec!["owner","devices","--confirm-original-offline"]]{
+   assert!(parse(bad.iter().map(OsString::from)).is_err(),"{bad:?}");
+  }
+ }
+ #[tokio::test]async fn offline_restore_cli_runs_portable_and_full(){
+  let t=tempfile::tempdir().unwrap();let src=crate::initialize(t.path().join("src")).unwrap();
+  src.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w1','Offline CLI','Offline CLI')",[]).unwrap();
+  let bk_dir=t.path().join("bk");std::fs::create_dir(&bk_dir).unwrap();
+  let bk=crate::backup::export_with(&src.db,&bk_dir,Some(&src.device_dir),crate::backup::Options{mode:crate::backup::Mode::Full,origin:crate::backup::Origin::Manual,artwork:true}).unwrap();
+  let out_port=t.path().join("out-port");
+  let cmd=parse([OsString::from("restore"),"--from".into(),bk.clone().into(),"--to".into(),out_port.clone().into()]).unwrap();
+  run(cmd).await.unwrap();assert!(out_port.join("library.sqlite").exists());assert!(!out_port.join("device.json").exists());
+  let out_full=t.path().join("out-full");
+  let cmd=parse([OsString::from("restore"),"--from".into(),bk.into(),"--to".into(),out_full.clone().into(),"--full".into()]).unwrap();
+  run(cmd).await.unwrap();assert!(out_full.join("library.sqlite").exists());assert_eq!(crate::context::device(&out_full).unwrap().id,src.device.id);
  }
 }

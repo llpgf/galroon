@@ -19,7 +19,10 @@ impl NetworkSettings{
   for host in &self.hostnames{if host.len()>253||host.parse::<IpAddr>().is_ok()||!host.split('.').all(|label|!label.is_empty()&&label.len()<=63&&!label.starts_with('-')&&!label.ends_with('-')&&label.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-')){return Err(format!("network.json: invalid hostname {host:?}; use DNS labels without a scheme or port"));}}
   Ok(())
  }
+ pub fn parse_bytes(bytes:&[u8])->R<Self>{let settings:Self=serde_json::from_slice(bytes).map_err(|e|format!("Invalid network.json: {e}"))?;settings.validate()?;Ok(settings)}
  pub fn enabled(&self)->bool{self.enabled}
+ pub fn set_enabled(&mut self,enabled:bool){self.enabled=enabled;}
+ pub fn address(&self)->IpAddr{self.address}
  pub fn socket_addr(&self)->SocketAddr{SocketAddr::new(self.address,self.port)}
  pub(crate) fn certificate_names(&self)->Vec<String>{let mut names=self.hostnames.clone();names.push(self.address.to_string());names}
  pub(crate) fn allows_host(&self,value:&str)->bool{
@@ -58,9 +61,38 @@ pub fn validate_address(address:IpAddr)->R<()>{
    if b[0]==0xfe&&b[1]&0xc0==0x80{"IPv6 link-local addresses are not supported (scope IDs are client-local)"}else{"only RFC 1918, 100.64.0.0/10 and IPv6 ULA addresses are allowed; public and other ranges are rejected"}}
  }};Err(format!("network.json: LAN address {address}: {reason}"))
 }
+/// Checks whether `target` is assigned to any local network interface on this host.
+pub fn is_local_interface_address(target:IpAddr)->bool{
+ #[cfg(unix)]{
+  let mut addrs:*mut libc::ifaddrs=std::ptr::null_mut();
+  if unsafe{libc::getifaddrs(&mut addrs)}!=0{return false;}
+  let mut found=false;let mut cur=addrs;
+  while !cur.is_null(){
+   let ifa=unsafe{&*cur};
+   if !ifa.ifa_addr.is_null(){
+    let family=unsafe{(*ifa.ifa_addr).sa_family} as i32;
+    if family==libc::AF_INET{
+     let sa=unsafe{std::ptr::read_unaligned(ifa.ifa_addr as *const libc::sockaddr_in)};
+     if IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr)))==target{found=true;break;}
+    }else if family==libc::AF_INET6{
+     let sa=unsafe{std::ptr::read_unaligned(ifa.ifa_addr as *const libc::sockaddr_in6)};
+     if IpAddr::V6(std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr))==target{found=true;break;}
+    }
+   }
+   cur=ifa.ifa_next;
+  }
+  unsafe{libc::freeifaddrs(addrs);}
+  found
+ }
+ #[cfg(not(unix))]{std::net::TcpListener::bind((target,0)).is_ok()}
+}
 
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]fn local_interface_check_finds_loopback_and_rejects_test_net(){
+  assert!(is_local_interface_address(std::net::Ipv4Addr::LOCALHOST.into()));
+  assert!(!is_local_interface_address("192.0.2.1".parse().unwrap()));
+ }
  #[test]fn strict_device_settings_and_private_addresses(){
   let t=tempfile::tempdir().unwrap();assert!(NetworkSettings::load(t.path()).unwrap().is_none());
   let valid=serde_json::json!({"version":1,"enabled":false,"address":"192.168.50.154","port":14830,"hostnames":["nas.local"]});

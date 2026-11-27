@@ -68,6 +68,7 @@ pub mod relation_overrides;
 pub mod entity_overrides;
 pub mod grouping;
 pub mod backup;
+pub mod active_collection;
 #[cfg_attr(any(windows,target_os="macos"),allow(dead_code))] mod secret_files;
 pub mod backup_schedule;
 pub mod roots;
@@ -96,7 +97,7 @@ use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>}
+#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub data_root:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>,pub relaunch:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<backup::RelaunchRequest>>>>}
 pub struct ApiError(pub String);
 impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"||self.0=="Owner access required for full backups"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
@@ -118,7 +119,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
-    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1))})
+    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,data_root:dir.clone(),state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1)),relaunch:Default::default()})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
@@ -219,6 +220,9 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/works/{id}/split-preview",get(split_preview)).route("/api/works/{id}/merge",post(merge_work)).route("/api/works/{id}/split",post(split_work))
     .route("/api/backups/schedule",get(backup_schedule::get).post(backup_schedule::settings)).route("/api/backups/run",post(backup_schedule::run)).route("/api/backups/{id}",axum::routing::delete(backup_schedule::delete))
     .route("/api/backups",get(backup_history).post(export_backup)).route("/api/backups/inspect",post(inspect_backup))
+    .route("/api/setup/restore/candidates",get(setup_restore_candidates))
+    .route("/api/setup/restore/inspect",post(setup_restore_inspect))
+    .route("/api/setup/restore",post(setup_restore))
     .route("/api/plans",get(list_plans)).route("/api/plans/organize",post(organize_plan))
     .route("/api/plans/{id}",get(get_plan)).route("/api/plans/{id}/undo",post(undo_plan)).route("/api/plans/{id}/approve",post(approve_plan)).route("/api/plans/{id}/execute",post(execute_plan))
     .route("/api/duplicates",post(find_duplicates)).route("/api/duplicate-checks/{id}",get(duplicate_results)).route("/api/quarantine",get(list_quarantine).post(isolate_plan))
@@ -310,6 +314,40 @@ async fn remap_root(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v
 async fn backup_history(State(a):State<App>,h:HeaderMap)->Result<Value>{let who=access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Desktop access required".into()));}Ok(Json(backup::history(&a.db)?))}
 async fn export_backup(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{let who=access::authenticate(&a,&h)?;if who.role=="web"{return Err(ApiError("Desktop access required".into()));}let mode=match v.get("mode"){None=>backup::Mode::Portable,Some(value)=>serde_json::from_value::<backup::Mode>(value.clone()).map_err(|_|ApiError("Mode must be portable or full".into()))?};if mode==backup::Mode::Full&&who.role!="owner"{return Err(ApiError("Owner access required for full backups".into()));}let destination=text(&v,"destination")?;let path=tokio::task::spawn_blocking(move||a.backup_schedule.export(&a,std::path::Path::new(&destination),mode)).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(json!({"path":path})))}
 async fn inspect_backup(State(a):State<App>,h:HeaderMap,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let path=text(&v,"path")?;let manifest=tokio::task::spawn_blocking(move||backup::inspect(std::path::Path::new(&path))).await.map_err(|e|ApiError(e.to_string()))??;Ok(Json(serde_json::to_value(manifest).map_err(|e|ApiError(e.to_string()))?))}
+fn core_not_fresh()->Response{(StatusCode::CONFLICT,Json(json!({"error":"First-run restore is only available on a fresh Core with no owner, roots, works or sessions","code":"core_not_fresh"}))).into_response()}
+fn require_fresh_owner(a:&App,transport:Transport,h:&HeaderMap)->std::result::Result<(),Response>{
+ if transport!=Transport::Loopback{return Err((StatusCode::FORBIDDEN,Json(json!({"error":"Local owner access is not allowed over LAN"}))).into_response());}
+ let who=access::authenticate(a,h).map_err(|e|ApiError(e).into_response())?;
+ if who.role!="owner"{return Err((StatusCode::FORBIDDEN,Json(json!({"error":"Local owner access required"}))).into_response());}
+ match backup::is_fresh_core(&a.db){Ok(true)=>Ok(()),Ok(false)=>Err(core_not_fresh()),Err(e)=>Err(ApiError(e).into_response())}
+}
+async fn setup_restore_candidates(State(a):State<App>,axum::Extension(transport):axum::Extension<Transport>,h:HeaderMap)->Response{
+ if let Err(resp)=require_fresh_owner(&a,transport,&h){return resp;}
+ let dirs=backup::default_candidate_dirs(&a.device_dir);
+ match tokio::task::spawn_blocking(move||backup::list_candidates(&dirs)).await{Ok(v)=>(StatusCode::OK,Json(v)).into_response(),Err(e)=>ApiError(e.to_string()).into_response()}
+}
+#[derive(serde::Deserialize)]#[serde(deny_unknown_fields)]struct SetupInspectRequest{path:String}
+async fn setup_restore_inspect(State(a):State<App>,axum::Extension(transport):axum::Extension<Transport>,h:HeaderMap,Json(v):Json<SetupInspectRequest>)->Response{
+ if let Err(resp)=require_fresh_owner(&a,transport,&h){return resp;}
+ if v.path.is_empty(){return ApiError("path is required".into()).into_response();}
+ match tokio::task::spawn_blocking(move||backup::inspect_summary(std::path::Path::new(&v.path))).await{
+  Ok(Ok(summary))=>(StatusCode::OK,Json(summary)).into_response(),
+  Ok(Err(e))=>ApiError(e).into_response(),
+  Err(e)=>ApiError(e.to_string()).into_response()
+ }
+}
+#[derive(serde::Deserialize)]#[serde(deny_unknown_fields)]struct SetupRestoreRequest{path:String,sha256:String,#[serde(default)]original_offline:bool}
+async fn setup_restore(State(a):State<App>,axum::Extension(transport):axum::Extension<Transport>,h:HeaderMap,Json(v):Json<SetupRestoreRequest>)->Response{
+ if let Err(resp)=require_fresh_owner(&a,transport,&h){return resp;}
+ if v.path.is_empty(){return ApiError("path is required".into()).into_response();}
+ if v.sha256.is_empty(){return ApiError("sha256 is required".into()).into_response();}
+ match tokio::task::spawn_blocking(move||backup::perform_first_run_restore(&a,std::path::Path::new(&v.path),&v.sha256,v.original_offline)).await{
+  Ok(Ok(result))=>(StatusCode::ACCEPTED,Json(result)).into_response(),
+  Ok(Err(e)) if e=="CORE_NOT_FRESH"=>core_not_fresh(),
+  Ok(Err(e))=>ApiError(e).into_response(),
+  Err(e)=>ApiError(e.to_string()).into_response()
+ }
+}
 async fn merge_work(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let r=v["revision"].as_i64().ok_or(ApiError("Revision required".into()))?;let tr=v["target_revision"].as_i64().ok_or(ApiError("Destination revision required".into()))?;Ok(Json(grouping::merge(&a.db,&id,&text(&v,"target_id")?,r,tr)?))}
 async fn split_preview(State(a):State<App>,h:HeaderMap,Path(id):Path<String>)->Result<Value>{if access::authenticate(&a,&h)?.role=="web"{return Err(ApiError("Desktop access required".into()));}let c=a.db.lock().map_err(|e|ApiError(e.to_string()))?;Ok(Json(split_private::preview(&c,&id)?))}
 async fn split_work(State(a):State<App>,h:HeaderMap,Path(id):Path<String>,Json(v):Json<Value>)->Result<Value>{auth(&a,&h)?;let r=v["revision"].as_i64().ok_or(ApiError("Revision required".into()))?;let members:Vec<String>=serde_json::from_value(v["resources"].clone()).map_err(|e|ApiError(e.to_string()))?;let private:Option<split_private::Selection>=serde_json::from_value(v["private"].clone()).map_err(|e|ApiError(e.to_string()))?;Ok(Json(grouping::split_reviewed(&a.db,&id,r,&members,&text(&v,"title")?,private.as_ref())?))}
