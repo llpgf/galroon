@@ -79,16 +79,17 @@ fn rollback_relaunch(data_root:&Path,device_dir:&Path,req:&crate::backup::Relaun
   if let Err(e)=crate::backup::rollback_identity(device_dir,&req.installed_identity,req.replaced_identity.as_deref()){crate::diagnostics::record("error","core.relaunch.rollback",&format!("Failed to roll back device identity: {e}"),None);}
  }
 }
-pub async fn run(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16)->R<()>{
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]pub enum ExitAction{Normal,UpdateRestart}
+pub async fn run(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16)->R<ExitAction>{
  if port==0{return Err("Loopback port must be between 1 and 65535".into());}
  let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e|e.to_string())?;
  let mut interrupt=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e|e.to_string())?;
  run_with_shutdown(dir,device_dir,control_dir,port,async move{tokio::select!{_=terminate.recv()=>{},_=interrupt.recv()=>{}}}).await
 }
-pub(crate) async fn run_with_shutdown(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send)->R<()>{
+pub(crate) async fn run_with_shutdown(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send)->R<ExitAction>{
  run_loop(dir,device_dir,control_dir,port,shutdown,None).await
 }
-async fn run_loop(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send,fail_relaunch_once:Option<std::sync::Arc<std::sync::atomic::AtomicBool>>)->R<()>{
+async fn run_loop(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,shutdown:impl std::future::Future<Output=()>+Send,fail_relaunch_once:Option<std::sync::Arc<std::sync::atomic::AtomicBool>>)->R<ExitAction>{
  check_data_filesystem(&dir)?;let _=crate::diagnostics::init(&dir);
  let data_root=dir;let mut pending_rollback:Option<crate::backup::RelaunchRequest>=None;
  tokio::pin!(shutdown);
@@ -105,19 +106,23 @@ async fn run_loop(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,sh
    host.app.data_root=data_root.clone();
    let(relaunch_tx,relaunch_rx)=tokio::sync::oneshot::channel();
    *host.app.relaunch.lock().map_err(|e|e.to_string())?=Some(relaunch_tx);
+   let(update_restart_tx,update_restart_rx)=tokio::sync::oneshot::channel();
+   *host.app.self_update_restart.lock().map_err(|e|e.to_string())?=Some(update_restart_tx);
    let control=Control::bind(&host.app,&control_dir)?;
    let app=host.app.clone();let session=host.session.clone();
    let core=host.start(listener)?;
-   Ok::<_,String>((core,control,app,session,relaunch_rx))
+   crate::updates::mark_runtime_healthy();
+   Ok::<_,String>((core,control,app,session,relaunch_rx,update_restart_rx))
   }.await;
-  let(core,control,app,session,mut relaunch_rx)=match started{
+  let(core,control,app,session,mut relaunch_rx,mut update_restart_rx)=match started{
    Ok(v)=>{let _=pending_rollback.take();v}
    Err(err)=>{if let Some(req)=pending_rollback.take(){rollback_relaunch(&data_root,&device_dir,&req,&err);continue;}return Err(err);}
   };
-  enum Next{Stop(R<()>),Relaunch(crate::backup::RelaunchRequest)}
+  enum Next{Stop(R<ExitAction>),Relaunch(crate::backup::RelaunchRequest),UpdateRestart}
   let next=loop{tokio::select!{biased;
-   _=&mut shutdown=>break Next::Stop(Ok(())),
-   res=&mut relaunch_rx=>match res{Ok(req)=>break Next::Relaunch(req),Err(_)=>break Next::Stop(Ok(()))},
+   _=&mut shutdown=>break Next::Stop(Ok(ExitAction::Normal)),
+   res=&mut update_restart_rx=>match res{Ok(())=>break Next::UpdateRestart,Err(_)=>std::future::pending().await},
+   res=&mut relaunch_rx=>match res{Ok(req)=>break Next::Relaunch(req),Err(_)=>break Next::Stop(Ok(ExitAction::Normal))},
    accepted=control.listener.accept()=>match accepted{
     Ok((stream,_))=>{let _=handle(stream,&app,&session).await;},
     Err(e)=>break Next::Stop(Err(e.to_string()))
@@ -127,6 +132,7 @@ async fn run_loop(dir:PathBuf,device_dir:PathBuf,control_dir:PathBuf,port:u16,sh
   let stop_res=core.pause_for_stop();let shut_res=core.shutdown().await;
   match next{
    Next::Stop(res)=>{stop_res?;shut_res?;return res;}
+   Next::UpdateRestart=>{stop_res?;shut_res?;return Ok(ExitAction::UpdateRestart);}
    Next::Relaunch(req)=>{
     if let Err(err)=stop_res.and(shut_res){crate::diagnostics::record("error","core.relaunch.shutdown",&err,None);}
     pending_rollback=Some(req);

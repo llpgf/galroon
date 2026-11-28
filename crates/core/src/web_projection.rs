@@ -13,6 +13,7 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/updates",WebAccess::Unchanged),
  ("/api/updates/check",WebAccess::Deny),
  ("/api/updates/settings",WebAccess::Deny),
+ ("/api/updates/apply",WebAccess::Deny),
  ("/api/translation/settings",WebAccess::Deny),
  ("/api/translations/batch",WebAccess::Deny),
  ("/api/translations/work/{id}",WebAccess::Unchanged),

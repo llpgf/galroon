@@ -74,19 +74,22 @@ fn action_line(action:OwnerAction,input:&mut impl BufRead)->R<String>{
  if matches!(command,OwnerCommand::Session){return Ok("session".into());}
  serde_json::to_string(&command).map_err(|_|"Could not encode owner command".into())
 }
-pub async fn run(command:Command)->R<()>{
+pub async fn run(command:Command)->R<i32>{
  match command{
-  Command::Serve{dir,device_dir,control_dir,port}=>crate::unix_core::run(dir,device_dir,control_dir,port).await,
+  Command::Serve{dir,device_dir,control_dir,port}=>match crate::unix_core::run(dir,device_dir,control_dir,port).await?{
+   crate::unix_core::ExitAction::Normal=>Ok(0),
+   crate::unix_core::ExitAction::UpdateRestart=>Ok(crate::updates::UPDATE_EXIT_CODE),
+  },
   Command::Restore{from,to,full,device_dir}=>{
    let value=tokio::task::spawn_blocking(move||crate::backup::restore_offline(&from,&to,full,device_dir.as_deref())).await.map_err(|_|"Offline restore failed")??;
-   println!("{value}");Ok(())
+   println!("{value}");Ok(0)
   }
   Command::Owner{control_dir,action,..}=>{
    let is_restore=matches!(action.0,OwnerCommand::Restore{..});
    let line=action_line(action,&mut std::io::stdin().lock())?;
    let value=crate::unix_core::request_with_timeout(&control_dir,&line,std::time::Duration::from_secs(if is_restore{600}else{5})).await?;
    // Owner results (including session tokens and pairing codes) go only to stdout.
-   println!("{value}");Ok(())
+   println!("{value}");Ok(0)
   }
  }
 }

@@ -65,6 +65,22 @@ impl Controller{
  pub async fn select(&self,id:Option<String>)->Result<(),String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;let mut saved=crate::paired::read(&self.base)?;if let Some(id)=&id{let result=crate::paired::connect(saved.entries.iter().find(|e|&e.id==id).ok_or("Connection not found")?).await;if result.as_ref().is_err_and(|e|e=="credential_invalid"){crate::paired::mark_repair(&self.base,id)?;}result?;}saved.selected=id;crate::paired::save(&self.base,&saved)?;self.remote.lock().await.take();Ok(())}
  pub async fn remove_connection(&self,id:String,forget:bool)->Result<crate::paired::Connections,String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;if forget{return crate::paired::forget(&self.base,&id);}crate::paired::remove(&self.base,&id).await}
  pub async fn stop(&self)->Result<(),String>{let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;if crate::paired::read(&self.base)?.selected.is_some(){return Err("Stop the Core from its local owner desktop".into());}local_core::request(&self.active()?,&self.exe,"stop").await?;Ok(())}
+ pub async fn stop_local_for_update(&self)->Result<(),String>{
+  let _gate=self.gate.lock().await;let _lock=self.launch_lock()?;
+  if crate::paired::read(&self.base)?.selected.is_some(){return Ok(());}
+  let active=self.active()?;
+  let _=local_core::request(&active,&self.exe,"stop").await;
+  let lock_path=active.join("core.lock");
+  if let Ok(file)=fs::OpenOptions::new().read(true).write(true).open(&lock_path){
+   let deadline=tokio::time::Instant::now()+Duration::from_secs(10);
+   loop{
+    if fs2::FileExt::try_lock_exclusive(&file).is_ok(){break;}
+    if tokio::time::Instant::now()>=deadline{return Err("Local Core is still stopping; wait for active tasks to finish and try updating again.".into());}
+    tokio::time::sleep(Duration::from_millis(100)).await;
+   }
+  }
+  Ok(())
+ }
  pub async fn restore(&self,source:PathBuf,expected_hash:String)->Result<PathBuf,String>{
   let _gate=self.gate.lock().await;let _launch=self.launch_lock()?;if crate::paired::read(&self.base)?.selected.is_some(){return Err("Restore from the Core's local owner desktop".into());}let previous=self.active()?;
   let collections=self.base.join("collections");plans::validate_chain(&collections)?;fs::create_dir_all(&collections).map_err(|e|e.to_string())?;let destination=collections.join(galroon_core::db::id());

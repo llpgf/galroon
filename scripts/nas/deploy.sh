@@ -69,7 +69,7 @@ REMOTE
 )
 [[ "$context" == "$NAS_BASE/release."* && "$context" != *$'\n'* ]] || nas_die 'Unexpected remote staging path.'
 tar -C "$artifact_dir" -cf - galroon-core web BUILD_SHA SHA256SUMS \
-    -C "$NAS_ROOT/docker" Dockerfile compose.yaml .dockerignore \
+    -C "$NAS_ROOT/docker" Dockerfile compose.yaml .dockerignore entrypoint.sh \
     | "$ssh_command" -T "$NAS_TARGET" "$(nas_quote tar -xf - -C "$context")"
 
 activate=$(nas_quote sh -s -- "$NAS_BASE" "$context" "$NAS_SHA" "$uid" "$gid" "$data" "$backups" "$library" "$force" "$seconds")

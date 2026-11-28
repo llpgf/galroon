@@ -11,9 +11,15 @@
 
 #[cfg(unix)]
 #[tokio::main]async fn main(){
- let command=match galroon_core::owner_cli::parse(std::env::args_os().skip(1)){Ok(command)=>command,Err(error)=>{eprintln!("{error}");std::process::exit(2);}};
+ let raw_args:Vec<std::ffi::OsString>=std::env::args_os().skip(1).collect();
+ if raw_args.len()==1&&raw_args[0]=="--version"{println!("{}",env!("CARGO_PKG_VERSION"));return;}
+ let command=match galroon_core::owner_cli::parse(raw_args){Ok(command)=>command,Err(error)=>{eprintln!("{error}");std::process::exit(2);}};
  let serving=matches!(command,galroon_core::owner_cli::Command::Serve{..});
  // Like Windows, record why a serving Core stopped so the reason survives the container log.
- if let Err(error)=galroon_core::owner_cli::run(command).await{if serving{galroon_core::diagnostics::record("error","core.fatal",&error,None);}eprintln!("{error}");std::process::exit(1);}
+ match galroon_core::owner_cli::run(command).await{
+  Ok(0)=>{},
+  Ok(code)=>std::process::exit(code),
+  Err(error)=>{if serving{galroon_core::diagnostics::record("error","core.fatal",&error,None);}eprintln!("{error}");std::process::exit(1);}
+ }
 }
 #[cfg(not(any(windows,unix)))]fn main(){eprintln!("This executable supports Windows and Unix");std::process::exit(2);}

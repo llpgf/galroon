@@ -98,7 +98,7 @@ use rusqlite::{params,OptionalExtension};
 use std::path::PathBuf;
 use tower_http::cors::{CorsLayer,AllowOrigin};
 
-#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub translation_batch:std::sync::Arc<translation::BatchRunner>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub data_root:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>,pub relaunch:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<backup::RelaunchRequest>>>>}
+#[derive(Clone)] pub struct App {pub vndb_sync_task:std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,pub vndb_sync_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub bangumi_gate:std::sync::Arc<tokio::sync::Mutex<()>>,pub updates:std::sync::Arc<updates::Updates>,pub backup_schedule:std::sync::Arc<backup_schedule::Schedule>,pub translation_batch:std::sync::Arc<translation::BatchRunner>,pub device:context::Device,pub instance_id:String,pub db:db::Db,pub token:String,pub state_dir:PathBuf,pub data_root:PathBuf,pub device_dir:PathBuf,pub network:Option<network::NetworkSettings>,pub process_lock:std::sync::Arc<std::fs::File>,pub mutation_lock:std::sync::Arc<std::sync::Mutex<()>>,pub login_gate:std::sync::Arc<tokio::sync::Semaphore>,pub relaunch:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<backup::RelaunchRequest>>>>,pub self_update_restart:std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>}
 pub struct ApiError(pub String);
 impl IntoResponse for ApiError {fn into_response(self)->Response{diagnostics::record("error","api.error",&self.0,None);if self.0==access::CREDENTIAL_INVALID{return (StatusCode::UNAUTHORIZED,Json(json!({"error":self.0,"code":"credential_invalid"}))).into_response();}(if self.0=="Authentication required"{StatusCode::UNAUTHORIZED}else if self.0=="Local owner access required"||self.0=="Desktop access required"||self.0=="Owner access required for full backups"{StatusCode::FORBIDDEN}else if self.0.ends_with("Retry in a moment."){StatusCode::SERVICE_UNAVAILABLE}else{StatusCode::BAD_REQUEST},Json(json!({"error":self.0}))).into_response()}}
 impl From<rusqlite::Error> for ApiError {fn from(e:rusqlite::Error)->Self{Self(e.to_string())}}
@@ -120,7 +120,7 @@ pub fn initialize_with_device(dir:PathBuf,device_dir:&std::path::Path)->std::res
     let token=format!("{}{}",db::id(),db::id());
     db.lock().map_err(|e|e.to_string())?.execute("UPDATE plans SET state='partial' WHERE state='executing'",[]).map_err(|e|e.to_string())?;
     issues::refresh(&*db.lock().map_err(|e|e.to_string())?)?;
-    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),translation_batch:Default::default(),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,data_root:dir.clone(),state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1)),relaunch:Default::default()})
+    Ok(App{vndb_sync_task:Default::default(),vndb_sync_gate:Default::default(),bangumi_gate:Default::default(),updates:updates::Updates::load(device_dir),backup_schedule:backup_schedule::Schedule::load(device_dir),translation_batch:Default::default(),device,device_dir:device_dir.to_path_buf(),network,instance_id:db::id(),db,token,data_root:dir.clone(),state_dir:dir,process_lock:std::sync::Arc::new(lock),mutation_lock:Default::default(),login_gate:std::sync::Arc::new(tokio::sync::Semaphore::new(1)),relaunch:Default::default(),self_update_restart:Default::default()})
 }
 #[derive(Clone,Copy,Debug,PartialEq)]pub enum Transport{Loopback,Lan}
 pub fn router(app:App)->Router {router_for(app,Transport::Loopback)}
@@ -150,7 +150,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/bangumi/vndb",post(bangumi::vndb::set))
     .route("/api/bangumi/vndb/{work_id}",get(bangumi::vndb::get))
     .route("/api/context",get(context::get).post(context::update))
-    .route("/api/release-calendar",get(release_calendar::get)).route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings))
+    .route("/api/release-calendar",get(release_calendar::get)).route("/api/updates",get(updates::get)).route("/api/updates/check",post(updates::check)).route("/api/updates/settings",post(updates::settings)).route("/api/updates/apply",post(updates::apply))
     .route("/api/translation/settings",get(translation::get_settings).post(translation::save_settings_route))
     .route("/api/translation/test",post(translation::test_connection))
     .route("/api/translations/batch",get(translation::batch_status).post(translation::start_batch))
@@ -235,7 +235,7 @@ pub fn router_for(app:App,transport:Transport)->Router {
     .route("/api/duplicates",post(find_duplicates)).route("/api/duplicate-checks/{id}",get(duplicate_results)).route("/api/quarantine",get(list_quarantine).post(isolate_plan))
     .route("/api/quarantine/{id}/restore",post(restore_plan))
     .route("/api/acquire",post(start_acquire)).route("/api/resources/{id}/acquire-preview",get(acquire_preview)).route("/api/archive/capabilities",get(archive_capabilities))
-    .fallback_service(tower_http::services::ServeDir::new(std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.join("web"))).unwrap_or_default()))
+    .fallback_service(tower_http::services::ServeDir::new(std::env::var_os("GALROON_WEB_DIR").filter(|v|!v.is_empty()).map(PathBuf::from).or_else(||std::env::current_exe().ok().and_then(|p|p.parent().map(|p|p.join("web")))).unwrap_or_default()))
     .layer(axum::middleware::from_fn_with_state(app.clone(),access::guard))
     .layer(axum::middleware::from_fn(diagnostics::requests))
     .layer(CorsLayer::new().allow_credentials(true).allow_origin(origins).allow_methods([axum::http::Method::GET,axum::http::Method::POST,axum::http::Method::DELETE]).allow_headers([axum::http::header::CONTENT_TYPE,axum::http::header::AUTHORIZATION,axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]).expose_headers([axum::http::HeaderName::from_static("x-galroon-library"),axum::http::HeaderName::from_static("x-galroon-device")]))

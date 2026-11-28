@@ -8,14 +8,16 @@ RUN apt-get update \
 WORKDIR /opt/galroon
 COPY galroon-core ./galroon-core
 COPY web/ ./web/
+COPY entrypoint.sh ./entrypoint.sh
 # Artifact downloads do not preserve Unix executable permissions.
-RUN chmod 0755 /opt/galroon/galroon-core \
+RUN chmod 0755 /opt/galroon/galroon-core /opt/galroon/entrypoint.sh \
     && chmod -R a+rX /opt/galroon/web
 # Ubuntu 24.04's 7zip package (7-Zip 23.01) installs the full 7-Zip as /usr/bin/7z, not 7zz.
 ENV GALROON_7ZIP=/usr/bin/7z
 ENV GALROON_INSTALL_KIND=docker
+ENV GALROON_RUNTIME_DIR=/data/runtime
 # Runtime uid/gid MUST be supplied by compose's user:, not baked into the image.
-ENTRYPOINT ["/opt/galroon/galroon-core"]
+ENTRYPOINT ["/opt/galroon/entrypoint.sh"]
 # The control socket lives under the tmpfs compose mounts at /run/galroon: Synology ACL
 # shares cannot hold the 0700 directory the socket requires. Core creates the control/
 # subdirectory itself, because Docker 24 does not reapply the tmpfs mode=0700 on restart.

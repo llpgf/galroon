@@ -5,3 +5,4 @@
 !web/**
 !Dockerfile
 !.dockerignore
+!entrypoint.sh

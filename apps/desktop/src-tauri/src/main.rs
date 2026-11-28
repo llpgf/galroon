@@ -15,6 +15,7 @@ use controller::Controller;
 #[tauri::command] async fn remove_connection(controller:tauri::State<'_,std::sync::Arc<Controller>>,id:String,forget:bool)->Result<paired::Connections,String>{controller.remove_connection(id,forget).await}
 #[tauri::command] async fn core_session(controller:tauri::State<'_,std::sync::Arc<Controller>>)->Result<serde_json::Value,String>{controller.client_session().await}
 #[tauri::command] async fn stop_core(app:tauri::AppHandle,controller:tauri::State<'_,std::sync::Arc<Controller>>)->Result<(),String>{controller.stop().await?;app.exit(0);Ok(())}
+#[tauri::command] async fn prepare_desktop_update(controller:tauri::State<'_,std::sync::Arc<Controller>>)->Result<(),String>{controller.stop_local_for_update().await}
 #[tauri::command] async fn restore_core(controller:tauri::State<'_,std::sync::Arc<Controller>>,path:String,sha256:String)->Result<galroon_core::local_core::Session,String>{controller.restore(path.into(),sha256).await?;controller.session().await}
 #[tauri::command] fn record_client_error(message:String){galroon_core::diagnostics::record("error","desktop.client",&message,None);}
 #[tauri::command] fn diagnostic_logs()->Result<serde_json::Value,String>{galroon_core::diagnostics::snapshot()}
@@ -46,7 +47,7 @@ use controller::Controller;
     }
 }
 fn main() {
-    tauri::Builder::default().plugin(tauri_plugin_dialog::init()).invoke_handler(tauri::generate_handler![record_client_error,diagnostic_logs,reveal_in_folder,core_session,stop_core,restore_core,restore_history,list_connections,pair_connection,pair_lan_connection,core_request,select_connection,remove_connection,update_connection_endpoint]).setup(|app|{
+    tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_process::init()).plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(tauri::generate_handler![record_client_error,diagnostic_logs,reveal_in_folder,core_session,stop_core,prepare_desktop_update,restore_core,restore_history,list_connections,pair_connection,pair_lan_connection,core_request,select_connection,remove_connection,update_connection_endpoint]).setup(|app|{
         if let Some(window)=app.get_webview_window("main") {
             if let Some(monitor)=window.current_monitor()? {
                 let size=monitor.size().to_logical::<f64>(monitor.scale_factor());
