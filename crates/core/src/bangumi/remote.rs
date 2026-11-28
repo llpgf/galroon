@@ -27,13 +27,15 @@ pub struct User { pub id:i64, pub username:String, #[serde(default)] pub nicknam
 pub struct Client { http:reqwest::Client, token:String, base:String }
 impl Client {
     pub fn new(token:String)->Result<Self> { Self::at(token,"https://api.bgm.tv".into()) }
+    pub fn public()->Result<Self> { Self::at(String::new(),"https://api.bgm.tv".into()) }
     pub(super) fn at(token:String,base:String)->Result<Self> {
         let http=reqwest::Client::builder().user_agent(concat!("llpgf/Galroon/",env!("CARGO_PKG_VERSION")," (https://github.com/llpgf/galroon)"))
             .redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(30)).build().map_err(|_|Error("Cannot create Bangumi connection".into()))?;
         Ok(Self{http,token,base})
     }
     async fn send(&self,method:reqwest::Method,path:&str,body:Option<Value>)->Result<reqwest::Response> {
-        let mut request=self.http.request(method,format!("{}{path}",self.base)).bearer_auth(&self.token);
+        let mut request=self.http.request(method,format!("{}{path}",self.base));
+        if !self.token.is_empty(){request=request.bearer_auth(&self.token);}
         if let Some(body)=body { request=request.json(&body); }
         let response=request.send().await.map_err(|_|Error("Bangumi is unavailable. Your local changes are saved; retry sync later.".into()))?;
         match response.status().as_u16() {

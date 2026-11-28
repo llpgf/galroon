@@ -134,12 +134,18 @@ pub async fn apply(State(a):State<App>,h:HeaderMap,Json(input):Json<Apply>)->cra
     let mut state=state(&a)?;state["results"]=json!(results);Ok(Json(state))
 }
 #[derive(Deserialize)]#[serde(deny_unknown_fields)]pub struct Link{work_id:String,revision:i64,subject:String}
-fn subject_id(value:&str)->Result<i64>{
+pub(crate) fn subject_id(value:&str)->Result<i64>{
     let value=value.trim();let number=if value.bytes().all(|v|v.is_ascii_digit()){value.to_owned()}else{
         let url=reqwest::Url::parse(value).map_err(|_|Error("Enter a Bangumi subject URL or numeric ID".into()))?;
         if url.scheme()!="https"||!matches!(url.host_str(),Some("bgm.tv"|"bangumi.tv"|"chii.in")){return Err(Error("Enter a Bangumi subject URL".into()));}
         url.path().trim_end_matches('/').strip_prefix("/subject/").ok_or_else(||Error("Enter a Bangumi subject URL".into()))?.to_owned()
     };number.parse::<i64>().ok().filter(|id|*id>0).ok_or_else(||Error("Invalid Bangumi subject ID".into()))
+}
+pub(crate) async fn fetch_subject_for_app(a:&App,raw:&str)->Result<remote::Subject>{
+    let id=subject_id(raw)?;
+    let account=store::account(&a.db.lock().unwrap())?;
+    let c=match account{Some(acc)=>client(a,&acc)?,None=>remote::Client::public()?};
+    c.subject(id).await
 }
 pub async fn link(State(a):State<App>,h:HeaderMap,Json(input):Json<Link>)->crate::Result<Value>{
     writable(&a,&h)?;let _gate=a.bangumi_gate.try_lock().map_err(|_|ApiError("Bangumi sync is busy. Retry in a moment.".into()))?;
@@ -152,7 +158,15 @@ pub async fn link(State(a):State<App>,h:HeaderMap,Json(input):Json<Link>)->crate
         let other:Option<String>=tx.query_row("SELECT work_id FROM bangumi_links WHERE subject_id=?1",[subject.id],|r|r.get(0)).optional()?;
         if other.as_ref().is_some_and(|id|id!=&input.work_id){return Err(ApiError("This Bangumi subject already has a card. Use Group works to attach the local resources to that card.".into()));}
         tx.execute("INSERT INTO bangumi_links(work_id,subject_id) VALUES(?1,?2) ON CONFLICT(work_id) DO UPDATE SET subject_id=excluded.subject_id,base_status=NULL,hidden=0",params![input.work_id,subject.id])?;
+        tx.execute("INSERT INTO bangumi_remote(subject_id,status,subject) VALUES(?1,0,?2) ON CONFLICT(subject_id) DO UPDATE SET subject=excluded.subject",params![subject.id,serde_json::to_string(subject).map_err(|e|ApiError(e.to_string()))?])?;
         tx.execute("DELETE FROM bangumi_ignored WHERE subject_id=?1",[subject.id])?;
+        let cover=subject.cover();
+        if !cover.is_empty(){
+            let existing_cover:String=tx.query_row("SELECT cover FROM works WHERE id=?1",[&input.work_id],|r|r.get(0))?;
+            if existing_cover.trim().is_empty(){
+                tx.execute("UPDATE works SET cover=?2 WHERE id=?1",params![input.work_id,cover])?;
+            }
+        }
     }else{
         // An explicit unlink suppresses reimport of this subject until the user chooses otherwise.
         tx.execute("INSERT OR IGNORE INTO bangumi_ignored SELECT subject_id FROM bangumi_links WHERE work_id=?1",[&input.work_id])?;
