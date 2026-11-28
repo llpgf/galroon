@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/tauri-apps/tauri",
+  "commit": "9319e539f34237035cb4693bed9246660bc0a926",
+  "files": [
+    {
+      "file": "LICENSE-APACHE-2.0",
+      "url": "https://raw.githubusercontent.com/tauri-apps/tauri/9319e539f34237035cb4693bed9246660bc0a926/LICENSE-APACHE-2.0",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
+    {
+      "file": "LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/tauri-apps/tauri/9319e539f34237035cb4693bed9246660bc0a926/LICENSE-MIT",
+      "sha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+    },
+    {
+      "file": "LICENSE.spdx",
+      "url": "https://raw.githubusercontent.com/tauri-apps/tauri/9319e539f34237035cb4693bed9246660bc0a926/LICENSE.spdx",
+      "sha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008"
+    }
+  ]
+}

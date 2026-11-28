@@ -55,7 +55,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1MTREQjNDNjc0RTgxRDMKUldUVGdVNW5QTnNVdGNTaU9lWnZQK3RHNlVCTzdXaGJnRis5M1d0NzhaU2FSYUozRXBicnZSRUMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1RjU5MDVFMDI0Rjg0NDEKUldSQmhFOENYcEQxdFdrVDd2aHRkWlFXWjJ5RzlwT3ZvTDNXYzM4enFOMDNDQXVIU251KzRNUnUK",
       "endpoints": [
         "https://github.com/llpgf/galroon/releases/latest/download/latest.json"
       ],

@@ -12,7 +12,7 @@ impl Drop for Checking<'_>{fn drop(&mut self){self.0.store(false,Ordering::Relea
 const DAY:i64=24*60*60;
 const RELEASES:&str="https://github.com/llpgf/galroon/releases";
 const DOWNLOAD_BASE:&str="https://github.com/llpgf/galroon/releases/download";
-pub const UPDATE_PUBKEY:&str="RWTTgU5nPNsUtcSiOeZvP+tG6UBO7WhbgF+93Wt78ZSaRaJ3EpbrvREC";
+pub const UPDATE_PUBKEY:&str="RWRBhE8CXpD1tWkT7vhtdZQWZ2yG9pOvoL3Wc38zqN03CAuHSnu+4MRu";
 pub const UPDATE_EXIT_CODE:i32=42;
 const MAX_MANIFEST_BYTES:usize=64*1024;
 const MAX_SIG_BYTES:usize=16*1024;
