@@ -7,6 +7,8 @@ export type UpdateProgress={
  targetVersion?:string;
  downloaded?:number;
  total?:number|null;
+ step?:1|2;
+ totalSteps?:1|2;
 };
 const IDLE:UpdateProgress={phase:'idle'};
 export function useUpdates(core:string|null,coreVersion?:string){
@@ -27,9 +29,10 @@ export function useUpdates(core:string|null,coreVersion?:string){
   applyingRef.current=true;setError('');setNeedsForceConfirm(false);
   const previousCore=state?.current||coreVersion||APP_VERSION;
   const target=targetVersion||state?.latest?.version||'';
+  const totalSteps:1|2=canUpdateCore&&canUpdateDesktop?2:1;
   try{
    if(canUpdateCore&&state?.latest){
-    setProgress({phase:'core_downloading',targetVersion:state.latest.version,downloaded:0,total:null});
+    setProgress({phase:'core_downloading',targetVersion:state.latest.version,downloaded:0,total:null,step:1,totalSteps});
     let latestState=await applyCoreUpdate(force);
     setState(latestState);
     while(latestState.apply&&['downloading','verifying','staging'].includes(latestState.apply.state)){
@@ -38,7 +41,9 @@ export function useUpdates(core:string|null,coreVersion?:string){
       phase:s.state==='downloading'?'core_downloading':s.state==='verifying'?'core_verifying':'core_staging',
       targetVersion:s.target_version||state.latest.version,
       downloaded:s.downloaded_bytes,
-      total:s.total_bytes
+      total:s.total_bytes,
+      step:1,
+      totalSteps
      });
      await new Promise(r=>setTimeout(r,600));
      try{latestState=await readUpdates();setState(latestState);}catch{break;}
@@ -46,20 +51,21 @@ export function useUpdates(core:string|null,coreVersion?:string){
     if(latestState.apply?.state==='failed'){
      throw new Error(latestState.apply.error||'Core update failed.');
     }
-    setProgress({phase:'core_restarting',targetVersion:state.latest.version});
+    setProgress({phase:'core_restarting',targetVersion:state.latest.version,step:1,totalSteps});
     const restart=await waitForCoreRestart(previousCore,state.latest.version);
     setState(restart.state);
     if(restart.status==='rolled_back'){throw new Error(restart.error);}
     if(!isDesktop){
-     setProgress({phase:'reloading',targetVersion:state.latest.version});
+     setProgress({phase:'reloading',targetVersion:state.latest.version,step:1,totalSteps:1});
      window.location.reload();
      return;
     }
    }
    if(canUpdateDesktop){
-    setProgress({phase:'desktop_downloading',targetVersion:target,downloaded:0,total:null});
+    const step:1|2=totalSteps===2?2:1;
+    setProgress({phase:'desktop_downloading',targetVersion:target,downloaded:0,total:null,step,totalSteps});
     await applyDesktopUpdate(({stage,downloaded,total})=>{
-     setProgress({phase:stage==='downloading'?'desktop_downloading':'desktop_installing',targetVersion:target,downloaded,total});
+     setProgress({phase:stage==='downloading'?'desktop_downloading':'desktop_installing',targetVersion:target,downloaded,total,step,totalSteps});
     });
    }
   }catch(e){
