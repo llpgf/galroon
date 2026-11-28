@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "galroon-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "axum",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "galroon-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fs2",
  "galroon-core",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "galroon-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "galroon-core",
  "reqwest 0.12.28",
