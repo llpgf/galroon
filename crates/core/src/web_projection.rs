@@ -60,6 +60,8 @@ pub const WEB_ROUTES:&[(&str,WebAccess)]=&[
  ("/api/resources/{id}/matching-history",WebAccess::Deny),
  ("/api/matching",WebAccess::Project),
  ("/api/works/{id}/metadata",WebAccess::Unchanged),
+ ("/api/works/{id}/metadata/fetch-source",WebAccess::Deny),
+ ("/api/works/{id}/cover",WebAccess::Deny),
  ("/api/works/{id}/exploration",WebAccess::Unchanged),
  ("/api/people/{id}",WebAccess::Unchanged),
  ("/api/characters/{id}",WebAccess::Unchanged),

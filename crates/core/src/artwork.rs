@@ -4,8 +4,15 @@ use crate::{ApiError,App,artwork_cache::{Cache,Image,MAX_IMAGE_BYTES}};
 static DOWNLOAD:std::sync::OnceLock<crate::artwork_queue::Queue>=std::sync::OnceLock::new();
 #[derive(Deserialize)]pub struct Request{url:String}
 pub(crate) fn allowed(value:&str)->bool{
- // Only immutable raster paths on the provider's artwork host. Never follow redirects.
- regex::Regex::new(r"^https://lain\.bgm\.tv/(?:pic/cover/(?:l|c|m|s|g)/[0-9a-f/]+(?:_[A-Za-z0-9]+)?|img/no_icon_subject)\.(?:jpg|png|webp)$").unwrap().is_match(value) || regex::Regex::new(r"^https://t\.vndb\.org/(cv|ch|sf)(\.t)?/[0-9]{2}/[0-9]+\.(jpg|png|webp)$").unwrap().is_match(value)
+ // Only immutable raster paths on trusted provider hosts, or permanent local uploaded covers. Never follow redirects.
+ static BGM:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+ static VNDB:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+ static DLSITE:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+ static LOCAL:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+ BGM.get_or_init(||regex::Regex::new(r"^https://lain\.bgm\.tv/(?:pic/cover/(?:l|c|m|s|g)/[0-9a-f/]+(?:_[A-Za-z0-9]+)?|img/no_icon_subject)\.(?:jpg|png|webp)$").unwrap()).is_match(value)
+  || VNDB.get_or_init(||regex::Regex::new(r"^https://t\.vndb\.org/(cv|ch|sf)(\.t)?/[0-9]{2}/[0-9]+\.(jpg|png|webp)$").unwrap()).is_match(value)
+  || DLSITE.get_or_init(||regex::Regex::new(r"^https://img\.dlsite\.jp/modpub/images2/work/(?:doujin|professional)/[A-Z]{2}\d+/[A-Z]{2}\d+_img_main\.(?:jpg|png|webp)$").unwrap()).is_match(value)
+  || LOCAL.get_or_init(||regex::Regex::new(r"^local://artwork/[0-9a-f]{64}\.(?:jpg|png|webp)$").unwrap()).is_match(value)
 }
 pub(crate) fn referenced(value:&serde_json::Value,url:&str)->bool{
  fn walk(value:&serde_json::Value,url:&str,depth:usize)->bool{if depth>32{return false;}match value{
@@ -52,6 +59,7 @@ pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
  if !allowed(url){return Err(ApiError("Unsupported artwork URL".into()));}
  let q=Request{url:url.to_owned()};
  if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(image);}
+ if q.url.starts_with("local://artwork/"){return Err(ApiError("Saved custom artwork not found".into()));}
  let key=format!("{}:{}",a.state_dir.display(),Cache::key(&q.url));
  let _permit=DOWNLOAD.get_or_init(||crate::artwork_queue::Queue::new(4,64)).enter(key).await.map_err(ApiError)?;
  if let Some(image)=cached(a.state_dir.clone(),q.url.clone()).await?{return Ok(image);}
@@ -62,6 +70,48 @@ pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
  let base=a.state_dir.clone();let url=q.url;
  let image=tokio::task::spawn_blocking(move||{let mut cache=Cache::open(&base)?;cache.put(&url,&bytes)?;cache.get(&url)?.ok_or_else(||"Artwork cache write unavailable".to_string())}).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)?;
  Ok(image)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadCover{pub data_base64:String}
+fn decode_base64_bounded(input:&str,limit:usize)->Result<Vec<u8>,String>{
+ let trimmed=input.trim();
+ let raw=if let Some((_,rest))=trimmed.split_once(";base64,"){rest}else{trimmed};
+ let mut out=Vec::with_capacity((raw.len()*3/4).min(limit));
+ let mut buf=0u32;let mut bits=0u8;
+ for b in raw.bytes(){
+  if b.is_ascii_whitespace(){continue;}
+  if b==b'='{break;}
+  let v=match b{b'A'..=b'Z'=>b-b'A',b'a'..=b'z'=>b-b'a'+26,b'0'..=b'9'=>b-b'0'+52,b'+'=>62,b'/'=>63,_=>return Err("Invalid base64 image data".into())};
+  buf=(buf<<6)|(v as u32);bits+=6;
+  if bits>=8{
+   bits-=8;
+   if out.len()>=limit{return Err("Cover image exceeds 16 MiB limit".into());}
+   out.push((buf>>bits) as u8);
+   buf&=(1<<bits)-1;
+  }
+ }
+ if out.is_empty(){return Err("Image file is empty".into());}
+ Ok(out)
+}
+pub async fn upload_work_cover(State(a):State<App>,h:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,axum::Json(v):axum::Json<UploadCover>)->Result<axum::Json<serde_json::Value>,ApiError>{
+ if crate::access::authenticate(&a,&h)?.role=="web"{return Err(ApiError("Desktop access required".into()));}
+ let exists:bool=a.db.lock().map_err(|e|ApiError(e.to_string()))?.query_row("SELECT EXISTS(SELECT 1 FROM works WHERE id=?1 AND merged_into IS NULL)",[&id],|r|r.get(0))?;
+ if !exists{return Err(ApiError("Work not found".into()));}
+ let base=a.state_dir.clone();
+ let raw=v.data_base64;
+ let stored=tokio::task::spawn_blocking(move||->Result<(String,String,usize),String>{
+  use sha2::{Digest,Sha256};
+  let bytes=decode_base64_bounded(&raw,MAX_IMAGE_BYTES)?;
+  let kind=crate::artwork_cache::mime(&bytes).ok_or_else(||"Only PNG, JPEG, and WebP images are supported".to_string())?;
+  let ext=match kind{"image/png"=>"png","image/jpeg"=>"jpg","image/webp"=>"webp",_=>"bin"};
+  let hash=hex::encode(Sha256::digest(&bytes));
+  let url=format!("local://artwork/{hash}.{ext}");
+  let len=bytes.len();
+  crate::artwork_library::Library::open(&base)?.put(&url,&Image{mime:kind.into(),bytes})?;
+  Ok((url,kind.into(),len))
+ }).await.map_err(|e|ApiError(e.to_string()))?.map_err(ApiError)?;
+ Ok(axum::Json(serde_json::json!({"url":stored.0,"mime":stored.1,"bytes":stored.2})))
 }
 #[cfg(test)]mod tests{
  use super::*;
@@ -95,8 +145,15 @@ pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
   let(url,task)=serve(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc".to_vec()).await;assert_eq!(download(&url).await.map_err(|e|e.0).unwrap(),b"abc");task.await.unwrap();
  }
  #[test]fn provider_raster_paths_only(){
-  for url in ["https://t.vndb.org/cv/01/123.jpg","https://t.vndb.org/ch.t/12/345.png","https://t.vndb.org/sf/00/99.webp"]{assert!(allowed(url));}
-  for url in ["http://t.vndb.org/cv/01/1.jpg","https://t.vndb.org.evil/cv/01/1.jpg","https://user@t.vndb.org/cv/01/1.jpg","https://t.vndb.org:443/cv/01/1.jpg","https://t.vndb.org/cv/01/1.jpg?token=secret","https://t.vndb.org/cv/01/1.svg","https://127.0.0.1/a.png","file:///C:/secret","https://t.vndb.org/cv/01/../1.jpg"]{assert!(!allowed(url),"{url}");}
+  for url in [
+   "https://t.vndb.org/cv/01/123.jpg",
+   "https://t.vndb.org/ch.t/12/345.png",
+   "https://t.vndb.org/sf/00/99.webp",
+   "https://img.dlsite.jp/modpub/images2/work/doujin/RJ352000/RJ351325_img_main.jpg",
+   "https://img.dlsite.jp/modpub/images2/work/professional/VJ01002000/VJ01001192_img_main.png",
+   "local://artwork/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.png",
+  ]{assert!(allowed(url),"{url}");}
+  for url in ["http://t.vndb.org/cv/01/1.jpg","https://t.vndb.org.evil/cv/01/1.jpg","https://user@t.vndb.org/cv/01/1.jpg","https://t.vndb.org:443/cv/01/1.jpg","https://t.vndb.org/cv/01/1.jpg?token=secret","https://t.vndb.org/cv/01/1.svg","https://127.0.0.1/a.png","file:///C:/secret","https://t.vndb.org/cv/01/../1.jpg","https://img.dlsite.jp/modpub/images2/work/doujin/RJ1/evil.svg","local://artwork/not-a-hash.png","local://artwork/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.svg"]{assert!(!allowed(url),"{url}");}
  }
  #[tokio::test]async fn authenticated_cached_image_needs_no_network(){
   use tower::ServiceExt;
@@ -107,6 +164,25 @@ pub(crate) async fn fetch(a:&App,url:&str)->Result<Image,ApiError>{
   let path=format!("/art?url={url}");
   let denied=app.clone().oneshot(axum::http::Request::builder().uri(&path).body(axum::body::Body::empty()).unwrap()).await.unwrap();assert_eq!(denied.status(),401);
   let ok=app.oneshot(axum::http::Request::builder().uri(path).header("Authorization",format!("Bearer {token}")).body(axum::body::Body::empty()).unwrap()).await.unwrap();assert_eq!(ok.status(),200);assert_eq!(ok.headers()[header::CONTENT_TYPE],"image/jpeg");assert_eq!(ok.headers()[header::CACHE_CONTROL],"private, no-store");assert_eq!(&axum::body::to_bytes(ok.into_body(),MAX_IMAGE_BYTES).await.unwrap()[..],bytes);
+ }
+ #[tokio::test]async fn upload_custom_cover_stores_permanently_and_serves_via_artwork(){
+  use tower::ServiceExt;
+  let t=tempfile::tempdir().unwrap();let a=crate::initialize(t.path().to_path_buf()).unwrap();let token=a.token.clone();
+  a.db.lock().unwrap().execute("INSERT INTO works(id,title,original_title) VALUES('w1','Manual Game','Manual Game')",[]).unwrap();
+  let router=crate::router(a.clone());
+  let b64="iVBORw0KGgoKaGVsbG8=";
+  let req=axum::http::Request::builder().method("POST").uri("/api/works/w1/cover").header("Host","localhost").header("Content-Type","application/json").header("Authorization",format!("Bearer {token}")).body(axum::body::Body::from(serde_json::json!({"data_base64":b64}).to_string())).unwrap();
+  let resp=router.clone().oneshot(req).await.unwrap();
+  assert_eq!(resp.status(),200);
+  let body:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(resp.into_body(),4096).await.unwrap()).unwrap();
+  let url=body["url"].as_str().unwrap().to_owned();
+  assert!(url.starts_with("local://artwork/")&&url.ends_with(".png"),"{url}");
+  let get_req=axum::http::Request::builder().uri(format!("/api/artwork?url={url}")).header("Host","localhost").header("Authorization",format!("Bearer {token}")).body(axum::body::Body::empty()).unwrap();
+  let get_resp=router.clone().oneshot(get_req).await.unwrap();
+  assert_eq!(get_resp.status(),200);
+  assert_eq!(get_resp.headers()[header::CONTENT_TYPE],"image/png");
+  let bad_req=axum::http::Request::builder().method("POST").uri("/api/works/w1/cover").header("Host","localhost").header("Content-Type","application/json").header("Authorization",format!("Bearer {token}")).body(axum::body::Body::from(serde_json::json!({"data_base64":"PHN2Zz48L3N2Zz4="}).to_string())).unwrap();
+  assert_eq!(router.oneshot(bad_req).await.unwrap().status(),400);
  }
 }
 

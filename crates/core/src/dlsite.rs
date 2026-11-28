@@ -10,7 +10,15 @@ const CACHE_TTL:Duration=Duration::from_secs(600);
 const CACHE_LIMIT:usize=64;
 
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct Product{pub code:String,pub title:String,pub maker:Option<String>}
+pub struct Product{
+    pub code:String,
+    pub title:String,
+    pub maker:Option<String>,
+    pub cover:Option<String>,
+    pub released:Option<String>,
+    pub description:Option<String>,
+    pub tags:Vec<String>,
+}
 
 /// Canonical uppercase DLsite product code (`VJ` or `RJ` + 6-8 digits).
 pub fn valid_code(code:&str)->bool{
@@ -160,7 +168,11 @@ fn parse_product(value:&Value,code:&str)->Result<Option<Product>,String>{
     let title=item["work_name"].as_str().map(str::trim).filter(|s|!s.is_empty()&&s.len()<=512&&!s.chars().any(|c|c.is_control()));
     let Some(title)=title else{return Ok(None);};
     let maker=item["maker_name"].as_str().map(str::trim).filter(|s|!s.is_empty()&&s.len()<=256&&!s.chars().any(|c|c.is_control())).map(str::to_owned);
-    Ok(Some(Product{code:code.to_string(),title:title.to_string(),maker}))
+    let cover=item["image_main"]["url"].as_str().map(str::trim).map(|raw|if let Some(rest)=raw.strip_prefix("//"){format!("https://{rest}")}else{raw.to_owned()}).filter(|u|crate::artwork::allowed(u));
+    let released=item["regist_date"].as_str().map(str::trim).and_then(|s|s.get(..10)).filter(|s|s.len()==10&&s.as_bytes()[4]==b'-'&&s.as_bytes()[7]==b'-'&&s.bytes().enumerate().all(|(i,b)|i==4||i==7||b.is_ascii_digit())).map(str::to_owned);
+    let description=item["intro_s"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(|s|s.chars().take(4000).collect());
+    let tags=item["genres"].as_array().map(|arr|arr.iter().filter_map(|g|g["name"].as_str().map(str::trim).filter(|s|!s.is_empty()&&s.len()<=64).map(str::to_owned)).take(40).collect()).unwrap_or_default();
+    Ok(Some(Product{code:code.to_string(),title:title.to_string(),maker,cover,released,description,tags}))
 }
 
 #[cfg(test)]mod tests{
