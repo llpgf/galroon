@@ -26,14 +26,16 @@ describe('release notice UI',()=>{
    applying:true,progress:{phase:'core_downloading',targetVersion:'9.0.0',downloaded:512,total:1024}
   });
   const html=renderToStaticMarkup(<UpdateBanner state={updates.state} coreVersion={APP_VERSION} canWrite updates={updates}/>);
-  expect(html).toContain('Update Core &amp; Desktop');
+  expect(html).toContain('Updating…');
+  expect(html).toContain('Step 1/2');
   expect(html).toContain('Downloading Core 9.0.0');
   expect(html).toContain('512 B / 1024 B (50%)');
   expect(html).toContain('<progress');
   const blocked=makeUpdates({state:{...state,can_self_update:true},canApply:true,canUpdateCore:true,error:'Active background tasks are running.',needsForceConfirm:true});
   const blockedHtml=renderToStaticMarkup(<AboutPanel updates={blocked} coreVersion={APP_VERSION} canWrite/>);
   expect(blockedHtml).toContain('Pause active tasks and update');
-  expect(blockedHtml).toContain('Active background tasks are running.');
+  expect(blockedHtml).toContain('update-alert warn');
+  expect(blockedHtml).toContain('background task');
  });
  it('includes Traditional Chinese update strings',async()=>{
   await i18n.changeLanguage('zh-TW');
